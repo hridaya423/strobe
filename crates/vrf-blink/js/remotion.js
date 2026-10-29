@@ -112,6 +112,18 @@
     png: { format: 'png', backgroundOverride: { r: 0, g: 0, b: 0, a: 0 } },
   };
 
+  const LONG_SRC = 400;
+  const longSrcs = new Map();
+
+  const collectAssets = () =>
+    window.remotion_collectAssets().map((asset) => {
+      if (asset.src === undefined || asset.src.length < LONG_SRC) return asset;
+      const first = longSrcs.get(asset.src);
+      if (first) return { ...asset, src: `same-as-${first.id}-${first.frame}` };
+      longSrcs.set(asset.src, { id: asset.id, frame: asset.frame });
+      return asset;
+    });
+
   let compositionId = null;
   let queue = Promise.resolve();
 
@@ -145,7 +157,7 @@
     await document.fonts.ready;
     await Promise.all(pendingImages().map((img) => img.decode().catch(() => {})));
     document.body.style.background = config.captureMode === 'png' ? 'transparent' : 'black';
-    return { frame };
+    return { frame, assets: collectAssets() };
   };
 
   const seek = (frame, { attempt = 1 } = {}) => {
