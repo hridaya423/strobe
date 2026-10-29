@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::Mutex;
@@ -7,22 +6,18 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-use vrf::colour::{Chroma, Format};
-use vrf::gpu::Gpu;
-use vrf::gpu::convert::{Converter, Source};
-use vrf::gpu::metal::PoolTargets;
 use vrf::mux::{Container, Muxer};
 use vrf::sched::{self, Consumer, Producer, Submission};
 use vrf::sink::Sink;
-use vrf_encode::videotoolbox::VideoToolboxEncoder;
-use vrf_encode::videotoolbox::pool::{PixelFormat, PixelPool, PoolBuffer};
-use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
+use vrf_encode::{Codec, Encoder, EncoderConfig, Rational};
 
+#[cfg(target_os = "macos")]
+use crate::pipeline_mac::{Backend, Converting, Frame, POOL_MARGIN, Pool, VideoEncoder};
+#[cfg(windows)]
+use crate::pipeline_win::{Backend, Converting, Frame, POOL_MARGIN, Pool, VideoEncoder};
 use crate::{Paint, View};
 
 const WINDOW: usize = 32;
-const MAX_IMPORTS: usize = 16;
-const POOL_MARGIN: usize = 32;
 const MEMORY_BUDGET: u64 = 3 << 29;
 const TICKING_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -88,52 +83,10 @@ impl Summary {
     }
 }
 
-struct Converting {
-    gpu: Gpu,
-    converter: Converter,
-    targets: PoolTargets,
-    imports: HashMap<u32, Source>,
-    pool: PixelPool,
-}
-
-impl Converting {
-    fn convert(&mut self, paint: &Paint) -> Result<PoolBuffer> {
-        let id = paint.surface.id();
-        if !self.imports.contains_key(&id) {
-            if self.imports.len() >= MAX_IMPORTS {
-                self.imports.clear();
-            }
-            let texture = self.gpu.import_iosurface(&paint.surface, 0, paint.format)?;
-            let source = self
-                .converter
-                .source(&texture.create_view(&Default::default()));
-            self.imports.insert(id, source);
-        }
-        let buffer = self.pool.acquire()?;
-        let target = self.targets.get(&self.gpu, &self.converter, &buffer)?;
-        let mut commands = self.gpu.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = commands.begin_compute_pass(&Default::default());
-            self.converter.encode(
-                &mut pass,
-                &self.imports[&id],
-                target,
-                paint.visible,
-                Chroma::Swscale,
-            );
-        }
-        let submission = self.gpu.queue.submit([commands.finish()]);
-        self.gpu.device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: None,
-        })?;
-        Ok(buffer)
-    }
-}
-
 fn submit_loop(
-    mut encoder: VideoToolboxEncoder,
-    mut consumer: Consumer<PoolBuffer>,
+    _backend: Backend,
+    mut encoder: VideoEncoder,
+    mut consumer: Consumer<Frame>,
     mut sink: Sink,
     frame_rate: Rational,
 ) -> Result<(Muxer, Vec<Duration>)> {
@@ -141,7 +94,7 @@ fn submit_loop(
     while let Some((index, buffer)) = consumer.recv()? {
         let started = Instant::now();
         let pts = Rational::new(index as i64 * frame_rate.den, frame_rate.num);
-        encoder.submit(EncoderFrame::PixelBuffer(buffer), pts)?;
+        encoder.submit(buffer.into(), pts)?;
         encode.push(started.elapsed());
         let packets = encoder.drain()?;
         sink.write(&encoder, packets)?;
@@ -213,24 +166,19 @@ impl Capture {
 /// What a worker thread needs to build its own [`Lane`]. The GPU device is created on the
 /// thread that calls [`LaneSpec::open`].
 pub struct LaneSpec {
-    producer: Producer<PoolBuffer>,
-    pool: PixelPool,
+    producer: Producer<Frame>,
+    pool: Pool,
+    backend: Backend,
     width: u32,
     height: u32,
 }
 
 impl LaneSpec {
     pub fn open(self) -> Result<Lane> {
-        let gpu = Gpu::new()?;
-        let converter = Converter::new(&gpu, Format::Nv12);
+        let gpu = self.backend.gpu()?;
         Ok(Lane {
-            converting: Converting {
-                gpu,
-                converter,
-                targets: PoolTargets::default(),
-                imports: HashMap::new(),
-                pool: self.pool,
-            },
+            converting: Converting::new(gpu, self.pool)?,
+            backend: self.backend,
             producer: self.producer,
             width: self.width,
             height: self.height,
@@ -244,7 +192,8 @@ impl LaneSpec {
 /// by frame index. Each view thread has its own lane.
 pub struct Lane {
     converting: Converting,
-    producer: Producer<PoolBuffer>,
+    backend: Backend,
+    producer: Producer<Frame>,
     width: u32,
     height: u32,
     pub repeats: u64,
@@ -277,7 +226,8 @@ impl Lane {
     pub fn spec(&self) -> LaneSpec {
         LaneSpec {
             producer: self.producer.clone(),
-            pool: self.converting.pool.clone(),
+            pool: self.converting.pool().clone(),
+            backend: self.backend.clone(),
             width: self.width,
             height: self.height,
         }
@@ -307,18 +257,12 @@ impl DerefMut for Pipeline {
 
 impl Pipeline {
     pub fn new(config: &Config, out: &Path) -> Result<Pipeline> {
-        let pool = PixelPool::with_size(
-            config.width as usize,
-            config.height as usize,
-            PixelFormat::Nv12,
-            config.window + POOL_MARGIN,
-        )?;
-        let encoder = VideoToolboxEncoder::with_pool(
+        let backend = Backend::new()?;
+        let (encoder, pool) = backend.encoder(
             EncoderConfig::new(config.codec, config.width, config.height, config.frame_rate),
-            pool,
-            None,
+            config.window,
         )?;
-        let (producer, consumer) = sched::ordered::<PoolBuffer>(config.window);
+        let (producer, consumer) = sched::ordered::<Frame>(config.window);
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
             Codec::H264 | Codec::Hevc | Codec::Av1 => Container::Mp4,
@@ -327,15 +271,17 @@ impl Pipeline {
             Muxer::create(out, container, config.frame_rate.num as u32)?,
             config.frame_rate.den as u32,
         );
+        let kept = backend.clone();
         let lane = LaneSpec {
             producer,
-            pool: encoder.pool().clone(),
+            pool,
+            backend,
             width: config.width,
             height: config.height,
         }
         .open()?;
         let frame_rate = config.frame_rate;
-        let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
+        let submit = thread::spawn(move || submit_loop(kept, encoder, consumer, sink, frame_rate));
         Ok(Pipeline { lane, submit })
     }
 

@@ -70,8 +70,7 @@ impl Project {
     /// Opens `root` and reads `vrf.lock.json` if the project has one.
     pub fn open(root: impl AsRef<Path>, mode: Mode) -> Result<Project> {
         let root = root.as_ref();
-        let root = root
-            .canonicalize()
+        let root = crate::canonical(root)
             .with_context(|| format!("project directory {} does not exist", root.display()))?;
         let lock = match fs::read(root.join(LOCK_FILE)) {
             Ok(bytes) => {

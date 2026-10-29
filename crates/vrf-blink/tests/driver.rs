@@ -6,10 +6,11 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
-use objc2_io_surface::IOSurfaceLockOptions;
-use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url};
+use support::{
+    HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url, pixel,
+};
 use vrf_blink::driver::{Capture, Config, Pipeline, Plan, Stats, Summary, render, render_runs};
-use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
+use vrf_blink::{Mode, Project, Ui, View, calibration};
 use vrf_encode::{Codec, Rational};
 
 const FRAME_RATE: Rational = Rational::new(30, 1);
@@ -193,18 +194,6 @@ fn pages() -> Result<Project> {
     )
 }
 
-fn pixel(paint: &Paint, x: usize, y: usize) -> [u8; 3] {
-    let surface = &paint.surface;
-    let options = IOSurfaceLockOptions::ReadOnly;
-    unsafe { surface.lock(options, std::ptr::null_mut()) };
-    let base = surface.base_address().as_ptr() as *const u8;
-    let bgra =
-        unsafe { std::slice::from_raw_parts(base.add(y * surface.bytes_per_row() + x * 4), 4) };
-    let rgb = [bgra[2], bgra[1], bgra[0]];
-    unsafe { surface.unlock(options, std::ptr::null_mut()) };
-    rgb
-}
-
 fn ticking_view_delivers_every_begin_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let mut view = View::open_project(
@@ -263,7 +252,7 @@ fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
                 (WIDTH as usize - 1, 0),
                 (WIDTH as usize / 2, HEIGHT as usize / 2),
             ] {
-                let got = pixel(&paint, x, y);
+                let got = pixel(&paint, x, y)?;
                 ensure!(
                     got == want,
                     "level {level}: pixel ({x}, {y}) is {got:?}, expected {want:?}"
@@ -274,12 +263,20 @@ fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+#[cfg(target_os = "macos")]
+const DETERMINISTIC: (Codec, &str) = (Codec::ProRes422, "mov");
+#[cfg(windows)]
+const DETERMINISTIC: (Codec, &str) = (Codec::H264, "mp4");
+
 fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let project = pages()?;
-    let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+    let config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, 96);
     let mut files = Vec::new();
     for views in [1, 2, 4, 8] {
-        let out = std::env::temp_dir().join(format!("vrf-blink-parallel-{views}.mov"));
+        let out = std::env::temp_dir().join(format!(
+            "vrf-blink-parallel-{views}.{}",
+            DETERMINISTIC.1
+        ));
         let runs = render_runs(
             &config,
             Plan::new(views, 7),

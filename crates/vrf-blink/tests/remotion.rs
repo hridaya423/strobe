@@ -136,7 +136,7 @@ fn reference_mode_pixels_equal_remotion_still(ui: &Ui) -> Result<()> {
         let paint = view
             .recv_paint(Duration::from_secs(5))
             .context("no delivery")?;
-        let texture = gpu.import_iosurface(&paint.surface, 0, paint.format)?;
+        let texture = support::import(&gpu, &paint)?;
         let ours = score::Rgb8 {
             width: 320,
             height: 180,

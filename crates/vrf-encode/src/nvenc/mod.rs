@@ -544,6 +544,19 @@ impl NvencEncoder {
     /// Opens an NVENC session on `device`. The device must be the one the frames are rendered
     /// on, because the pool textures are created on it.
     pub fn new(device: &ID3D12Device, config: EncoderConfig, options: Options) -> Result<Self> {
+        Self::with_pool_size(device, config, options, POOL_SIZE)
+    }
+
+    /// Like [`NvencEncoder::new`], with `pool_size` input textures instead of [`POOL_SIZE`]. The
+    /// output ring keeps its depth: it bounds the frames inside the encoder, not the ones waiting
+    /// for it.
+    pub fn with_pool_size(
+        device: &ID3D12Device,
+        config: EncoderConfig,
+        options: Options,
+        pool_size: usize,
+    ) -> Result<Self> {
+        ensure!(pool_size > 0, "the pool needs at least one texture");
         ensure!(
             !config.ten_bit || matches!(config.codec, Codec::Hevc | Codec::Av1),
             "ten_bit is only supported for HEVC and AV1"
@@ -626,6 +639,7 @@ impl NvencEncoder {
             config.width,
             config.height,
             format,
+            pool_size,
         )?;
 
         let bytes = if config.ten_bit { 2 } else { 1 };

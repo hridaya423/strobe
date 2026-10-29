@@ -14,6 +14,7 @@ use objc2::runtime::ProtocolObject;
 #[cfg(target_os = "macos")]
 use objc2_metal::MTLDevice;
 
+#[derive(Clone)]
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,

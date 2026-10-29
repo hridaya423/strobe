@@ -1,13 +1,16 @@
-use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use cef::{rc::Rc as _, *};
+#[cfg(target_os = "macos")]
 use objc2_core_foundation::CFRetained;
+#[cfg(target_os = "macos")]
 use objc2_io_surface::IOSurfaceRef;
 use vrf::colour;
+#[cfg(windows)]
+use vrf::gpu::d3d12::SharedHandle;
 
 use crate::app::{OnUi, Ui};
 use crate::scheme::Project;
@@ -26,10 +29,26 @@ const GENERIC_FONTS: [&str; 4] = ["Times New Roman", "Arial", "Script", "Impact"
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_os = "macos")]
+pub type Surface = CFRetained<IOSurfaceRef>;
+#[cfg(windows)]
+pub type Surface = SharedHandle;
+
+#[cfg(target_os = "macos")]
+fn surface_of(info: &AcceleratedPaintInfo) -> Option<Surface> {
+    let surface = std::ptr::NonNull::new(info.shared_texture_io_surface.cast::<IOSurfaceRef>())?;
+    Some(unsafe { CFRetained::retain(surface) })
+}
+
+#[cfg(windows)]
+fn surface_of(info: &AcceleratedPaintInfo) -> Option<Surface> {
+    unsafe { SharedHandle::duplicate(info.shared_texture_handle) }.ok()
+}
+
 /// One `OnAcceleratedPaint`. The surface is retained, so it outlives the callback, and CEF
 /// draws nothing new into it until the next begin frame.
 pub struct Paint {
-    pub surface: CFRetained<IOSurfaceRef>,
+    pub surface: Surface,
     pub format: wgpu::TextureFormat,
     pub visible: colour::Rect,
     pub counter: u64,
@@ -95,7 +114,7 @@ wrap_render_handler! {
             if type_ != PaintElementType::default() {
                 return;
             }
-            let Some(surface) = NonNull::new(info.shared_texture_io_surface.cast::<IOSurfaceRef>()) else {
+            let Some(surface) = surface_of(info) else {
                 return;
             };
             let raw: sys::cef_color_type_t = *info.format.as_ref();
@@ -106,7 +125,7 @@ wrap_render_handler! {
             };
             let visible = &info.extra.visible_rect;
             let _ = self.paints.send(Paint {
-                surface: unsafe { CFRetained::retain(surface) },
+                surface,
                 format,
                 visible: colour::Rect {
                     x: visible.x as u32,

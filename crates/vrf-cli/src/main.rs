@@ -74,6 +74,8 @@ enum CodecArg {
     H264,
     Hevc,
     Prores,
+    #[cfg(windows)]
+    Av1,
 }
 
 impl From<CodecArg> for Codec {
@@ -82,6 +84,8 @@ impl From<CodecArg> for Codec {
             CodecArg::H264 => Codec::H264,
             CodecArg::Hevc => Codec::Hevc,
             CodecArg::Prores => Codec::ProRes422,
+            #[cfg(windows)]
+            CodecArg::Av1 => Codec::Av1,
         }
     }
 }

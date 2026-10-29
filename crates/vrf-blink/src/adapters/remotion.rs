@@ -236,8 +236,7 @@ fn input_hash(project: &Path, entry: &Path) -> Result<String> {
 /// cached under `VRF_CACHE_DIR` (default: the system temp dir) by a hash of the project's files,
 /// the entry, the bundler version and the bundling script.
 pub fn bundle(project: &Path, entry: Option<&Path>) -> Result<Bundle> {
-    let project = project
-        .canonicalize()
+    let project = crate::canonical(project)
         .with_context(|| format!("project directory {} does not exist", project.display()))?;
     let entry = match entry {
         Some(entry) => entry.to_owned(),
@@ -446,7 +445,7 @@ pub fn render(
     let bundle = bundle(&options.project, options.entry.as_deref())?;
     let bundle_s = step.elapsed();
     let step = Instant::now();
-    let offthread = Offthread::start(&options.project.canonicalize()?, &bundle.dir)?;
+    let offthread = Offthread::start(&crate::canonical(&options.project)?, &bundle.dir)?;
     let offthread_s = step.elapsed();
     let page = Page::new(
         Project::open(&bundle.dir, options.mode)?,

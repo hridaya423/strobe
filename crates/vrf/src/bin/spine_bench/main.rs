@@ -1,10 +1,17 @@
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(windows)]
+mod win;
 
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
     mac::main()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn main() -> anyhow::Result<()> {
+    win::main()
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn main() {}

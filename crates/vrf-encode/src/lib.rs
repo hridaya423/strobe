@@ -150,6 +150,20 @@ pub enum EncoderFrame {
     D3d12(nvenc::PoolFrame),
 }
 
+#[cfg(target_os = "macos")]
+impl From<videotoolbox::pool::PoolBuffer> for EncoderFrame {
+    fn from(buffer: videotoolbox::pool::PoolBuffer) -> Self {
+        EncoderFrame::PixelBuffer(buffer)
+    }
+}
+
+#[cfg(windows)]
+impl From<nvenc::PoolFrame> for EncoderFrame {
+    fn from(frame: nvenc::PoolFrame) -> Self {
+        EncoderFrame::D3d12(frame)
+    }
+}
+
 /// Packets queue without bound until `drain`; the pixel-buffer pool bounds frames in flight.
 pub trait Encoder {
     fn submit(&mut self, frame: EncoderFrame, pts: Rational) -> Result<()>;

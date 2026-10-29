@@ -114,16 +114,12 @@ fn scratch(name: &str, cdn: &str) -> Result<PathBuf> {
 }
 
 fn sha256(path: &Path) -> Result<String> {
-    let output = Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(path)
-        .output()?;
-    ensure!(output.status.success(), "shasum failed");
-    Ok(String::from_utf8(output.stdout)?
-        .split_whitespace()
-        .next()
-        .context("no digest")?
-        .to_owned())
+    let digest = ring::digest::digest(&ring::digest::SHA256, &fs::read(path)?);
+    Ok(digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn lock(dir: &Path) -> Result<Value> {
