@@ -1,0 +1,8 @@
+framework = "hyperframes"
+source = "synth-static-hf"
+entry = "index.html"
+width = 1920
+height = 1080
+fps = 30
+frames = 300
+stresses = ["static hold", "unchanged frames"]

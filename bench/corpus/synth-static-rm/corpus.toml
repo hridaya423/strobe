@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/static/index.tsx"
+composition = "static"
+width = 1920
+height = 1080
+fps = 30
+frames = 300
+stresses = ["static hold", "unchanged frames"]

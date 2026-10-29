@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/res4k/index.tsx"
+composition = "res4k"
+width = 3840
+height = 2160
+fps = 30
+frames = 90
+stresses = ["resolution 4K", "DOM", "box-shadow"]

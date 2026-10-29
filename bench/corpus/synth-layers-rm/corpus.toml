@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/layers/index.tsx"
+composition = "layers"
+width = 1920
+height = 1080
+fps = 30
+frames = 150
+stresses = ["many layers", "blur", "box-shadow", "drop-shadow"]

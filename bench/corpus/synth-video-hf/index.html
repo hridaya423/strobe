@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>synth-video</title>
+  <script src="assets/gsap.min.js"></script>
+  <style>
+    html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+    #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; font-family: Helvetica, Arial, sans-serif; }
+    #clip { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; object-fit: cover; }
+    #lower { position: absolute; left: 80px; bottom: 80px; padding: 24px 40px; background: rgba(10, 14, 30, 0.8); border-left: 10px solid #6ea8ff; color: #f4f6ff; font-size: 56px; font-weight: 700; }
+    .chip { position: absolute; top: 60px; width: 120px; height: 120px; border-radius: 50%; mix-blend-mode: normal; opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="5" data-width="1920" data-height="1080">
+    <video id="clip" class="clip" src="assets/video/clip.mp4" muted playsinline data-start="0" data-duration="5" data-track-index="0"></video>
+    <div id="lower">Video under overlays</div>
+    <div class="chip" style="left: 1500px; background: #ff6b6b"></div>
+    <div class="chip" style="left: 1640px; background: #ffd166"></div>
+    <div class="chip" style="left: 1780px; background: #06d6a0"></div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#lower", { x: -900, opacity: 0 }, { x: 0, opacity: 1, duration: 0.7, ease: "power3.out" }, 0.3);
+    tl.to("#lower", { x: -900, opacity: 0, duration: 0.6, ease: "power3.in" }, 4.2);
+    document.querySelectorAll(".chip").forEach((chip, i) => {
+      tl.fromTo(chip, { y: -200, scale: 0.5 }, { y: 0, scale: 1, duration: 0.6, ease: "back.out(2)" }, 0.5 + i * 0.15);
+      tl.to(chip, { y: 700, rotation: 180, duration: 2.5, ease: "sine.inOut" }, 1.5 + i * 0.2);
+    });
+    window.__timelines = window.__timelines || {};
+    window.__timelines["main"] = tl;
+  </script>
+</body>
+</html>

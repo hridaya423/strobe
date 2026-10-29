@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/video/index.tsx"
+composition = "video"
+width = 1920
+height = 1080
+fps = 30
+frames = 150
+stresses = ["video", "h264 1080p", "overlays", "OffthreadVideo"]

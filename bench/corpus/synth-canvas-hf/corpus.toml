@@ -1,0 +1,8 @@
+framework = "hyperframes"
+source = "synth-canvas-hf"
+entry = "index.html"
+width = 1920
+height = 1080
+fps = 30
+frames = 150
+stresses = ["canvas 2D", "particles"]
