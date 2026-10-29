@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>html, body { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<script>
+function seek(i) {
+  const v = i % 256;
+  document.documentElement.style.background = `rgb(${v}, ${255 - v}, ${(v * 7) % 256})`;
+  document.documentElement.offsetHeight;
+  return Promise.resolve(i);
+}
+</script>
+</body>
+</html>
