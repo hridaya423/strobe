@@ -45,11 +45,12 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | B, C, D | Tasks 2.1 to 2.6 | merged |
 | E | win-pc build, spikes 6.6 (R6) and 6.7 (R7) | merged |
 | F | Tasks 3.1 and 3.2: `crates/vrf-blink` CEF bootstrap and the lock-step driver into the spine | merged |
+| J | Task 3.3: `vrf://project/` scheme handler, pinned remote deps, `--offline` | running (Sonnet 5.5, from `eb8f59c`) |
 | G | Task 3.6 page side: `crates/vrf-blink/js/clock.js`, tested in headless shell 156 | running (Sonnet 5.5, from `39343f0`) |
 | H | Task 3.4 page side: `crates/vrf-blink/js/hyperframes.js`, contract items 1 to 8 and 17 to 24, fidelity against REF | running (Sonnet 5.5, from `39343f0`) |
 | I | Task 3.5 page side: `crates/vrf-blink/js/remotion.js`, contract items 9 to 16, fidelity against REF | running (Sonnet 5.5, from `39343f0`) |
 
-G, H and I write only under `crates/vrf-blink/js/` and test against Chrome headless shell 156 (the same Chromium as CEF 156). Their Node tests move to Rust tests through CEF once F merges. Task 3.3 (scheme handler) and 3.7 (CLI, Gate B) wait for F.
+G, H and I write only under `crates/vrf-blink/js/` and test against Chrome headless shell 156 (the same Chromium as CEF 156). Their Node tests move to Rust tests through CEF once F merges. Task 3.7 (CLI, Gate B) waits for 3.3 to 3.6.
 
 Kept for the orchestrator: Task 0.6, the spine_bench HEVC re-run, and spikes 1.4, 1.8 and 1.9, which need an idle machine (load average under 2).
 - Noise floors so far: hf-figma-launch FLIP mean 0.00002 and max delta 4; hf-heygen-stripe FLIP mean 0.00018 and max delta 7. HyperFrames is not bit-identical run to run.
