@@ -37,6 +37,8 @@ struct Cfg {
     spin: bool,
     unchanged: bool,
     heavy: bool,
+    frame_rate: i32,
+    timer_1ms: bool,
 }
 
 impl Cfg {
@@ -56,6 +58,8 @@ impl Cfg {
             spin: false,
             unchanged: false,
             heavy: false,
+            frame_rate: 1000,
+            timer_1ms: false,
         };
         let mut it = std::env::args().skip(1);
         while let Some(a) = it.next() {
@@ -88,6 +92,8 @@ impl Cfg {
                 "--unchanged" => c.unchanged = true,
                 "--heavy" => c.heavy = true,
                 "--adapter" => c.adapter = Some(val()),
+                "--frame-rate" => c.frame_rate = val().parse().unwrap(),
+                "--timer-1ms" => c.timer_1ms = true,
                 _ => {}
             }
         }
@@ -629,11 +635,32 @@ fn run_burst(ctx: &Ctx, host: &BrowserHost) {
     cc.print();
 }
 
+fn set_nt_timer_resolution(units: u32) {
+    type SetTimerResolution = unsafe extern "system" fn(u32, u8, *mut u32) -> i32;
+    let mut current = 0u32;
+    unsafe {
+        let ntdll = libloading::Library::new("ntdll.dll").unwrap();
+        let set: libloading::Symbol<SetTimerResolution> = ntdll.get(b"NtSetTimerResolution").unwrap();
+        set(units, 1, &mut current);
+        std::mem::forget(ntdll);
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = Args::new();
     let cmd = args.as_cmd_line().unwrap();
     let is_browser = cmd.has_switch(Some(&"type".into())) != 1;
+    if let Ok(types) = std::env::var("VRF_TIMER_1MS") {
+        let kind = CefString::from(&cmd.switch_value(Some(&"type".into()))).to_string();
+        let kind = if kind.is_empty() { "browser".to_string() } else { kind };
+        if types == "all" || types.split(',').any(|t| t == kind) {
+            unsafe { windows::Win32::Media::timeBeginPeriod(1) };
+            if let Ok(units) = std::env::var("VRF_TIMER_100NS") {
+                set_nt_timer_resolution(units.parse().unwrap());
+            }
+        }
+    }
     let ready = Rc::new(Cell::new(false));
     let mut app = AppBuilder::new(AppState(ready.clone()));
     let ret = execute_process(
@@ -647,6 +674,13 @@ fn main() -> std::process::ExitCode {
     assert_eq!(ret, -1, "execute_process in browser process");
 
     let cfg = Cfg::parse();
+    if cfg.timer_1ms {
+        unsafe { windows::Win32::Media::timeBeginPeriod(1) };
+    }
+    println!(
+        "timing: windowless_frame_rate={} timer_1ms={}",
+        cfg.frame_rate, cfg.timer_1ms
+    );
     let gpu = Gpu::new(cfg.width, cfg.height, cfg.adapter.as_deref(), cfg.spin);
     let ctx: Ctx = Rc::new(Shared {
         cfg: cfg.clone(),
@@ -705,7 +739,7 @@ fn main() -> std::process::ExitCode {
         ..Default::default()
     };
     let browser_settings = BrowserSettings {
-        windowless_frame_rate: 1000,
+        windowless_frame_rate: cfg.frame_rate,
         background_color: 0xFFFF_FFFF,
         ..Default::default()
     };

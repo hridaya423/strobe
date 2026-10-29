@@ -21,6 +21,7 @@ features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Media",
     "Win32_Security",
     "Win32_System_Threading",
 ]
