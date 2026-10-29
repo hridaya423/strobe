@@ -358,3 +358,28 @@ fn ten_bit_is_rejected_outside_hevc() {
     let error = VideoToolboxEncoder::new(config).err().unwrap();
     assert!(error.to_string().contains("ten_bit"), "{error}");
 }
+
+#[test]
+fn a_caller_that_drains_only_at_the_end_does_not_deadlock() {
+    let _engine = engine();
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        eprintln!("deadlock: 300 undrained frames did not finish within 60 s");
+        std::process::exit(1);
+    });
+    let config = config(Codec::H264, Rational::new(30, 1));
+    let mut encoder = VideoToolboxEncoder::new(config).unwrap();
+    for index in 0..300 {
+        let buffer = encoder.pool().acquire().unwrap();
+        fill(&buffer, index % 70, false);
+        encoder
+            .submit(
+                EncoderFrame::PixelBuffer(buffer),
+                Rational::new(index as i64, 30),
+            )
+            .unwrap();
+    }
+    let packets = encoder.flush().unwrap();
+    assert_eq!(packets.len(), 300);
+    encoder.finish().unwrap();
+}

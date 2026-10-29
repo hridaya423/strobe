@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 use std::ptr::{NonNull, null, null_mut};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -37,9 +37,7 @@ use crate::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Rational, Strea
 
 pub mod pool;
 
-use pool::{POOL_SIZE, PixelFormat, PixelPool};
-
-const QUEUE_CAPACITY: usize = 4 * POOL_SIZE;
+use pool::{PixelFormat, PixelPool};
 
 static SHARED_ENGINE_SESSIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -51,7 +49,7 @@ pub struct Capabilities {
 
 struct Shared {
     codec: Codec,
-    sender: SyncSender<Packet>,
+    sender: Sender<Packet>,
     config: OnceLock<Vec<u8>>,
     error: OnceLock<String>,
 }
@@ -363,7 +361,7 @@ impl VideoToolboxEncoder {
             config.frame_rate.num > 0 && config.frame_rate.den > 0,
             "frame rate must be positive"
         );
-        let (sender, receiver) = sync_channel(QUEUE_CAPACITY);
+        let (sender, receiver) = channel();
         let shared = Arc::new(Shared {
             codec: config.codec,
             sender,

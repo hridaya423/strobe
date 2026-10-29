@@ -99,8 +99,7 @@ pub enum EncoderFrame {
     PixelBuffer(videotoolbox::pool::PoolBuffer),
 }
 
-/// Call `drain` at least once per submitted frame. The packet queue is
-/// bounded, and an encoder whose queue is full stops taking frames.
+/// Packets queue without bound until `drain`; the pixel-buffer pool bounds frames in flight.
 pub trait Encoder {
     fn submit(&mut self, frame: EncoderFrame, pts: Rational) -> Result<()>;
 
