@@ -127,10 +127,20 @@
   let compositionId = null;
   let queue = Promise.resolve();
 
+  const registered = async (id) => {
+    for (let turn = 0; turn < 200; turn++) {
+      try {
+        if (window.remotion_getCompositionNames().includes(id)) return;
+      } catch {}
+      await macrotask();
+    }
+  };
+
   const init = async ({ compositionId: id }) => {
     if (compositionId !== null) throw new Error('init() runs once per page: the bundle keeps the first composition, load a new page for another one');
     window.remotion_setBundleMode({ type: 'evaluation' });
     await waitReady(null);
+    await registered(id);
     const resolved = await window.remotion_calculateComposition(id);
     window.remotion_setBundleMode({
       type: 'composition',

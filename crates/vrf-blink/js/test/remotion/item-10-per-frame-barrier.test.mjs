@@ -85,6 +85,22 @@ describe('item_10_per_frame_barrier', () => {
         assert.equal(evaluates, 1);
       });
 
+      test('the barrier holds when animation frames are flushed immediately', async () => {
+        const other = await launch(bundleFixture(version, 'barrier'), { width: 64, height: 64 });
+        try {
+          await other.page.eval(`window.__raf = 0; window.requestAnimationFrame = (cb) => { window.__raf += 1; Promise.resolve().then(() => cb(performance.now())); return 1; }`);
+          await other.page.eval(`__vrf.rm.init({ compositionId: 'Passive' })`);
+          for (const frame of [4, 1, 9, 2, 15]) {
+            await seek(other.page, frame);
+            assert.equal(await other.page.eval(`document.querySelector('[data-n]').dataset.n`), '2', `frame ${frame} complete`);
+            assert.equal(await other.page.eval(`document.querySelector('[data-n]').dataset.frame`), String(frame));
+          }
+          assert.ok((await other.page.eval('window.__raf')) > 0, 'the page used the replaced requestAnimationFrame');
+        } finally {
+          await other.close();
+        }
+      });
+
       for (const [composition, check] of [
         [
           'Fonts',

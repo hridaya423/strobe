@@ -1,5 +1,5 @@
 import React from 'react';
-import { Composition, registerRoot, Sequence, OffthreadVideo, Loop } from 'remotion';
+import { Composition, registerRoot, Sequence, OffthreadVideo, Loop, Freeze } from 'remotion';
 
 const SRC = 'http://assets.invalid/clip.mp4';
 
@@ -29,11 +29,21 @@ const Looped = () => (
   </Loop>
 );
 
+const Frozen = () => (
+  <Freeze frame={-3}>
+    <OffthreadVideo src={SRC} />
+  </Freeze>
+);
+
+const Alpha = () => <OffthreadVideo src={SRC} transparent />;
+
 const Root = () => (
   <>
     <Composition id="Rates" component={Rates} width={64} height={64} fps={30} durationInFrames={90} />
     <Composition id="Negative" component={Negative} width={64} height={64} fps={30} durationInFrames={40} />
     <Composition id="Looped" component={Looped} width={64} height={64} fps={30} durationInFrames={40} />
+    <Composition id="Frozen" component={Frozen} width={64} height={64} fps={30} durationInFrames={40} />
+    <Composition id="Alpha" component={Alpha} width={64} height={64} fps={30} durationInFrames={40} />
   </>
 );
 

@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { Composition, registerRoot, useCurrentFrame, delayRender, continueRender, cancelRender } from 'remotion';
 
 window.__log = [];
@@ -26,6 +26,28 @@ const Barrier = () => {
   return (
     <div data-frame={frame} data-done={done} style={{ width: '100%', height: '100%', background: done === DELAYS.length ? 'rgb(0, 200, 0)' : 'rgb(200, 0, 0)' }} />
   );
+};
+
+const Passive = () => {
+  const frame = useCurrentFrame();
+  const [stage, setStage] = useState({ frame, n: 0 });
+  const n = stage.frame === frame ? stage.n : 0;
+  useEffect(() => {
+    const handle = delayRender(`passive-${frame}`);
+    setTimeout(() => {
+      setStage({ frame, n: 1 });
+      continueRender(handle);
+    }, 20);
+  }, [frame]);
+  useEffect(() => {
+    if (n !== 1) return;
+    const handle = delayRender(`passive-second-${frame}`);
+    setTimeout(() => {
+      setStage({ frame, n: 2 });
+      continueRender(handle);
+    }, 20);
+  }, [n, frame]);
+  return <div data-frame={frame} data-n={n} />;
 };
 
 const Fonts = () => {
@@ -87,6 +109,7 @@ const Cancel = () => {
 const Root = () => (
   <>
     <Composition id="Barrier" component={Barrier} width={64} height={64} fps={30} durationInFrames={20} />
+    <Composition id="Passive" component={Passive} width={64} height={64} fps={30} durationInFrames={20} />
     <Composition id="Fonts" component={Fonts} width={200} height={60} fps={30} durationInFrames={20} />
     <Composition id="Images" component={Images} width={64} height={64} fps={30} durationInFrames={20} />
     <Composition id="Never" component={Never} width={64} height={64} fps={30} durationInFrames={20} />
