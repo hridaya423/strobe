@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; overflow: hidden; background: #fff; }
+#g { position: absolute; inset: 0; background: linear-gradient(115deg, #ff3d00, #ffd600 30%, #00e5ff 60%, #651fff); background-size: 300% 300%; }
+#t { position: absolute; left: 5%; top: 30%; font: 700 12vw/1 sans-serif; color: #fff; text-shadow: 0 1vw 3vw rgba(0,0,0,.5); }
+</style>
+<div id="g"></div>
+<div id="t">frame</div>
+<script>
+window.seek = (i) => {
+  document.getElementById('g').style.backgroundPosition = `${(i * 7) % 300}% ${(i * 3) % 300}%`;
+  document.getElementById('t').textContent = 'frame ' + i;
+  return Promise.resolve(i);
+};
+</script>
