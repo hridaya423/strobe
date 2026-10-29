@@ -96,14 +96,18 @@ fn decode(file: &Path) -> Vec<f32> {
         String::from_utf8_lossy(&out.stderr)
     );
     out.stdout
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
 
 fn onset(stereo: &[f32], threshold: f32) -> usize {
     stereo
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .position(|f| f[0].abs() > threshold)
         .unwrap()
 }
@@ -471,7 +475,11 @@ struct Row {
 }
 
 fn first_sound(stereo: &[f32], threshold: f32) -> Option<usize> {
-    stereo.chunks_exact(2).position(|f| f[0].abs() > threshold)
+    stereo
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .position(|f| f[0].abs() > threshold)
 }
 
 fn best_lag(ours: &[f32], reference: &[f32], reach: i64) -> i64 {

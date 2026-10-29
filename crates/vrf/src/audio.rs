@@ -63,7 +63,7 @@ pub fn mix(clips: &[Clip], length: u64) -> Result<Vec<f32>> {
     let mut out = vec![0.0f32; length as usize * 2];
     for clip in clips {
         let pcm = decode(clip).with_context(|| format!("decoding {:?}", clip.src))?;
-        for (n, frame) in pcm.chunks_exact(2).enumerate() {
+        for (n, frame) in pcm.as_chunks::<2>().0.iter().enumerate() {
             let at = clip.start as usize + n;
             if at >= length as usize {
                 break;
@@ -150,8 +150,10 @@ fn decode(clip: &Clip) -> Result<Vec<f32>> {
     );
     let mut pcm: Vec<f32> = out
         .stdout
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect();
     if clip.looped && !pcm.is_empty() {
         let cycle = pcm.clone();
