@@ -524,8 +524,33 @@ fn render_fails_on_late_unpinned_request(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+fn layers_serve_what_the_first_root_lacks(ui: &Ui) -> Result<()> {
+    let base = scratch_root().join("layers");
+    let (top, rest) = (base.join("top"), base.join("rest"));
+    fs::create_dir_all(&top)?;
+    fs::create_dir_all(&rest)?;
+    fs::write(top.join("index.html"), "<!doctype html><title>top</title>")?;
+    fs::write(top.join("both.txt"), "top")?;
+    fs::write(rest.join("both.txt"), "rest")?;
+    fs::write(rest.join("only.txt"), "rest only")?;
+    let project = Project::open_layers(&top, &[rest], Mode::Offline)?;
+    let mut view = View::open_project(ui, &project, "index.html", 64, 64, None)?;
+    let fetched = view.evaluate(
+        "Promise.all(['both.txt', 'only.txt', 'missing.txt'].map(async (name) => { const r = await fetch(name); return r.ok ? await r.text() : r.status; }))",
+    )?;
+    ensure!(
+        fetched == json!(["top", "rest only", 404]),
+        "fetched {fetched}"
+    );
+    view.close()
+}
+
 fn main() -> ExitCode {
     let code = support::run(&[
+        (
+            "layers_serve_what_the_first_root_lacks",
+            layers_serve_what_the_first_root_lacks,
+        ),
         ("online_pins_and_renders", online_pins_and_renders),
         (
             "offline_serves_pinned_without_network",

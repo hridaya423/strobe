@@ -282,9 +282,10 @@ fn decode(path: &Path) -> Result<Decoder> {
         path.display()
     );
     let dims = String::from_utf8(probe.stdout)?;
-    let (w, h) = dims
-        .trim()
-        .split_once(',')
+    let mut sizes = dims.trim().split(',');
+    let (w, h) = sizes
+        .next()
+        .zip(sizes.next())
         .context("ffprobe printed no size")?;
     let (width, height): (u32, u32) = (w.parse()?, h.parse()?);
     let mut child = Command::new("ffmpeg")
