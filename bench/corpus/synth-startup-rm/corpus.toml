@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/startup/index.tsx"
+composition = "startup"
+width = 1920
+height = 1080
+fps = 30
+frames = 60
+stresses = ["startup", "short duration", "fixed overhead"]

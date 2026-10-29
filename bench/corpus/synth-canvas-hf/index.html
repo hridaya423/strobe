@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>synth-canvas</title>
+  <script src="assets/gsap.min.js"></script>
+  <style>
+    html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #05060d; }
+    #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+    canvas { position: absolute; left: 0; top: 0; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="5" data-width="1920" data-height="1080">
+    <canvas id="field" width="1920" height="1080"></canvas>
+  </div>
+  <script>
+    function rng(seed) {
+      return function () {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    const DURATION = 5;
+    const COUNT = 5000;
+    const ctx = document.getElementById("field").getContext("2d");
+    const random = rng(23);
+    const particles = [];
+    for (let i = 0; i < COUNT; i++) {
+      particles.push({
+        radius: 40 + random() * 520,
+        angle: random() * Math.PI * 2,
+        speed: (0.3 + random() * 0.9) * (random() < 0.5 ? -1 : 1),
+        wobble: random() * Math.PI * 2,
+        size: 4 + random() * 14,
+        hue: 190 + random() * 140,
+      });
+    }
+    const sprites = {};
+    function sprite(hue) {
+      const key = Math.round(hue / 10);
+      if (!sprites[key]) {
+        const c = document.createElement("canvas");
+        c.width = c.height = 32;
+        const g = c.getContext("2d");
+        const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+        grad.addColorStop(0, `hsla(${key * 10}, 90%, 70%, 1)`);
+        grad.addColorStop(1, `hsla(${key * 10}, 90%, 50%, 0)`);
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 32, 32);
+        sprites[key] = c;
+      }
+      return sprites[key];
+    }
+    function draw(t) {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#05060d";
+      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.globalCompositeOperation = "lighter";
+      for (const p of particles) {
+        const a = p.angle + p.speed * t;
+        const r = p.radius * (1 + 0.15 * Math.sin(t * 2 + p.wobble));
+        const x = 960 + Math.cos(a) * r * 1.5;
+        const y = 540 + Math.sin(a) * r * 0.9;
+        const s = p.size * (1 + 0.4 * Math.sin(t * 3 + p.wobble));
+        ctx.drawImage(sprite(p.hue), x - s, y - s, s * 2, s * 2);
+      }
+    }
+    window.addEventListener("hf-seek", (e) => draw(e.detail.time));
+    draw(0);
+    const tl = gsap.timeline({ paused: true });
+    tl.to({}, { duration: DURATION }, 0);
+    window.__timelines = window.__timelines || {};
+    window.__timelines["main"] = tl;
+  </script>
+</body>
+</html>

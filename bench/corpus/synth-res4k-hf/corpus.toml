@@ -1,0 +1,8 @@
+framework = "hyperframes"
+source = "synth-res4k-hf"
+entry = "index.html"
+width = 3840
+height = 2160
+fps = 30
+frames = 90
+stresses = ["resolution 4K", "DOM", "box-shadow"]

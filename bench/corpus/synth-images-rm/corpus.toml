@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/images/index.tsx"
+composition = "images"
+width = 1920
+height = 1080
+fps = 30
+frames = 150
+stresses = ["large images", "pan and scale"]

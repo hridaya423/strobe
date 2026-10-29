@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/canvas/index.tsx"
+composition = "canvas"
+width = 1920
+height = 1080
+fps = 30
+frames = 150
+stresses = ["canvas 2D", "particles"]

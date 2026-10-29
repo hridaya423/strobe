@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>synth-static</title>
+  <script src="assets/gsap.min.js"></script>
+  <style>
+    html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #f6f1e7; }
+    #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; font-family: Helvetica, Arial, sans-serif; }
+    #page { position: absolute; inset: 0; }
+    .panel { position: absolute; width: 280px; height: 150px; border-radius: 18px; background: linear-gradient(160deg, #fff, #e8dfcf); box-shadow: 0 14px 30px rgba(60, 40, 10, 0.25); }
+    #headline { position: absolute; left: 0; right: 0; top: 440px; text-align: center; font-size: 150px; font-weight: 700; color: #2b2118; text-shadow: 0 8px 24px rgba(60, 40, 10, 0.3); }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="10" data-width="1920" data-height="1080">
+    <div id="page">
+      <h1 id="headline">Holding still</h1>
+    </div>
+  </div>
+  <script>
+    const page = document.getElementById("page");
+    for (let i = 0; i < 70; i++) {
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      panel.style.left = 40 + (i % 7) * 270 + "px";
+      panel.style.top = 30 + Math.floor(i / 7) * 105 + "px";
+      page.insertBefore(panel, page.firstChild);
+    }
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#page", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, 0);
+    tl.fromTo("#headline", { y: 40 }, { y: 0, duration: 0.4, ease: "power3.out" }, 0);
+    tl.to("#page", { opacity: 0, duration: 0.4, ease: "power2.in" }, 9.6);
+    window.__timelines = window.__timelines || {};
+    window.__timelines["main"] = tl;
+  </script>
+</body>
+</html>

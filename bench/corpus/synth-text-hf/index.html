@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>synth-text</title>
+  <script src="assets/gsap.min.js"></script>
+  <style>
+    @font-face { font-family: "Synth Inter"; src: url("assets/fonts/inter-latin-800-normal.woff2"); font-weight: 800; }
+    @font-face { font-family: "Synth Grotesk"; src: url("assets/fonts/space-grotesk-latin-700-normal.woff2"); font-weight: 700; }
+    @font-face { font-family: "Synth Playfair"; src: url("assets/fonts/playfair-display-latin-800-normal.woff2"); font-weight: 800; }
+    @font-face { font-family: "Synth Mono"; src: url("assets/fonts/jetbrains-mono-latin-400-normal.woff2"); font-weight: 400; }
+    html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #f3efe6; }
+    #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; padding: 36px 90px; box-sizing: border-box; }
+    .line { display: block; white-space: nowrap; height: 84px; line-height: 84px; font-size: 68px; color: #14110f; }
+    .line.f0 { font-family: "Synth Inter", sans-serif; font-weight: 800; }
+    .line.f1 { font-family: "Synth Grotesk", sans-serif; font-weight: 700; color: #c2410c; }
+    .line.f2 { font-family: "Synth Playfair", serif; font-weight: 800; color: #1d4ed8; }
+    .line.f3 { font-family: "Synth Mono", monospace; font-weight: 400; color: #047857; }
+    .ch { display: inline-block; will-change: transform; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="5" data-width="1920" data-height="1080"></div>
+  <script>
+    const phrases = [
+      "Every frame is a function of time",
+      "Seek the page and read the pixels",
+      "Fonts decide where every glyph lands",
+      "Kinetic type moves one letter at a time",
+      "Layout is measured once then animated",
+      "Compositing is cheap when layers are few",
+      "Text raster is the cost nobody counts",
+      "Ligatures kerning and hinting all matter",
+      "Subpixel positions blur the stems",
+      "Stagger the letters and watch them settle",
+      "Deterministic output needs a fixed clock",
+      "Render the sentence then render the next",
+    ];
+    const root = document.getElementById("root");
+    const chars = [];
+    phrases.forEach((phrase, i) => {
+      const line = document.createElement("div");
+      line.className = "line f" + (i % 4);
+      for (const c of phrase) {
+        const span = document.createElement("span");
+        span.className = "ch";
+        span.innerHTML = c === " " ? "&nbsp;" : c;
+        line.appendChild(span);
+        chars.push({ span, line: i });
+      }
+      root.appendChild(line);
+    });
+    const tl = gsap.timeline({ paused: true });
+    chars.forEach(({ span, line }, k) => {
+      const at = line * 0.09 + (k % 40) * 0.012;
+      tl.fromTo(span, { y: 70, rotation: -18, opacity: 0, scale: 0.6 }, { y: 0, rotation: 0, opacity: 1, scale: 1, duration: 0.55, ease: "back.out(2)" }, at);
+      tl.to(span, { y: -40, opacity: 0, duration: 0.4, ease: "power2.in" }, 3.8 + line * 0.04 + (k % 40) * 0.006);
+    });
+    window.__timelines = window.__timelines || {};
+    window.__timelines["main"] = tl;
+  </script>
+</body>
+</html>

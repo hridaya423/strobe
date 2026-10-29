@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>synth-images</title>
+  <script src="assets/gsap.min.js"></script>
+  <style>
+    html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #111; }
+    #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+    .tile { position: absolute; width: 320px; height: 270px; overflow: hidden; }
+    .tile img { position: absolute; left: 0; top: 0; width: 2400px; height: 1600px; transform-origin: 0 0; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="5" data-width="1920" data-height="1080"></div>
+  <script>
+    const root = document.getElementById("root");
+    const tl = gsap.timeline({ paused: true });
+    for (let i = 0; i < 24; i++) {
+      const tile = document.createElement("div");
+      tile.className = "tile";
+      tile.style.left = (i % 6) * 320 + "px";
+      tile.style.top = Math.floor(i / 6) * 270 + "px";
+      const img = document.createElement("img");
+      img.src = `assets/images/photo-${(i % 6) + 1}.jpg`;
+      tile.appendChild(img);
+      root.appendChild(tile);
+      const base = 0.2 + (i % 3) * 0.03;
+      tl.fromTo(img, { scale: base, x: -(i * 37 % 150), y: -(i * 23 % 45) }, { scale: base * 2.2, x: -(i * 91 % 150), y: -(i * 53 % 45), duration: 5, ease: "sine.inOut" }, 0);
+    }
+    window.__timelines = window.__timelines || {};
+    window.__timelines["main"] = tl;
+  </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+framework = "hyperframes"
+source = "synth-res1080-hf"
+entry = "index.html"
+width = 1920
+height = 1080
+fps = 30
+frames = 90
+stresses = ["resolution 1080p", "DOM", "box-shadow"]

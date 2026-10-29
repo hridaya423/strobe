@@ -55,15 +55,28 @@ pub fn load(id: &str) -> Result<Corpus> {
     Ok(c)
 }
 
-pub fn select(spec: &str) -> Result<Vec<Corpus>> {
-    if spec != "all" {
-        return Ok(vec![load(spec)?]);
-    }
+pub const SYNTH_PREFIX: &str = "synth-";
+
+fn all_ids() -> Result<Vec<String>> {
     let mut ids: Vec<String> = std::fs::read_dir(bench_dir().join("corpus"))?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().join("corpus.toml").is_file())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     ids.sort();
-    ids.iter().map(|id| load(id)).collect()
+    Ok(ids)
+}
+
+pub fn select(spec: &str) -> Result<Vec<Corpus>> {
+    let keep: fn(&str) -> bool = match spec {
+        "all" => |_| true,
+        "synth" => |id| id.starts_with(SYNTH_PREFIX),
+        "launch" => |id| !id.starts_with(SYNTH_PREFIX),
+        _ => return Ok(vec![load(spec)?]),
+    };
+    all_ids()?
+        .iter()
+        .filter(|id| keep(id))
+        .map(|id| load(id))
+        .collect()
 }

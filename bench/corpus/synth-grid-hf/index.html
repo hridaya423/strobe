@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>synth-grid</title>
+  <script src="assets/gsap.min.js"></script>
+  <style>
+    @font-face { font-family: "Synth Mono"; src: url("assets/fonts/jetbrains-mono-latin-400-normal.woff2"); font-weight: 400; }
+    html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #0e1117; }
+    #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+    #grid { --cw: 64px; --ch: 36px; display: flex; flex-wrap: wrap; width: 1920px; font-family: "Synth Mono", monospace; font-size: 14px; color: #c9d1d9; }
+    .cell { box-sizing: border-box; width: var(--cw); height: var(--ch); padding: 4px 6px; border: 1px solid #21262d; overflow: hidden; white-space: nowrap; }
+    .cell:nth-child(7n) { background: #161b22; }
+    .cell:nth-child(11n) { color: #58a6ff; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="4" data-width="1920" data-height="1080">
+    <div id="grid"></div>
+  </div>
+  <script>
+    const grid = document.getElementById("grid");
+    for (let i = 0; i < 2400; i++) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      cell.textContent = String(i * 7919 % 100000).padStart(5, "0") + " ab";
+      grid.appendChild(cell);
+    }
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo(grid, { "--cw": "64px", "--ch": "36px" }, { "--cw": "180px", "--ch": "30px", duration: 2, ease: "sine.inOut" }, 0);
+    tl.to(grid, { "--cw": "96px", "--ch": "44px", duration: 2, ease: "sine.inOut" }, 2);
+    window.__timelines = window.__timelines || {};
+    window.__timelines["main"] = tl;
+  </script>
+</body>
+</html>

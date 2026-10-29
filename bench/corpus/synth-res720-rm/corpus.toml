@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "synth-remotion"
+entry = "src/res720/index.tsx"
+composition = "res720"
+width = 1280
+height = 720
+fps = 30
+frames = 90
+stresses = ["resolution 720p", "DOM", "box-shadow"]
