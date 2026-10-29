@@ -9,12 +9,11 @@ use vrf::gpu::metal::PoolTargets;
 use vrf::mux::{Container, Muxer};
 use vrf::sched::{self, Consumer, Submission};
 use vrf::sink::Sink;
+use vrf_encode::turbo::{TurboEncoder, TurboOptions};
 use vrf_encode::videotoolbox::VideoToolboxEncoder;
 use vrf_encode::videotoolbox::pool::PoolBuffer;
 use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
 
-const WIDTH: u32 = 1920;
-const HEIGHT: u32 = 1080;
 const FRAME_RATE: Rational = Rational::new(30, 1);
 const SOURCES: usize = 4;
 const WINDOW: usize = 32;
@@ -24,6 +23,9 @@ struct Args {
     codec: Codec,
     out: Option<PathBuf>,
     fresh_source: bool,
+    width: u32,
+    height: u32,
+    turbo: Option<TurboOptions>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -32,6 +34,9 @@ fn parse_args() -> Result<Args> {
         codec: Codec::H264,
         out: None,
         fresh_source: false,
+        width: 1920,
+        height: 1080,
+        turbo: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -41,11 +46,55 @@ fn parse_args() -> Result<Args> {
                 args.codec = match it.next().context("--codec needs a value")?.as_str() {
                     "h264" => Codec::H264,
                     "hevc" => Codec::Hevc,
+                    "prores" => Codec::ProRes422,
                     other => bail!("unknown codec {other}"),
                 }
             }
             "--out" => args.out = Some(it.next().context("--out needs a value")?.into()),
             "--fresh-source" => args.fresh_source = true,
+            "--size" => {
+                (args.width, args.height) =
+                    match it.next().context("--size needs a value")?.as_str() {
+                        "1080p" => (1920, 1080),
+                        "4k" => (3840, 2160),
+                        other => bail!("unknown size {other}"),
+                    }
+            }
+            "--turbo" => args.turbo = Some(TurboOptions::for_frame(args.width, args.height)),
+            "--chunk" => {
+                let chunk = it.next().context("--chunk needs a value")?.parse()?;
+                args.turbo
+                    .as_mut()
+                    .context("--chunk follows --turbo")?
+                    .chunk_frames = chunk;
+            }
+            "--x264-threads" => {
+                let threads = it.next().context("--x264-threads needs a value")?.parse()?;
+                args.turbo
+                    .as_mut()
+                    .context("--x264-threads follows --turbo")?
+                    .x264_threads = threads;
+            }
+            "--vt-headroom" => {
+                let headroom = it.next().context("--vt-headroom needs a value")?.parse()?;
+                args.turbo
+                    .as_mut()
+                    .context("--vt-headroom follows --turbo")?
+                    .vt_headroom = headroom;
+            }
+            "--no-cpu-lane" => {
+                args.turbo
+                    .as_mut()
+                    .context("--no-cpu-lane follows --turbo")?
+                    .cpu_lane = false
+            }
+            "--vt-sessions" => {
+                let sessions = it.next().context("--vt-sessions needs a value")?.parse()?;
+                args.turbo
+                    .as_mut()
+                    .context("--vt-sessions follows --turbo")?
+                    .vt_sessions = Some(sessions);
+            }
             other => bail!("unknown flag {other}"),
         }
     }
@@ -73,7 +122,7 @@ struct SubmitTimes {
 }
 
 fn submit_loop(
-    mut encoder: VideoToolboxEncoder,
+    encoder: &mut impl Encoder,
     mut consumer: Consumer<Finished>,
     device: wgpu::Device,
     mut sink: Sink,
@@ -94,24 +143,23 @@ fn submit_loop(
 
         let started = Instant::now();
         let packets = encoder.drain()?;
-        sink.write(&encoder, packets)?;
+        sink.write(encoder, packets)?;
         times.mux += started.elapsed();
     }
     let started = Instant::now();
     let packets = encoder.flush()?;
-    sink.write(&encoder, packets)?;
+    sink.write(encoder, packets)?;
     times.mux += started.elapsed();
     Ok((sink.into_muxer(), times))
 }
 
 pub fn main() -> Result<()> {
     let args = parse_args()?;
+    let (width, height) = (args.width, args.height);
     let gpu = Gpu::new()?;
     let converter = Converter::new(&gpu, Format::Nv12);
-    let mut config = EncoderConfig::new(args.codec, WIDTH, HEIGHT, FRAME_RATE);
+    let mut config = EncoderConfig::new(args.codec, width, height, FRAME_RATE);
     config.keyframe_interval = 240;
-    let encoder = VideoToolboxEncoder::new(config)?;
-    let pool = encoder.pool().clone();
 
     let render = gpu
         .device
@@ -151,8 +199,8 @@ pub fn main() -> Result<()> {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("source"),
                 size: wgpu::Extent3d {
-                    width: WIDTH,
-                    height: HEIGHT,
+                    width,
+                    height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -186,19 +234,42 @@ pub fn main() -> Result<()> {
     let rect = Rect {
         x: 0,
         y: 0,
-        width: WIDTH,
-        height: HEIGHT,
+        width,
+        height,
     };
 
     let out = args
         .out
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("spine_bench.mp4"));
-    let muxer = Muxer::create(&out, Container::Mp4, FRAME_RATE.num as u32)?;
+    let container = match args.codec {
+        Codec::ProRes422 => Container::Mov,
+        _ => Container::Mp4,
+    };
+    let muxer = Muxer::create(&out, container, FRAME_RATE.num as u32)?;
     let sink = Sink::new(muxer, FRAME_RATE.den as u32);
     let (producer, consumer) = sched::ordered::<Finished>(WINDOW);
     let submit_device = gpu.device.clone();
-    let submit = std::thread::spawn(move || submit_loop(encoder, consumer, submit_device, sink));
+    let (pool, submit) = match args.turbo {
+        Some(options) => {
+            let mut encoder = TurboEncoder::with_options(config, options)?;
+            let pool = encoder.pool().clone();
+            let submit = std::thread::spawn(move || {
+                let (muxer, times) = submit_loop(&mut encoder, consumer, submit_device, sink)?;
+                Ok::<_, anyhow::Error>((muxer, times, format!("{:?}", encoder.lane_stats())))
+            });
+            (pool, submit)
+        }
+        None => {
+            let mut encoder = VideoToolboxEncoder::new(config)?;
+            let pool = encoder.pool().clone();
+            let submit = std::thread::spawn(move || {
+                let (muxer, times) = submit_loop(&mut encoder, consumer, submit_device, sink)?;
+                Ok::<_, anyhow::Error>((muxer, times, String::new()))
+            });
+            (pool, submit)
+        }
+    };
 
     let (mut acquire, mut record, mut reorder) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
     let (user0, system0) = cpu_seconds();
@@ -224,7 +295,7 @@ pub fn main() -> Result<()> {
             pass.set_pipeline(&render);
             pass.set_bind_group(0, &render_groups[slot], &[]);
             pass.set_immediates(0, &(index as u32).to_ne_bytes());
-            pass.dispatch_workgroups(WIDTH / 8, HEIGHT / 8, 1);
+            pass.dispatch_workgroups(width / 8, height / 8, 1);
         }
         {
             let mut pass = commands.begin_compute_pass(&Default::default());
@@ -238,7 +309,7 @@ pub fn main() -> Result<()> {
         reorder += started.elapsed();
     }
     drop(producer);
-    let (muxer, times) = submit.join().expect("submit thread panicked")?;
+    let (muxer, times, lanes) = submit.join().expect("submit thread panicked")?;
     let elapsed = start.elapsed();
     let (user1, system1) = cpu_seconds();
 
@@ -254,8 +325,9 @@ pub fn main() -> Result<()> {
     let per_frame = |d: Duration| d.as_secs_f64() * 1000.0 / frames;
     let cpu = (user1 - user0) + (system1 - system0);
     println!(
-        "spine_bench {:?} {WIDTH}x{HEIGHT}: {} frames in {:.3} s = {:.1} fps",
+        "spine_bench {:?}{} {width}x{height}: {} frames in {:.3} s = {:.1} fps",
         args.codec,
+        if args.turbo.is_some() { " turbo" } else { "" },
         args.frames,
         elapsed.as_secs_f64(),
         frames / elapsed.as_secs_f64()
@@ -275,6 +347,9 @@ pub fn main() -> Result<()> {
         per_frame(times.encode),
         per_frame(times.mux)
     );
+    if !lanes.is_empty() {
+        println!("lanes: {lanes}");
+    }
     println!(
         "faststart: {:.1} ms for {:.1} MB",
         faststart.as_secs_f64() * 1000.0,

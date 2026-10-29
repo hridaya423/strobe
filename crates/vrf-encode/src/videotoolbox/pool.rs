@@ -44,6 +44,7 @@ type Dict = CFDictionary<CFString, CFType>;
 pub struct PixelPool {
     pool: CFRetained<CVPixelBufferPool>,
     threshold: CFRetained<Dict>,
+    size: usize,
 }
 
 /// A clone is another reference to the same buffer. The buffer returns to its pool when the
@@ -97,6 +98,16 @@ fn tag(buffer: &CVPixelBuffer) {
 
 impl PixelPool {
     pub fn new(width: usize, height: usize, format: PixelFormat) -> Result<Self> {
+        Self::with_size(width, height, format, POOL_SIZE)
+    }
+
+    /// A pool that hands out at most `size` buffers at once.
+    pub fn with_size(
+        width: usize,
+        height: usize,
+        format: PixelFormat,
+        size: usize,
+    ) -> Result<Self> {
         let format_number = CFNumber::new_i32(format.os_type() as i32);
         let (width, height) = (number(width), number(height));
         let iosurface_properties = Dict::empty();
@@ -119,9 +130,12 @@ impl PixelPool {
                 ],
             )
         };
-        let size = number(POOL_SIZE);
+        let count = number(size);
         let pool_attributes = unsafe {
-            Dict::from_slices(&[kCVPixelBufferPoolMinimumBufferCountKey], &[size.as_ref()])
+            Dict::from_slices(
+                &[kCVPixelBufferPoolMinimumBufferCountKey],
+                &[count.as_ref()],
+            )
         };
         let mut raw = null_mut();
         let status = unsafe {
@@ -142,15 +156,23 @@ impl PixelPool {
         let threshold = unsafe {
             Dict::from_slices(
                 &[kCVPixelBufferPoolAllocationThresholdKey],
-                &[size.as_ref()],
+                &[count.as_ref()],
             )
         };
-        let this = PixelPool { pool, threshold };
-        let warm = (0..POOL_SIZE)
+        let this = PixelPool {
+            pool,
+            threshold,
+            size,
+        };
+        let warm = (0..size)
             .map(|_| this.acquire())
             .collect::<Result<Vec<_>>>()?;
         drop(warm);
         Ok(this)
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
     }
 
     pub fn try_acquire(&self) -> Result<Option<PoolBuffer>> {

@@ -28,8 +28,8 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_RecommendedParallelizationLimit,
     kVTCompressionPropertyKey_RecommendedParallelizedSubdivisionMinimumFrameCount,
     kVTCompressionPropertyKey_TransferFunction, kVTCompressionPropertyKey_YCbCrMatrix,
-    kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_HEVC_Main_AutoLevel,
-    kVTProfileLevel_HEVC_Main10_AutoLevel,
+    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_High_AutoLevel,
+    kVTProfileLevel_HEVC_Main_AutoLevel, kVTProfileLevel_HEVC_Main10_AutoLevel,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 
@@ -358,6 +358,23 @@ unsafe extern "C-unwind" fn on_output(
 
 impl VideoToolboxEncoder {
     pub fn new(config: EncoderConfig) -> Result<Self> {
+        let format = if config.ten_bit {
+            PixelFormat::P010
+        } else {
+            PixelFormat::Nv12
+        };
+        let pool = PixelPool::new(config.width as usize, config.height as usize, format)?;
+        Self::with_pool(config, pool, None)
+    }
+
+    /// Encodes frames from `pool`, which must hold buffers of the config's size and format.
+    /// `session_limit` replaces the machine's `RecommendedParallelizationLimit` for the count of
+    /// open H.264 and HEVC sessions.
+    pub fn with_pool(
+        config: EncoderConfig,
+        pool: PixelPool,
+        session_limit: Option<usize>,
+    ) -> Result<Self> {
         ensure!(
             !config.ten_bit || config.codec == Codec::Hevc,
             "ten_bit is only supported for HEVC"
@@ -381,7 +398,7 @@ impl VideoToolboxEncoder {
         let slot = match config.codec {
             Codec::ProRes422 => None,
             _ => Some(
-                Slot::take(capabilities.parallelization_limit)
+                Slot::take(session_limit.unwrap_or(capabilities.parallelization_limit))
                     .inspect_err(|_| unsafe { session.invalidate() })?,
             ),
         };
@@ -389,12 +406,6 @@ impl VideoToolboxEncoder {
         status("preparing the session", unsafe {
             session.prepare_to_encode_frames()
         })?;
-        let format = if config.ten_bit {
-            PixelFormat::P010
-        } else {
-            PixelFormat::Nv12
-        };
-        let pool = PixelPool::new(config.width as usize, config.height as usize, format)?;
         let frame_duration = Rational::new(config.frame_rate.den, config.frame_rate.num);
         Ok(VideoToolboxEncoder {
             config,
@@ -433,21 +444,40 @@ fn cm_time(time: Rational) -> Result<CMTime> {
     Ok(unsafe { CMTime::new(time.num, time.den as i32) })
 }
 
-impl Encoder for VideoToolboxEncoder {
-    fn submit(&mut self, frame: EncoderFrame, pts: Rational) -> Result<()> {
+impl VideoToolboxEncoder {
+    /// Like [`Encoder::submit`], and starts a new closed GOP at this frame when `keyframe` is
+    /// set, whatever the frames before it were.
+    pub fn submit_keyframe(
+        &mut self,
+        frame: EncoderFrame,
+        pts: Rational,
+        keyframe: bool,
+    ) -> Result<()> {
         self.check()?;
         let EncoderFrame::PixelBuffer(buffer) = frame;
+        let force = keyframe.then(|| {
+            CFDictionary::<CFString, CFType>::from_slices(
+                &[unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }],
+                &[CFBoolean::new(true).as_ref()],
+            )
+        });
         let result = unsafe {
             self.session.encode_frame(
                 buffer.pixel_buffer(),
                 cm_time(pts)?,
                 cm_time(self.frame_duration)?,
-                None,
+                force.as_ref().map(|force| force.as_opaque()),
                 null_mut(),
                 null_mut(),
             )
         };
         status("encoding a frame", result)
+    }
+}
+
+impl Encoder for VideoToolboxEncoder {
+    fn submit(&mut self, frame: EncoderFrame, pts: Rational) -> Result<()> {
+        self.submit_keyframe(frame, pts, false)
     }
 
     fn drain(&mut self) -> Result<Vec<Packet>> {

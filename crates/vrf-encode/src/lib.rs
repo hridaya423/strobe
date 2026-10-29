@@ -1,13 +1,19 @@
 use anyhow::Result;
 
+#[cfg(target_os = "macos")]
+pub mod audiotoolbox;
+#[cfg(target_os = "macos")]
+mod avcc;
 #[cfg(any(windows, test))]
 mod bitstream;
 #[cfg(windows)]
 pub mod nvenc;
 #[cfg(target_os = "macos")]
-pub mod audiotoolbox;
+pub mod turbo;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
+#[cfg(target_os = "macos")]
+pub mod x264;
 
 pub const AAC_FRAME_SAMPLES: u32 = 1024;
 
@@ -72,6 +78,18 @@ impl Quality {
             Quality::Draft => 0.50,
             Quality::Balanced => 0.70,
             Quality::High => 0.85,
+        }
+    }
+
+    /// The libx264 `veryfast` CRF that scores within one VMAF point of this preset's
+    /// VideoToolbox encode, so the two lanes of a turbo encode look alike. VideoToolbox scores
+    /// higher than CRF 18 at the same quality setting (`02` §4); the values come from VMAF
+    /// sweeps of `crates/vrf/tests/turbo.rs` content and the two clips of `02`.
+    pub fn x264_crf(self) -> u32 {
+        match self {
+            Quality::Draft => 25,
+            Quality::Balanced => 16,
+            Quality::High => 13,
         }
     }
 }
