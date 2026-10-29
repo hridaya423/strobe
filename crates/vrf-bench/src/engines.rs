@@ -9,6 +9,8 @@ pub enum Engine {
     Kinetograph,
     #[value(name = "kinetograph-4")]
     Kinetograph4,
+    /// This repository's `vrf`, built with `cargo build --release -p vrf-cli`.
+    Vrf,
 }
 
 pub struct Invocation {
@@ -23,6 +25,7 @@ impl Engine {
             Engine::Remotion => "remotion",
             Engine::Kinetograph => "kinetograph",
             Engine::Kinetograph4 => "kinetograph-4",
+            Engine::Vrf => "vrf",
         }
     }
 
@@ -31,6 +34,7 @@ impl Engine {
             Engine::Hyperframes => "0.8.216",
             Engine::Remotion => "4.0.539",
             Engine::Kinetograph | Engine::Kinetograph4 => "0.2.5",
+            Engine::Vrf => env!("CARGO_PKG_VERSION"),
         }
     }
 
@@ -39,6 +43,7 @@ impl Engine {
             Engine::Hyperframes => framework == Framework::Hyperframes,
             Engine::Remotion => framework == Framework::Remotion,
             Engine::Kinetograph | Engine::Kinetograph4 => true,
+            Engine::Vrf => framework == Framework::Remotion,
         }
     }
 
@@ -73,6 +78,20 @@ impl Engine {
                     cwd: dir,
                 }
             }
+            Engine::Vrf => Invocation {
+                cwd: corpus.project_dir(),
+                argv: vec![
+                    s(vrf_binary()),
+                    "render".into(),
+                    s(corpus.project_dir()),
+                    "--composition".into(),
+                    corpus.composition.clone().unwrap_or_default(),
+                    "--entry".into(),
+                    s(corpus.entry.clone()),
+                    "-o".into(),
+                    out,
+                ],
+            },
             Engine::Kinetograph | Engine::Kinetograph4 => {
                 let workers = if self == Engine::Kinetograph {
                     "1"
@@ -98,6 +117,11 @@ impl Engine {
             }
         }
     }
+}
+
+pub fn vrf_binary() -> PathBuf {
+    let file = if cfg!(windows) { "vrf.exe" } else { "vrf" };
+    bench_dir().join("../target/release").join(file)
 }
 
 pub fn node_bin(dir: &Path, name: &str) -> PathBuf {

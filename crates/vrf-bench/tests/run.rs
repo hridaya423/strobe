@@ -17,3 +17,30 @@ fn rejects_a_failed_run() {
         include_str!("fixtures/hyperfine.json").replacen("\"exit_code\": 0", "\"exit_code\": 1", 1);
     assert!(Timing::from_hyperfine(&json).is_err());
 }
+
+#[test]
+fn vrf_engine_renders_remotion_projects_only() {
+    use vrf_bench::corpus::{Framework, load};
+    use vrf_bench::engines::Engine;
+
+    let remotion = load("rm-transitions-video").unwrap();
+    let hyperframes = load("hf-figma-launch").unwrap();
+    assert!(Engine::Vrf.supports(Framework::Remotion));
+    assert!(!Engine::Vrf.supports(Framework::Hyperframes));
+    let invocation = Engine::Vrf.invocation(&remotion, std::path::Path::new("/tmp/out.mp4"));
+    assert!(invocation.argv[0].ends_with("target/release/vrf"));
+    assert_eq!(
+        invocation.argv[1..],
+        [
+            "render".to_string(),
+            remotion.project_dir().display().to_string(),
+            "--composition".into(),
+            "Main".into(),
+            "--entry".into(),
+            "src/index.ts".into(),
+            "-o".into(),
+            "/tmp/out.mp4".into(),
+        ]
+    );
+    assert_eq!(hyperframes.framework, Framework::Hyperframes);
+}
