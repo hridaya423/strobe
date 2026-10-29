@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -17,6 +19,7 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const EVALUATE_TIMEOUT: Duration = Duration::from_secs(60);
 const SETTLE_DELIVERY: Duration = Duration::from_millis(60);
 const SETTLE_QUIET: Duration = Duration::from_millis(20);
+const BEGIN_FRAME_GAP: Duration = Duration::from_millis(1);
 const SETTLE_ROUNDS: usize = 10;
 const SETTLE_CLEAN: usize = 2;
 
@@ -215,6 +218,7 @@ pub struct View {
     next_id: i32,
     serial: u64,
     ticking: bool,
+    last_begin: Cell<Option<Instant>>,
 }
 
 impl View {
@@ -339,6 +343,7 @@ impl View {
             next_id: 1,
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             ticking: init_script.is_some(),
+            last_begin: Cell::new(None),
         };
         if let Some(source) = init_script.as_deref() {
             view.execute("Page.enable", serde_json::json!({}))?;
@@ -388,9 +393,16 @@ impl View {
         self.ticking
     }
 
+    /// Sends a begin frame, at least `BEGIN_FRAME_GAP` after the last one. Chromium's frame
+    /// capturer drops a frame that damages the page less than its 1 ms minimum capture period
+    /// after the previous capture, and the drop is silent.
     pub fn begin_frame(&self) -> Instant {
+        if let Some(last) = self.last_begin.get() {
+            thread::sleep(BEGIN_FRAME_GAP.saturating_sub(last.elapsed()));
+        }
         let host = self.host.clone();
         let sent = Instant::now();
+        self.last_begin.set(Some(sent));
         self.ui.post(move || host.0.send_external_begin_frame());
         sent
     }
