@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 cef = { version = "156.2.0", default-features = false, features = ["accelerated_osr"] }
 wgpu = "30"
+vrf = { path = "../../crates/vrf" }
 pollster = "0.4"
 nvidia-video-codec-sdk = { version = "0.4.0", features = ["ci-check"] }
 libloading = "0.9"

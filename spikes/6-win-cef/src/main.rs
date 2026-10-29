@@ -1,4 +1,5 @@
 mod gpu;
+mod vrf_import;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -19,6 +20,8 @@ enum Import {
     Cef,
     Raw,
     Deferred,
+    Vrf,
+    VrfCopy,
 }
 
 #[derive(Clone)]
@@ -77,6 +80,8 @@ impl Cfg {
                         "none" => Import::None,
                         "cef" => Import::Cef,
                         "deferred" => Import::Deferred,
+                        "vrf" => Import::Vrf,
+                        "vrf-copy" => Import::VrfCopy,
                         _ => Import::Raw,
                     }
                 }
@@ -108,12 +113,14 @@ struct Paint {
     texture: Option<wgpu::Texture>,
     raw: Option<RawTimings>,
     duplicate: Option<windows::Win32::Foundation::HANDLE>,
+    vrf_handle: Option<vrf::gpu::d3d12::SharedHandle>,
     error: Option<String>,
 }
 
 struct Shared {
     cfg: Cfg,
     gpu: Gpu,
+    vrf: Option<vrf_import::VrfImport>,
     loaded: Cell<bool>,
     acks: RefCell<Vec<(i32, bool, String)>>,
     paints: RefCell<Vec<Paint>>,
@@ -219,7 +226,8 @@ wrap_render_handler! {
                 return;
             }
             let ctx = &self.h.0;
-            let (mut texture, mut raw, mut error, mut duplicate) = (None, None, None, None);
+            let (mut texture, mut raw, mut error, mut duplicate, mut vrf_handle) =
+                (None, None, None, None, None);
             match ctx.cfg.import {
                 Import::None => {}
                 Import::Cef => match ctx.gpu.import_cef(info) {
@@ -230,6 +238,12 @@ wrap_render_handler! {
                     match ctx.gpu.import_raw(windows::Win32::Foundation::HANDLE(info.shared_texture_handle)) {
                         Ok(t) => raw = Some(t),
                         Err(e) => error = Some(e),
+                    }
+                }
+                Import::Vrf | Import::VrfCopy => {
+                    match unsafe { vrf::gpu::d3d12::SharedHandle::duplicate(info.shared_texture_handle) } {
+                        Ok(h) => vrf_handle = Some(h),
+                        Err(e) => error = Some(format!("{e:#}")),
                     }
                 }
                 Import::Deferred => match ctx.gpu.duplicate(info) {
@@ -246,6 +260,7 @@ wrap_render_handler! {
                 texture,
                 raw,
                 duplicate,
+                vrf_handle,
                 error,
             });
         }
@@ -428,6 +443,8 @@ fn run_lockstep(ctx: &Ctx, host: &BrowserHost) {
         (vec![], vec![], vec![], vec![]);
     let (mut submit_us, mut wait_us, mut release_us) = (vec![], vec![], vec![]);
     let mut deferred_us = vec![];
+    let (mut vrf_open, mut vrf_copy, mut vrf_convert, mut vrf_release) = (vec![], vec![], vec![], vec![]);
+    let (mut vrf_px, mut vrf_planes_bad) = (None, 0u64);
     let mut handles = std::collections::BTreeMap::<usize, u64>::new();
     let mut examples: Vec<String> = vec![];
     let started = Instant::now();
@@ -485,6 +502,24 @@ fn run_lockstep(ctx: &Ctx, host: &BrowserHost) {
             ctx.gpu.close(h);
             deferred_us.push(t.elapsed().as_secs_f64() * 1e6);
         }
+        if let Some(h) = first.vrf_handle.take() {
+            let t = Instant::now();
+            match ctx.vrf.as_ref().unwrap().process(
+                h,
+                Duration::from_micros(if std::env::var_os("VRF_DELAY").is_some() { (i % 7) as u64 * 300 } else { 0 }),
+            ) {
+                Ok(c) => {
+                    vrf_open.push(c.phases.open_us);
+                    vrf_copy.push(c.phases.copy_us);
+                    vrf_convert.push(c.phases.convert_us);
+                    vrf_release.push(c.phases.release_us);
+                    vrf_planes_bad += u64::from(!c.planes_ok);
+                    vrf_px = Some(c.centre);
+                }
+                Err(e) => first.error = Some(e),
+            }
+            deferred_us.push(t.elapsed().as_secs_f64() * 1e6);
+        }
         accepted += 1;
         strays += paints.len() as u64;
         cc.observe(first.capture_counter);
@@ -511,6 +546,7 @@ fn run_lockstep(ctx: &Ctx, host: &BrowserHost) {
             let px = match (&first.texture, cfg.import) {
                 (Some(t), Import::Cef) => Some(ctx.gpu.centre_wgpu(t)),
                 (None, Import::Raw | Import::Deferred) => Some(ctx.gpu.centre_raw()),
+                (None, Import::Vrf | Import::VrfCopy) => vrf_px,
                 _ => None,
             };
             if let Some(px) = px {
@@ -590,6 +626,22 @@ fn run_lockstep(ctx: &Ctx, host: &BrowserHost) {
             "distinct shared handle values over the run: {}",
             handles.len()
         );
+    }
+    if !vrf_open.is_empty() {
+        for (name, v) in [
+            ("open", &vrf_open),
+            ("copy", &vrf_copy),
+            ("convert", &vrf_convert),
+            ("release", &vrf_release),
+        ] {
+            let b: Vec<String> = v
+                .chunks(250)
+                .map(|c| format!("{:.0}", c.iter().sum::<f64>() / c.len() as f64))
+                .collect();
+            println!("  vrf_{name}_us mean per 250 frames: {}", b.join(" "));
+            summarize(&format!("  vrf_{name}_us"), v.clone());
+        }
+        println!("vrf converted planes differing from the oracle at the centre: {vrf_planes_bad}");
     }
     if !deferred_us.is_empty() {
         summarize(
@@ -682,9 +734,15 @@ fn main() -> std::process::ExitCode {
         cfg.frame_rate, cfg.timer_1ms
     );
     let gpu = Gpu::new(cfg.width, cfg.height, cfg.adapter.as_deref(), cfg.spin);
+    let vrf = match cfg.import {
+        Import::Vrf => Some(vrf_import::VrfImport::new(true)),
+        Import::VrfCopy => Some(vrf_import::VrfImport::new(false)),
+        _ => None,
+    };
     let ctx: Ctx = Rc::new(Shared {
         cfg: cfg.clone(),
         gpu,
+        vrf,
         loaded: Cell::new(false),
         acks: RefCell::new(vec![]),
         paints: RefCell::new(vec![]),
@@ -780,6 +838,8 @@ fn main() -> std::process::ExitCode {
             Import::Cef => "cef",
             Import::Raw => "raw",
             Import::Deferred => "deferred",
+            Import::Vrf => "vrf",
+            Import::VrfCopy => "vrf-copy",
         },
         cfg.frames,
         cfg.width,
