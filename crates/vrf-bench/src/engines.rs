@@ -43,7 +43,7 @@ impl Engine {
     }
 
     pub fn invocation(self, corpus: &Corpus, out: &Path) -> Invocation {
-        let bin = |name: &str| bench_dir().join("engines/node_modules/.bin").join(name);
+        let bin = |name: &str| node_bin(&bench_dir().join("engines"), name);
         let out = out.display().to_string();
         let s = |p: PathBuf| p.display().to_string();
         match self {
@@ -62,7 +62,7 @@ impl Engine {
                 let dir = corpus.project_dir();
                 Invocation {
                     argv: vec![
-                        s(dir.join("node_modules/.bin/remotion")),
+                        s(node_bin(&dir, "remotion")),
                         "render".into(),
                         corpus.entry.display().to_string(),
                         corpus.composition.clone().unwrap_or_default(),
@@ -98,6 +98,15 @@ impl Engine {
             }
         }
     }
+}
+
+pub fn node_bin(dir: &Path, name: &str) -> PathBuf {
+    let file = if cfg!(windows) {
+        format!("{name}.cmd")
+    } else {
+        name.to_string()
+    };
+    dir.join("node_modules/.bin").join(file)
 }
 
 pub fn headless_shell() -> PathBuf {

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/vrf", "crates/vrf-bench", "crates/vrf-encode"]
+exclude = ["spikes"]
 
 [workspace.package]
 edition = "2024"

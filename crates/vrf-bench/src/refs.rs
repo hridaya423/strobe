@@ -4,7 +4,7 @@ use std::process::Command;
 use anyhow::{Context, Result, ensure};
 
 use crate::corpus::{Corpus, Framework, bench_dir};
-use crate::engines::headless_shell;
+use crate::engines::{headless_shell, node_bin};
 use crate::score::{self, Report, Sampling, png_frames};
 
 pub fn build(c: &Corpus, keep: Sampling, out: &Path) -> Result<Report> {
@@ -38,8 +38,7 @@ fn render(c: &Corpus, keep: Sampling, dest: &Path) -> Result<()> {
         Framework::Hyperframes => (
             bench_dir().join("engines"),
             vec![
-                bench_dir()
-                    .join("engines/node_modules/.bin/hyperframes")
+                node_bin(&bench_dir().join("engines"), "hyperframes")
                     .display()
                     .to_string(),
                 "render".into(),
@@ -54,10 +53,7 @@ fn render(c: &Corpus, keep: Sampling, dest: &Path) -> Result<()> {
         Framework::Remotion => (
             c.project_dir(),
             vec![
-                c.project_dir()
-                    .join("node_modules/.bin/remotion")
-                    .display()
-                    .to_string(),
+                node_bin(&c.project_dir(), "remotion").display().to_string(),
                 "render".into(),
                 c.entry.display().to_string(),
                 c.composition.clone().unwrap_or_default(),

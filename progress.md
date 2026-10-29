@@ -11,7 +11,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | 3. Blink path on macOS, Gate B | not started | |
 | 4. Throughput, Gate C | not started | |
 | 5. Media | not started | |
-| 6. Windows and Linux | not started | |
+| 6. Windows and Linux | in progress | Windows spikes 6.6 and 6.7 done (`docs/spikes/6.6-win-begin-frame-delivery.md`, `6.7-win-d3d-import-nvenc.md`). Linux deferred |
 | 7. CEF patch set | not started | |
 | 8. Native fast path (gated) | not opened | |
 
@@ -37,17 +37,15 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 - Surprise: Remotion 4.0.169 and 4.0.60 use the system Google Chrome when present. All Remotion runs therefore pass `--browser-executable` with a pinned `chrome-headless-shell` 156.0.8078.73.
 - `metrics.py` computes tail fractions in float32, which counts some deltas of exactly 8 as over 8. The scorer uses integer deltas; see plan Task 0.4.
 
-## In flight (2026-10-29 15:05), Sonnet 5.5 delegates, one worktree each from `da09c99`
+## In flight
 
-| Agent | Scope |
-|---|---|
-| A | Phase 1 spikes 1.1, 1.2, 1.3, 1.5, 1.7, 1.10 on macOS (`spikes/01-cef-harness`) |
-| B | Tasks 2.1 and 2.2: IOSurface import, NV12/P010 convert, CPU oracle |
-| C | Task 2.4 and the pool half of 2.3: VideoToolbox encoder, `CVPixelBufferPool` (`crates/vrf-encode`) |
-| D | Tasks 2.5 and 2.6: MP4/MOV muxer, ordered scheduler |
-| E | win-pc: Rust toolchain, Windows build, spikes R6 (begin-frame delivery) and R7 (D3D import, NVENC) |
+| Agent | Scope | State |
+|---|---|---|
+| A | Phase 1 spikes 1.1, 1.2, 1.3, 1.5, 1.7, 1.10 on macOS (`spikes/01-cef-harness`) | running |
+| B, C, D | Tasks 2.1 to 2.6 | merged |
+| E | win-pc build, spikes 6.6 (R6) and 6.7 (R7) | merged |
 
-Kept for the orchestrator: Task 0.6 and spikes 1.8 and 1.9, which need an idle machine (load average under 2). Task 2.3's GPU half and 2.7 come after B and C merge.
+Kept for the orchestrator: Task 0.6, the spine_bench HEVC re-run, and spikes 1.4, 1.8 and 1.9, which need an idle machine (load average under 2).
 - Noise floors so far: hf-figma-launch FLIP mean 0.00002 and max delta 4; hf-heygen-stripe FLIP mean 0.00018 and max delta 7. HyperFrames is not bit-identical run to run.
 - Noise floors (HyperFrames, every 5th frame): figma FLIP 0.00002, max delta 4; stripe 0.00018, max delta 7; spacex 0.00001, max delta 1; hyperframes-launch worst 0.0132, max delta 13, on frames 485 to 495 only (the talking-head video at 16 s; the heatmap shows a faint uniform difference across the video region, so HyperFrames decodes the same source video frame slightly differently between runs). The other 296 frames average 0.00009. Gate rule to apply at Gates B and C: a frame passes if it meets the §2 bars or sits within its own noise floor plus margin, whichever is looser (contract item 25), because no engine can beat a reference that misses the bar against itself.
 - Surprise: Remotion's CLI rejects an image-sequence output path with a dot anywhere in it (this repo is under `~/.t3`). `refs` renders into the system temp folder and moves the kept frames.
@@ -55,3 +53,6 @@ Kept for the orchestrator: Task 0.6 and spikes 1.8 and 1.9, which need an idle m
 - Remotion noise floors: transitions-video FLIP 0.00002, max delta 46 (5 frames above 8); 4-0-trailer FLIP 0.00002, max delta 255 on single pixels in 16 frames; github-unwrapped worst FLIP 0.0025 and 0.39% of pixels over 8 at frames 1525 to 1600 (the rocket's edges move by a sub-pixel amount between runs; heatmap checked). Remotion is not bit-stable run to run either, so the per-frame noise-floor gate rule applies to it too.
 - Review of Task 2.4: the VideoToolbox output callback blocked on a bounded channel, so a caller that drained late deadlocked the pool. Reproduced with a 300-frame test (it hung), fixed with an unbounded channel, test passes. Accepted from the agent: `flush` added to the `Encoder` trait (call it before `finish`), a session counter capped at `RecommendedParallelizationLimit` (1 on this Mac), and H.264 High profile.
 - Review of Tasks 2.1 and 2.2, follow-ups for Task 2.3: (1) `Converter::encode` allocates a uniform buffer and a bind group per call; cache bind groups per pool IOSurface and pass the rect through a dynamic offset or immediates. (2) The shader loads each source pixel twice (luma, then chroma); share the loads if 2.7 shows the convert matters. (3) Odd visible sizes are rejected; contract item 1 says pad to even, so decide the pad (edge replicate or black) against REF. (4) The storage formats need `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`; check D3D12 and Vulkan support for `R8Uint`/`Rg8Uint` storage in Phase 6.
+- 2026-10-29: `win-pc` has an Intel UHD 770 iGPU beside the RTX 4070 Ti. Chromium picks the iGPU unless started with `--use-adapter-luid=<high>,<low>` or `--force-high-performance-gpu`. Windows work lives in `C:\Users\mukes\vrf` (synced with `git bundle`, no remote). Installed there: rustup with 1.99.1 (user level), `sharkdp.hyperfine` through winget, and `bench/engines` node modules. Build Tools 2022 and 2026, cmake, ninja, ffmpeg with NVENC and Node were already present.
+- Review of spikes 6.6 and 6.7 (agent E), merged. Accepted: lock-step begin frames are exact on Windows (9,300 frames, 0 mismatches); unchanged frames never call back, so Task 3.2 ships the watchdog from day one; Chromium needs `--use-adapter-luid` or it renders on the iGPU and `OpenSharedHandle` fails with `E_INVALIDARG`; deferred import (duplicate the handle in the callback, 6 µs, copy afterwards) for Task 6.1; NVENC through the SDK with D3D12 input for Task 6.2 (H.264 P1 714 fps, P4 510; HEVC P1 930; AV1 P1 993; two sessions about 2x). Not accepted as settled: (1) the 63 fps per-view lock-step cap (about 15 ms from begin frame to paint). The cause is unconfirmed, and `windowless_frame_rate` was fixed at 1000 in every run. Spike 1.4 (parallel views) and the macOS spike 1.1 decide whether Phase 7 needs a patch. (2) The import cost triples after about 250 frames, cause unknown. (3) HEVC P4 low latency (329 fps) runs slower than P4 high quality (476) and equals P7 low latency (327); that looks like a configuration error, so re-check it in Task 6.2 before using HEVC ceilings at a gate. (4) Deferred import is safe only while the loop is strictly lock-step; Task 6.1 adds a 5,000-frame readback test with an injected delay.
+- On Windows `vrf-bench run` gates on a 200 ms CPU-usage sample (usage times core count) instead of the 1-minute load average.
