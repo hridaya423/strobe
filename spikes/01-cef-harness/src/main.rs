@@ -1,5 +1,6 @@
 mod convert;
 mod s11;
+mod s110;
 mod s12;
 mod s13;
 mod s17;
@@ -76,6 +77,7 @@ fn main() -> ExitCode {
             h.close();
         }
         "1.1" => s11::run(&options),
+        "1.10" => s110::run(&options),
         "1.2" => s12::run(&options),
         "1.3" => s13::run(&options),
         "1.7" => s17::run(&options),
