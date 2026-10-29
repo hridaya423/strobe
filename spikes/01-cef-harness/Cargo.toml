@@ -10,6 +10,10 @@ publish = false
 name = "harness"
 path = "src/main.rs"
 
+[[bin]]
+name = "headless_ref"
+path = "src/bin/headless_ref.rs"
+
 [dependencies]
 cef = { version = "156.2.0", default-features = false, features = ["accelerated_osr"] }
 wgpu = "30"
