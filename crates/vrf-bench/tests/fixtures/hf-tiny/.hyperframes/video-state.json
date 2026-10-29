@@ -22,9 +22,9 @@
   },
   "renders": {
     "latest": {
-      "id": "b391404b-06d6-4b0d-a730-a12e2ee73e15",
-      "completedAt": 1793286788824,
-      "output": "/var/folders/w9/p_fpb3_x05n45_bt9_3wp5hw0000gn/T/vrf-refs-37936/run2-raw",
+      "id": "1bd63bb0-caad-4e16-ac05-bebf9bc458ec",
+      "completedAt": 1793286825804,
+      "output": "/var/folders/w9/p_fpb3_x05n45_bt9_3wp5hw0000gn/T/vrf-refs-hf-tiny-run2",
       "status": "completed",
       "revision": null
     },
