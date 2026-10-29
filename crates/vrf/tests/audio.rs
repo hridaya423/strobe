@@ -305,7 +305,7 @@ fn hyperframes_tracks(project: &Path) -> Vec<HyperframesTrack> {
         &[
             support("hyperframes-tracks.mjs").to_str().unwrap(),
             hyperframes_dir().to_str().unwrap(),
-            project.join("index.html").to_str().unwrap(),
+            project.to_str().unwrap(),
         ],
         project,
     )
