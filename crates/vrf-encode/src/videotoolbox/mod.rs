@@ -358,6 +358,11 @@ unsafe extern "C-unwind" fn on_output(
 
 impl VideoToolboxEncoder {
     pub fn new(config: EncoderConfig) -> Result<Self> {
+        Self::with_buffers(config, pool::POOL_SIZE)
+    }
+
+    /// Like [`VideoToolboxEncoder::new`], with a pool of `buffers` input buffers.
+    pub fn with_buffers(config: EncoderConfig, buffers: usize) -> Result<Self> {
         ensure!(
             !config.ten_bit || config.codec == Codec::Hevc,
             "ten_bit is only supported for HEVC"
@@ -394,7 +399,12 @@ impl VideoToolboxEncoder {
         } else {
             PixelFormat::Nv12
         };
-        let pool = PixelPool::new(config.width as usize, config.height as usize, format)?;
+        let pool = PixelPool::with_capacity(
+            config.width as usize,
+            config.height as usize,
+            format,
+            buffers,
+        )?;
         let frame_duration = Rational::new(config.frame_rate.den, config.frame_rate.num);
         Ok(VideoToolboxEncoder {
             config,

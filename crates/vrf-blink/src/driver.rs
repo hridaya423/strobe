@@ -22,6 +22,8 @@ use crate::{Paint, View};
 
 const WINDOW: usize = 32;
 const MAX_IMPORTS: usize = 16;
+const POOL_MARGIN: usize = 32;
+const MEMORY_BUDGET: u64 = 3 << 29;
 const TICKING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
@@ -305,12 +307,10 @@ impl DerefMut for Pipeline {
 
 impl Pipeline {
     pub fn new(config: &Config, out: &Path) -> Result<Pipeline> {
-        let encoder = VideoToolboxEncoder::new(EncoderConfig::new(
-            config.codec,
-            config.width,
-            config.height,
-            config.frame_rate,
-        ))?;
+        let encoder = VideoToolboxEncoder::with_buffers(
+            EncoderConfig::new(config.codec, config.width, config.height, config.frame_rate),
+            config.window + POOL_MARGIN,
+        )?;
         let (producer, consumer) = sched::ordered::<PoolBuffer>(config.window);
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
@@ -402,29 +402,40 @@ impl Plan {
         }
     }
 
-    /// `views` views dealt runs of at most `run` frames. The views ahead of the next frame to
-    /// encode hold up to `(views - 1) * run + views` frames in the reorder window, and the
-    /// window is bounded by the encoder's buffer pool, so `run` is cut to fit.
     pub fn new(views: usize, run: u64) -> Plan {
-        let views = views.max(1);
-        let fit = if views == 1 {
-            u64::MAX
-        } else {
-            ((WINDOW - views.min(WINDOW - 1)) / (views - 1)).max(1) as u64
-        };
         Plan {
-            views,
-            run: run.clamp(1, fit),
+            views: views.max(1),
+            run: run.max(1),
             lead_in: LEAD_IN,
         }
+    }
+
+    /// Frames the reorder buffer holds when every view is inside its run: the views ahead of the
+    /// next frame to encode hold up to `run` frames each.
+    fn window(&self) -> usize {
+        let ahead = (self.views as u64 - 1).saturating_mul(self.run) + self.views as u64;
+        ahead.max(WINDOW as u64) as usize
+    }
+
+    /// Cuts `run` until the buffers the window needs fit in `MEMORY_BUDGET`.
+    fn fit(mut self, frame_bytes: u64) -> Plan {
+        let buffers = (MEMORY_BUDGET / frame_bytes) as usize;
+        let allowed = buffers.saturating_sub(POOL_MARGIN).max(WINDOW);
+        if self.views > 1 {
+            let views = self.views as u64;
+            self.run = self
+                .run
+                .min(((allowed as u64).saturating_sub(views) / (views - 1)).max(1));
+        }
+        self
     }
 }
 
 pub struct Runs<T> {
+    pub plan: Plan,
     pub muxer: Muxer,
     pub frames: Vec<T>,
     pub stats: Stats,
-    pub views: usize,
     pub lead_in_frames: u64,
 }
 
@@ -517,7 +528,11 @@ pub fn render_runs<T: Send>(
     seek: impl Fn(&mut View, u64) -> Result<T> + Sync,
 ) -> Result<Runs<T>> {
     let started = Instant::now();
-    let mut pipeline = Pipeline::new(config, out)?;
+    let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
+    let plan = plan.fit(frame_bytes);
+    let mut config = config.clone();
+    config.window = config.window.max(plan.window());
+    let mut pipeline = Pipeline::new(&config, out)?;
     let views = (plan.views as u64)
         .min(config.frames.div_ceil(plan.run))
         .max(1) as usize;
@@ -586,10 +601,10 @@ pub fn render_runs<T: Send>(
         config.frames
     );
     Ok(Runs {
+        plan: Plan { views, ..plan },
         muxer,
         frames: frames.into_iter().map(|(_, value)| value).collect(),
         stats,
-        views,
         lead_in_frames,
     })
 }

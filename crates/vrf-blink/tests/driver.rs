@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use objc2_io_surface::IOSurfaceLockOptions;
 use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url};
-use vrf_blink::driver::{Capture, Config, Pipeline, Stats, Summary, render};
+use vrf_blink::driver::{Capture, Config, Pipeline, Plan, Stats, Summary, render, render_runs};
 use vrf_blink::{Mode, Paint, Project, Ui, View};
 use vrf_encode::{Codec, Rational};
 
@@ -274,12 +274,50 @@ fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+    let mut files = Vec::new();
+    for views in [1, 2, 4, 8] {
+        let out = std::env::temp_dir().join(format!("vrf-blink-parallel-{views}.mov"));
+        let runs = render_runs(
+            &config,
+            Plan::new(views, 7),
+            0,
+            &out,
+            || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
+            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+        )?;
+        runs.muxer.finish()?;
+        ensure!(runs.plan.views == views, "{} views ran", runs.plan.views);
+        ensure!(runs.stats.repeats == 0, "{} repeats", runs.stats.repeats);
+        println!(
+            "parallel {views}: {} lead-in frames, {} fps",
+            runs.lead_in_frames,
+            96.0 / runs.stats.elapsed.as_secs_f64()
+        );
+        files.push((views, std::fs::read(&out)?));
+        std::fs::remove_file(&out)?;
+    }
+    for (views, bytes) in &files[1..] {
+        ensure!(
+            *bytes == files[0].1,
+            "{views} views wrote different bytes from one view"
+        );
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     support::run(&[
         ("driver_colour_per_frame_300", colour_per_frame_300),
         ("driver_import_delay_1ms_2000", import_delay_1ms_2000),
         ("driver_import_delay_50ms_300", import_delay_50ms_300),
         ("driver_no_damage_repeats", no_damage_repeats),
+        (
+            "driver_parallel_views_write_the_same_bytes_as_one_view",
+            parallel_views_write_the_same_bytes_as_one_view,
+        ),
         (
             "driver_ticking_view_delivers_every_begin_frame",
             ticking_view_delivers_every_begin_frame,

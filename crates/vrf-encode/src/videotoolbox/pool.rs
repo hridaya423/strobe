@@ -97,6 +97,15 @@ fn tag(buffer: &CVPixelBuffer) {
 
 impl PixelPool {
     pub fn new(width: usize, height: usize, format: PixelFormat) -> Result<Self> {
+        Self::with_capacity(width, height, format, POOL_SIZE)
+    }
+
+    pub fn with_capacity(
+        width: usize,
+        height: usize,
+        format: PixelFormat,
+        capacity: usize,
+    ) -> Result<Self> {
         let format_number = CFNumber::new_i32(format.os_type() as i32);
         let (width, height) = (number(width), number(height));
         let iosurface_properties = Dict::empty();
@@ -119,7 +128,7 @@ impl PixelPool {
                 ],
             )
         };
-        let size = number(POOL_SIZE);
+        let size = number(capacity);
         let pool_attributes = unsafe {
             Dict::from_slices(&[kCVPixelBufferPoolMinimumBufferCountKey], &[size.as_ref()])
         };
@@ -146,7 +155,7 @@ impl PixelPool {
             )
         };
         let this = PixelPool { pool, threshold };
-        let warm = (0..POOL_SIZE)
+        let warm = (0..capacity)
             .map(|_| this.acquire())
             .collect::<Result<Vec<_>>>()?;
         drop(warm);

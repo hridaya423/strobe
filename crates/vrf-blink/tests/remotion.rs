@@ -13,6 +13,7 @@ use vrf_bench::corpus::bench_dir;
 use vrf_bench::engines::{headless_shell, node_bin};
 use vrf_bench::score::{self, Sampling};
 use vrf_blink::adapters::remotion::{self, Options, Page};
+use vrf_blink::driver::Plan;
 use vrf_blink::{Mode, Project, Ui};
 use vrf_encode::Codec;
 
@@ -53,6 +54,7 @@ fn options(project: &Path, composition: &str) -> Options {
         props: None,
         mode: Mode::Offline,
         timeout: Duration::from_millis(2500),
+        plan: Plan::single(),
     }
 }
 
@@ -266,6 +268,26 @@ fn assets_are_collected_and_resolved(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
+    let project = fixture_project("basic")?;
+    let mut files = Vec::new();
+    for views in [1, 2, 4, 8] {
+        let out = work_dir().join(format!("basic-views-{views}.mov"));
+        let mut options = options(&project, "Basic");
+        options.plan = Plan::new(views, 11);
+        let report = remotion::render(ui, &options, None, Codec::ProRes422, &out)?;
+        ensure!(report.frames == 90 && report.views == views && report.repeats == 0);
+        files.push((views, fs::read(&out)?));
+    }
+    for (views, bytes) in &files[1..] {
+        ensure!(
+            *bytes == files[0].1,
+            "{views} views wrote different bytes from one view"
+        );
+    }
+    Ok(())
+}
+
 fn bundle_is_cached_by_input(_: &Ui) -> Result<()> {
     let project = fixture_project("basic")?;
     let first = remotion::bundle(&project, Some(Path::new("src/index.jsx")))?;
@@ -318,6 +340,10 @@ fn main() -> ExitCode {
             failed_frame_is_retried_on_a_fresh_page,
         ),
         ("remotion_assets", assets_are_collected_and_resolved),
+        (
+            "remotion_parallel_views_match_one_view",
+            parallel_views_write_the_same_bytes_as_one_view,
+        ),
         ("remotion_bundle_cache", bundle_is_cached_by_input),
         (
             "remotion_unknown_composition",

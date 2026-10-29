@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #123; }
+.cell { position: absolute; width: 150px; height: 56px; border-radius: 10px; font: 600 15px sans-serif; color: #fff; padding: 6px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); background: linear-gradient(135deg, #e55, #36c); }
+</style>
+</head>
+<body>
+<script>
+const cells = [];
+for (let i = 0; i < 300; i++) {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  cell.style.left = (i % 15) * 125 + 'px';
+  cell.style.top = Math.floor(i / 15) * 52 + 'px';
+  cell.textContent = 'cell ' + i;
+  document.body.appendChild(cell);
+  cells.push(cell);
+}
+function seek(frame) {
+  for (let i = 0; i < cells.length; i++) {
+    cells[i].style.transform = `translate(${Math.sin((frame + i) / 9) * 14}px, ${Math.cos((frame + i) / 11) * 10}px) rotate(${(frame + i) % 360}deg)`;
+  }
+  document.body.offsetHeight;
+  return Promise.resolve(frame);
+}
+</script>
+</body>
+</html>

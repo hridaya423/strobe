@@ -1,6 +1,7 @@
 pub mod adapters;
 mod app;
 mod bundle;
+pub mod calibration;
 pub mod driver;
 mod mac;
 mod scheme;
