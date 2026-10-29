@@ -536,3 +536,74 @@ describe('item 23: video pre-extraction page side', () => {
 
   test('item_23_vfr_sources_with_long_gaps', { skip: 'frame choice and ffmpeg extraction are host side (Task 5.1)' }, () => {});
 });
+
+describe('item 24: static dedup equivalence', () => {
+  const staticProject = ({ body = box, extraScript = '', duration = 2, style = '' } = {}) =>
+    project({
+      'index.html': composition({
+        duration,
+        body,
+        style,
+        script: `const tl = gsap.timeline({paused:true}); tl.to("#box", {x: 100, duration: 0.3, ease:"none"}, 0); tl.to("#box", {y: 20, duration: 0.1, ease:"none"}, 1.5); window.__timelines = {main: tl};${extraScript}`,
+      }),
+    });
+  const staticFrames = (hf) => hf.page.evaluate('__vrf.hf.staticFrames()');
+
+  test('item_24_static_dedup_equivalence', async () => {
+    const hf = await openHf(browser, staticProject());
+    const result = await staticFrames(hf);
+    assert.equal(result.eligible, true);
+    assert.deepEqual(result.frames, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18]);
+    for (const frame of result.frames) {
+      await hf.seek(frame - 1);
+      const before = await hf.page.screenshot();
+      await hf.seek(frame);
+      assert.ok(before.equals(await hf.page.screenshot()), `frame ${frame} must equal frame ${frame - 1} byte for byte`);
+    }
+    await hf.close();
+  });
+
+  test('item_24_never_static_next_to_a_tween', async () => {
+    const hf = await openHf(browser, staticProject());
+    const { frames } = await staticFrames(hf);
+    for (const tweenFrame of [0, 1, 2, 3, 4, 15, 16, 17]) assert.ok(!frames.includes(tweenFrame), `frame ${tweenFrame} borders a tween`);
+    await hf.close();
+  });
+
+  test('item_24_clip_boundaries_plus_minus_one_are_animated', async () => {
+    const hf = await openHf(
+      browser,
+      staticProject({ body: box + clipDiv('c', 'data-start="1" data-duration="0.5"'), duration: 3 }),
+    );
+    const { frames } = await staticFrames(hf);
+    for (const edge of [10, 15]) for (const near of [edge - 1, edge, edge + 1]) assert.ok(!frames.includes(near), `frame ${near} is next to a clip edge`);
+    assert.ok(frames.includes(12 + 1) && frames.includes(20));
+    await hf.close();
+  });
+
+  const ineligible = (name, options, reason, init = {}) =>
+    test(`item_24_ineligible_with_${name}`, async () => {
+      const hf = await openHf(browser, staticProject(options), { init });
+      const result = await staticFrames(hf);
+      assert.equal(result.eligible, false);
+      assert.deepEqual(result.frames, []);
+      assert.match(result.reason, reason);
+      await hf.close();
+    });
+
+  ineligible('canvas', { body: box + '<canvas width="10" height="10"></canvas>' }, /canvas/);
+  ineligible('iframe', { body: box + '<iframe srcdoc="x" width="10" height="10"></iframe>' }, /iframe/);
+  ineligible('video', { body: box + '<video id="v" data-start="0" data-duration="1"></video>' }, /video/, { skipVideoIds: ['v'] });
+  ineligible('running_css_animation', { body: box + '<div style="width:5px;height:5px;animation:spin 1s linear infinite"></div>', style: '@keyframes spin{to{opacity:.5}}' }, /CSS\/WAAPI/);
+  ineligible('timeline_call_side_effect', { extraScript: 'tl.call(() => {}, [], 0.5); tl.eventCallback("onComplete", () => {});' }, /tl\.call|no GSAP|side effect/);
+  ineligible('reference_clip_start', { body: box + clipDiv('c', 'data-start="box + 0.2" data-duration="0.5"') }, /unresolvable clip start/);
+
+  test('item_24_composition_without_tweens_is_ineligible', async () => {
+    const dir = project({ 'index.html': composition({ body: box, script: 'const tl = gsap.timeline({paused:true}); window.__timelines = {main: tl};' }) });
+    const hf = await openHf(browser, dir);
+    const result = await staticFrames(hf);
+    assert.equal(result.eligible, false);
+    assert.match(result.reason, /no GSAP tweens/);
+    await hf.close();
+  });
+});

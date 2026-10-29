@@ -408,6 +408,84 @@
       hasAudio: video.getAttribute('data-has-audio') !== 'false',
     }));
 
+  const finiteNumber = (value) => {
+    if (value === null || value === undefined || String(value).trim() === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+
+  const authoredTimingWindow = (el) => {
+    const parsedStart = finiteNumber(el.getAttribute('data-start'));
+    if (parsedStart === null) return null;
+    const start = Math.max(0, parsedStart);
+    const positive = (value) => (value !== null && value > 0 ? value : null);
+    const duration = positive(finiteNumber(el.getAttribute('data-duration'))) ?? positive(finiteNumber(el.getAttribute('data-hf-authored-duration')));
+    if (duration !== null) return { start, end: start + duration };
+    const later = (value) => (value !== null && value > start ? value : null);
+    return { start, end: later(finiteNumber(el.getAttribute('data-end'))) ?? later(finiteNumber(el.getAttribute('data-hf-authored-end'))) };
+  };
+
+  const staticFrames = () => {
+    const fps = fpsValue();
+    const duration = hf.duration;
+    const intervals = [];
+    let tweenCount = 0;
+    let hasTimelineCall = false;
+    const walk = (timeline, offset) => {
+      if (typeof timeline.getChildren !== 'function') return;
+      if (typeof timeline.vars?.onUpdate === 'function') {
+        const total = typeof timeline.totalDuration === 'function' ? timeline.totalDuration() : 0;
+        if (total > 0) intervals.push({ start: offset, end: offset + total });
+      }
+      for (const child of timeline.getChildren(false, true, true)) {
+        const start = offset + (typeof child.startTime === 'function' ? child.startTime() : 0);
+        const single = typeof child.duration === 'function' ? child.duration() : 0;
+        const total = typeof child.totalDuration === 'function' ? child.totalDuration() : single;
+        if (typeof child.getChildren === 'function') {
+          if (total > single + 1e-6) intervals.push({ start, end: start + total });
+          walk(child, start);
+        } else {
+          tweenCount++;
+          intervals.push({ start, end: start + total });
+          if (total <= 1e-6 && (typeof child.vars?.onComplete === 'function' || typeof child.vars?.onReverseComplete === 'function')) hasTimelineCall = true;
+        }
+      }
+    };
+    for (const timeline of Object.values(window.__timelines || {})) if (timeline && typeof timeline.getChildren === 'function') walk(timeline, 0);
+    const unresolvableClipStart = Array.from(document.querySelectorAll('[data-start]')).some((el) => {
+      const value = el.dataset.start;
+      return value != null && value.trim() !== '' && !Number.isFinite(parseFloat(value));
+    });
+    const nonGsapAnimation = document.getAnimations().some((a) => a.playState === 'running' || a.playState === 'paused');
+    const reasons = [];
+    if (!(duration > 0)) reasons.push('unknown/zero duration');
+    if (document.querySelector('video')) reasons.push('video');
+    if (document.querySelector('canvas')) reasons.push('canvas/webgl');
+    if (document.querySelector('iframe')) reasons.push('iframe');
+    if (tweenCount === 0) reasons.push('no GSAP tweens (non-GSAP animation)');
+    if (nonGsapAnimation) reasons.push('running CSS/WAAPI animation');
+    if (hasTimelineCall) reasons.push('tl.call() side effect (not seek-safe)');
+    if (unresolvableClipStart) reasons.push('unresolvable clip start (reference expression)');
+    const eligible = reasons.length === 0;
+    const totalFrames = Math.max(1, Math.ceil(duration * fps));
+    const animated = new Set();
+    for (const { start, end } of intervals) {
+      const lo = Math.max(0, Math.floor(start * fps));
+      const hi = Math.min(totalFrames - 1, Math.ceil(end * fps));
+      for (let f = lo; f <= hi; f++) animated.add(f);
+    }
+    for (const el of document.querySelectorAll('[data-start]')) {
+      const window_ = authoredTimingWindow(el);
+      if (!window_) continue;
+      const edges = [Math.round(window_.start * fps)];
+      if (window_.end !== null) edges.push(Math.round(window_.end * fps));
+      for (const edge of edges) for (const f of [edge - 1, edge, edge + 1]) if (f >= 0) animated.add(f);
+    }
+    const frames = [];
+    if (eligible) for (let f = 1; f < totalFrames; f++) if (!animated.has(f) && !animated.has(f - 1)) frames.push(f);
+    return { eligible, reason: eligible ? 'eligible' : reasons.join('+'), frames };
+  };
+
   const compositeFinish = async () => {
     if (typeof window.__hf_page_composite_resolve === 'function') window.__hf_page_composite_resolve();
   };
@@ -416,5 +494,5 @@
   };
 
   window.__vrf = window.__vrf || {};
-  window.__vrf.hf = { init, seek, seekTime, quantizeTime, videos, compositePrepare, compositeFinish, real };
+  window.__vrf.hf = { init, seek, seekTime, quantizeTime, videos, staticFrames, compositePrepare, compositeFinish, real };
 })();
