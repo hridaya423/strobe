@@ -245,6 +245,22 @@ fn offline_serves_https_pin_from_lock(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+fn direct_origin_reaches_the_network_unpinned(ui: &Ui) -> Result<()> {
+    let cdn = Cdn::start()?;
+    let dir = scratch("direct", &cdn.url("/lib.js"))?;
+    let project = Project::open(&dir, Mode::Offline)?;
+    project.allow_direct(cdn.url("/"));
+    let mut view = View::open_project(ui, &project, "index.html", 320, 240, None)?;
+    ensure!(view.evaluate("window.cdnLoaded")? == "pinned");
+    view.close()?;
+    ensure!(cdn.hits() == 1, "the server saw {} requests", cdn.hits());
+    ensure!(
+        !dir.join("vrf.lock.json").exists(),
+        "a direct request was pinned"
+    );
+    Ok(())
+}
+
 fn offline_rejects_unpinned(ui: &Ui) -> Result<()> {
     let cdn = Cdn::start()?;
     let url = cdn.url("/lib.js");
@@ -518,6 +534,10 @@ fn main() -> ExitCode {
         (
             "offline_serves_https_pin_from_lock",
             offline_serves_https_pin_from_lock,
+        ),
+        (
+            "direct_origin_reaches_the_network_unpinned",
+            direct_origin_reaches_the_network_unpinned,
         ),
         ("offline_rejects_unpinned", offline_rejects_unpinned),
         (

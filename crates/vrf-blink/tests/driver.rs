@@ -111,7 +111,8 @@ fn run_case(
     seek_index: impl Fn(u64) -> u64,
 ) -> Result<(Config, Stats)> {
     let mut view = View::open(ui, &page_url(), WIDTH as i32, HEIGHT as i32)?;
-    let config = Config::new(WIDTH, HEIGHT, FRAME_RATE, Codec::H264, frames);
+    let mut config = Config::new(WIDTH, HEIGHT, FRAME_RATE, Codec::H264, frames);
+    config.watchdog = Duration::from_millis(100);
     let out = std::env::temp_dir().join(format!("vrf-blink-{name}.mp4"));
     let stats = if import_delay.is_zero() {
         render(

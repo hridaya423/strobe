@@ -58,6 +58,7 @@ struct Inner {
     mode: Mode,
     lock: Mutex<Lock>,
     failures: Mutex<Vec<String>>,
+    direct: Mutex<Vec<String>>,
 }
 
 /// A project directory served at `vrf://project/`, with its pinned remote dependencies. Cloning
@@ -94,7 +95,23 @@ impl Project {
             mode,
             lock: Mutex::new(lock),
             failures: Mutex::default(),
+            direct: Mutex::default(),
         })))
+    }
+
+    /// Lets requests whose URL starts with `origin` reach the network without being pinned, for a
+    /// server the render itself runs, such as Remotion's frame proxy on `http://localhost:<port>`.
+    pub fn allow_direct(&self, origin: String) {
+        self.0.direct.lock().unwrap().push(origin);
+    }
+
+    fn is_direct(&self, url: &str) -> bool {
+        self.0
+            .direct
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|origin| url.starts_with(origin.as_str()))
     }
 
     /// The `vrf://project/` URL of a file in the project.
@@ -598,7 +615,8 @@ wrap_request_handler! {
             _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
         ) -> Option<ResourceRequestHandler> {
             let url = CefString::from(&request?.url()).to_string();
-            (url.starts_with("http://") || url.starts_with("https://"))
+            let remote = url.starts_with("http://") || url.starts_with("https://");
+            (remote && !self.project.is_direct(&url))
                 .then(|| PinnedRequestHandler::new(self.project.clone()))
         }
     }

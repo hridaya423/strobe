@@ -8,7 +8,8 @@ use cef::{args::Args, rc::Rc as _, *};
 
 use crate::{bundle, mac, scheme};
 
-const FLAGS: [&str; 13] = [
+const FLAGS: [&str; 14] = [
+    "disable-features=LocalNetworkAccessChecks",
     "run-all-compositor-stages-before-draw",
     "disable-threaded-animation",
     "disable-checker-imaging",

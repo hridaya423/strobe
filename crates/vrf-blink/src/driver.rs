@@ -38,7 +38,7 @@ impl Config {
             frame_rate,
             codec,
             frames,
-            watchdog: Duration::from_millis(100),
+            watchdog: Duration::from_millis(500),
         }
     }
 }

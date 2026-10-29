@@ -124,6 +124,7 @@ fn reference_mode_pixels_equal_remotion_still(ui: &Ui) -> Result<()> {
     let page = Page::new(
         Project::open(&bundle.dir, Mode::Offline)?,
         &options(&project, "Gray"),
+        None,
     )?;
     let (mut view, _) = page.open(ui, 320, 180)?;
     let gpu = Gpu::new()?;

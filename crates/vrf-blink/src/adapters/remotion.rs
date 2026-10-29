@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
@@ -18,6 +19,7 @@ use crate::{Mode, Project, Ui, View};
 const REMOTION_JS: &str = include_str!("../../js/remotion.js");
 const CLOCK_JS: &str = include_str!("../../js/clock.js");
 const BUNDLE_JS: &str = include_str!("../../js/remotion-bundle.mjs");
+const SERVE_JS: &str = include_str!("../../js/remotion-serve.mjs");
 
 const PROBE_SIZE: (i32, i32) = (640, 360);
 const LEAD_IN: u64 = 10;
@@ -86,6 +88,7 @@ pub struct StageStats {
     pub mean_ms: f64,
     pub p50_ms: f64,
     pub p99_ms: f64,
+    pub max_ms: f64,
 }
 
 impl StageStats {
@@ -96,6 +99,7 @@ impl StageStats {
             mean_ms: ms(summary.mean),
             p50_ms: ms(summary.p50),
             p99_ms: ms(summary.p99),
+            max_ms: ms(samples.iter().copied().max().unwrap_or_default()),
         }
     }
 }
@@ -104,6 +108,7 @@ impl StageStats {
 pub struct Stages {
     pub bundle_s: f64,
     pub bundle_cached: bool,
+    pub frame_server_s: f64,
     pub probe_s: f64,
     pub open_s: f64,
     pub render_s: f64,
@@ -278,6 +283,55 @@ pub fn bundle(project: &Path, entry: Option<&Path>) -> Result<Bundle> {
     Ok(Bundle { dir, cached: false })
 }
 
+/// Remotion's own frame server for `<OffthreadVideo>`, run by the project's `@remotion/renderer`
+/// in a Node subprocess. The page asks it for one image per video frame.
+pub struct Offthread {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    pub port: u16,
+    pub serve_url: String,
+}
+
+impl Offthread {
+    pub fn start(project: &Path, bundle_dir: &Path) -> Result<Offthread> {
+        let script = cache_dir().join("remotion").join("remotion-serve.mjs");
+        fs::create_dir_all(script.parent().context("cache path has no parent")?)?;
+        fs::write(&script, SERVE_JS)?;
+        let mut child = Command::new("node")
+            .arg(&script)
+            .arg(project)
+            .arg(bundle_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("run node to serve video frames")?;
+        let stdin = child.stdin.take();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().context("no stdout")?).read_line(&mut line)?;
+        let started: Value =
+            serde_json::from_str(&line).context("the frame server did not start")?;
+        let port = started["offthreadPort"]
+            .as_u64()
+            .context("the frame server reported no port")?;
+        Ok(Offthread {
+            child,
+            stdin,
+            port: port as u16,
+            serve_url: started["serveUrl"]
+                .as_str()
+                .context("the frame server reported no URL")?
+                .to_owned(),
+        })
+    }
+}
+
+impl Drop for Offthread {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        let _ = self.child.wait();
+    }
+}
+
 /// A bundled project that can open ready-to-seek views of one composition.
 pub struct Page {
     project: Project,
@@ -286,8 +340,12 @@ pub struct Page {
 }
 
 impl Page {
-    pub fn new(project: Project, options: &Options) -> Result<Page> {
+    pub fn new(project: Project, options: &Options, frames: Option<&Offthread>) -> Result<Page> {
+        let port = frames.map_or(0, |server| server.port);
+        project.allow_direct(format!("http://localhost:{port}/"));
         let config = json!({
+            "proxyPort": port,
+            "serveUrl": frames.map(|server| &server.serve_url),
             "inputProps": options.props.as_deref().unwrap_or("{}"),
             "timeoutInMilliseconds": options.timeout.as_millis() as u64,
             "captureMode": "raw",
@@ -383,7 +441,14 @@ pub fn render(
     let step = Instant::now();
     let bundle = bundle(&options.project, options.entry.as_deref())?;
     let bundle_s = step.elapsed();
-    let page = Page::new(Project::open(&bundle.dir, options.mode)?, options)?;
+    let step = Instant::now();
+    let offthread = Offthread::start(&options.project.canonicalize()?, &bundle.dir)?;
+    let offthread_s = step.elapsed();
+    let page = Page::new(
+        Project::open(&bundle.dir, options.mode)?,
+        options,
+        Some(&offthread),
+    )?;
 
     let step = Instant::now();
     let composition = page.probe(ui)?;
@@ -481,6 +546,7 @@ pub fn render(
         stages: Stages {
             bundle_s: bundle_s.as_secs_f64(),
             bundle_cached: bundle.cached,
+            frame_server_s: offthread_s.as_secs_f64(),
             probe_s: probe_s.as_secs_f64(),
             open_s: open_s.as_secs_f64(),
             render_s: render_s.as_secs_f64(),

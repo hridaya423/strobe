@@ -4,6 +4,7 @@
     envVariables: null,
     initialFrame: 0,
     proxyPort: 0,
+    serveUrl: null,
     audioEnabled: true,
     videoEnabled: true,
     timeoutInMilliseconds: 30000,
@@ -18,6 +19,21 @@
   const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
   const nativeNow = performance.now.bind(performance);
   const PUMP_MS = 4;
+
+  if (config.serveUrl) {
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    const proxy = `http://localhost:${config.proxyPort}/proxy?`;
+    globalThis.fetch = (input, init) => {
+      if (typeof input === 'string' && input.startsWith(proxy)) {
+        const url = new URL(input);
+        const src = url.searchParams.get('src');
+        if (src?.startsWith(`${location.origin}/`)) url.searchParams.set('src', config.serveUrl + src.slice(location.origin.length));
+        url.searchParams.set('time', String(Math.max(0, Number(url.searchParams.get('time')))));
+        input = url.toString();
+      }
+      return nativeFetch(input, init);
+    };
+  }
 
   let renderReady = false;
   let cancelledError;
