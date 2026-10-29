@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #fff; overflow: hidden; }
+.box { position: absolute; width: 40px; height: 40px; }
+#a { top: 10px; background: #c30; }
+#b { top: 70px; background: #036; }
+</style>
+<div class="box" id="a"></div>
+<div class="box" id="b"></div>
+<script src="/gsap.min.js"></script>
+<script>
+gsap.to('#a', { x: 240, duration: 1, ease: 'power2.inOut' });
+const tl = gsap.timeline({ repeat: -1, yoyo: true });
+tl.to('#b', { x: 240, rotation: 90, duration: 0.8, ease: 'sine.inOut' }).to('#b', { opacity: 0.2, duration: 0.5 });
+gsap.delayedCall(0.5, () => { document.getElementById('a').style.background = '#080'; });
+const read = (id) => {
+  const m = new DOMMatrix(getComputedStyle(document.getElementById(id)).transform);
+  return [m.m41, m.m11, m.m12];
+};
+window.sample = () => ({
+  a: read('a'),
+  b: read('b'),
+  bOpacity: getComputedStyle(document.getElementById('b')).opacity,
+  aBackground: getComputedStyle(document.getElementById('a')).backgroundColor,
+});
+</script>

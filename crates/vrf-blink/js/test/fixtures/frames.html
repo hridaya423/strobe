@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<iframe id="static" src="/child.html" width="100" height="50"></iframe>
+<iframe id="inline" srcdoc="<script>window.log=[];function f(){log.push(Date.now());requestAnimationFrame(f)}requestAnimationFrame(f)</script>" width="100" height="50"></iframe>
+<script>
+window.dynamic = null;
+window.addDynamic = () => new Promise((resolve) => {
+  const frame = document.createElement('iframe');
+  frame.src = '/child.html';
+  frame.onload = () => { window.dynamic = frame; resolve(); };
+  document.body.append(frame);
+});
+window.addBlank = () => {
+  const frame = document.createElement('iframe');
+  document.body.append(frame);
+  window.blank = frame;
+  return typeof frame.contentWindow.__vrf;
+};
+</script>

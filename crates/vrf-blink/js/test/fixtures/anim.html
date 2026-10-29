@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #fff; overflow: hidden; }
+.box { position: absolute; width: 40px; height: 40px; }
+#slide { top: 10px; left: 0; background: #c30; animation: slide 2000ms linear infinite; }
+#fade { top: 70px; left: 10px; background: #036; opacity: 0; transition: opacity 1000ms linear, transform 1000ms linear; }
+#fade.on { opacity: 1; transform: translateX(200px); }
+#web { top: 130px; left: 10px; background: #080; }
+#bar { position: absolute; top: 190px; left: 0; height: 20px; background: #909; }
+@keyframes slide { from { transform: translateX(0); } to { transform: translateX(240px); } }
+</style>
+<div class="box" id="slide"></div>
+<div class="box" id="fade"></div>
+<div class="box" id="web"></div>
+<div id="bar"></div>
+<script>
+const fadeOnFrame = 3;
+const webAnimation = document.getElementById('web').animate(
+  [{ transform: 'translateX(0)' }, { transform: 'translateX(240px)' }],
+  { duration: 1500, iterations: Infinity, easing: 'ease-in-out' },
+);
+let n = 0;
+function tick(ts) {
+  if (n++ === fadeOnFrame) document.getElementById('fade').classList.add('on');
+  document.getElementById('bar').style.width = (ts % 1000) * 0.3 + 'px';
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+const x = (id) => new DOMMatrix(getComputedStyle(document.getElementById(id)).transform).m41;
+window.sample = () => ({
+  slide: x('slide'),
+  fade: Number(getComputedStyle(document.getElementById('fade')).opacity),
+  fadeX: x('fade'),
+  web: x('web'),
+  webTime: webAnimation.currentTime,
+  bar: document.getElementById('bar').style.width,
+});
+</script>
