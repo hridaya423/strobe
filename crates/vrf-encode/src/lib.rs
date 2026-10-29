@@ -1,6 +1,8 @@
 use anyhow::Result;
 
 #[cfg(target_os = "macos")]
+pub mod audiotoolbox;
+#[cfg(target_os = "macos")]
 pub mod videotoolbox;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
