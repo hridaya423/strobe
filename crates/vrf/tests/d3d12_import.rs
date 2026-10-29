@@ -2,7 +2,7 @@
 
 mod gpu_support;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpu_support::{D3d11, SharedTexture};
 use vrf::gpu::Gpu;
@@ -198,55 +198,4 @@ fn deferred_import_is_exact_over_5000_frames_with_an_injected_delay() {
     deferred_frames(5000, |frame| {
         Duration::from_micros(u64::from(frame % 7) * 300)
     });
-}
-
-#[test]
-#[ignore]
-fn cost_per_frame() {
-    const FRAMES: u32 = 2000;
-    const BUCKET: usize = 250;
-    let gpu = Gpu::new().unwrap();
-    println!(
-        "adapter {} luid {}",
-        gpu.adapter.get_info().name,
-        gpu.luid()
-    );
-    let d3d11 = D3d11::new(gpu.luid());
-    let pool: Vec<_> = (0..3).map(|_| d3d11.shared_texture(1920, 1080)).collect();
-    let mut owned = None;
-    let mut rows: Vec<[Duration; 4]> = Vec::new();
-    for frame in 0..FRAMES {
-        let shared = &pool[frame as usize % pool.len()];
-        d3d11.clear(shared, colour_of(frame));
-        let handle = duplicate(shared);
-        let t0 = Instant::now();
-        let source = gpu
-            .import_shared_handle(&handle, wgpu::TextureUsages::COPY_SRC)
-            .unwrap();
-        let t1 = Instant::now();
-        let target = owned.get_or_insert_with(|| owned_like(&gpu, &source));
-        copy_into(&gpu, &source, target);
-        gpu.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
-        let t2 = Instant::now();
-        drop(source);
-        gpu.device.poll(wgpu::PollType::Poll).unwrap();
-        let t3 = Instant::now();
-        rows.push([t1 - t0, t2 - t1, t3 - t2, t3 - t0]);
-    }
-    for (i, bucket) in rows.chunks(BUCKET).enumerate() {
-        let mean = |k: usize| {
-            bucket.iter().map(|r| r[k].as_secs_f64()).sum::<f64>() / bucket.len() as f64 * 1e3
-        };
-        println!(
-            "frames {:>4}..{:>4}: open {:.3} ms, copy+wait {:.3} ms, release {:.3} ms, total {:.3} ms",
-            i * BUCKET,
-            i * BUCKET + bucket.len(),
-            mean(0),
-            mean(1),
-            mean(2),
-            mean(3)
-        );
-    }
 }

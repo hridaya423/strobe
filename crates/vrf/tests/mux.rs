@@ -580,7 +580,16 @@ fn two_chunks(dir: &Dir) -> [(StreamConfig, Vec<Sample>); 2] {
             "30",
         ]
     } else {
-        X264
+        &[
+            "-c:v",
+            "libx264",
+            "-profile:v",
+            "baseline",
+            "-preset",
+            "veryfast",
+            "-g",
+            "30",
+        ]
     };
     encode(&vt, 60, "30", vt_args);
     encode(&x264, 60, "30", X264);
