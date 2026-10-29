@@ -206,6 +206,16 @@ wrap_scheme_handler_factory! {
 
 type Region = Arc<Mutex<Option<SharedMemoryRegion>>>;
 
+wrap_v8_array_buffer_release_callback! {
+    struct KeepRegion {
+        region: SharedMemoryRegion,
+    }
+
+    impl V8ArrayBufferReleaseCallback {
+        fn release_buffer(&self, _buffer: *mut u8) {}
+    }
+}
+
 wrap_render_process_handler! {
     struct SpikeRenderHandler {
         region: Region,
@@ -228,7 +238,15 @@ wrap_render_process_handler! {
             if context.enter() == 0 {
                 return 0;
             }
-            let buffer = v8_value_create_array_buffer_with_copy(region.memory().cast(), region.size());
+            let buffer = if std::env::var_os("VSP_EXTERNAL").is_some() {
+                let mut release = KeepRegion::new(region.clone());
+                v8_value_create_array_buffer(region.memory().cast(), region.size(), Some(&mut release))
+            } else {
+                v8_value_create_array_buffer_with_copy(region.memory().cast(), region.size())
+            };
+            if buffer.is_none() {
+                return 0;
+            }
             if let Some(global) = context.global() {
                 if let Some(callback) = global.value_bykey(Some(&"__onFrame".into())) {
                     let _ = callback.execute_function(Some(&mut global.clone()), Some(&[buffer]));
