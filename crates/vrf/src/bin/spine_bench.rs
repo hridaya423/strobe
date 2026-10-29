@@ -6,11 +6,12 @@ use vrf::colour::{Chroma, Format, Rect};
 use vrf::gpu::Gpu;
 use vrf::gpu::convert::Converter;
 use vrf::gpu::metal::PoolTargets;
-use vrf::mux::{Container, Muxer, Sample, StreamConfig};
+use vrf::mux::{Container, Muxer};
 use vrf::sched::{self, Consumer, Submission};
+use vrf::sink::Sink;
 use vrf_encode::videotoolbox::VideoToolboxEncoder;
 use vrf_encode::videotoolbox::pool::PoolBuffer;
-use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Rational};
+use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
 
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
@@ -71,30 +72,6 @@ struct SubmitTimes {
     mux: Duration,
 }
 
-struct Sink {
-    muxer: Muxer,
-    started: bool,
-    duration: u32,
-}
-
-impl Sink {
-    fn write(&mut self, encoder: &impl Encoder, packets: Vec<Packet>) -> Result<()> {
-        if packets.is_empty() {
-            return Ok(());
-        }
-        let info = encoder.stream_info()?;
-        if !self.started {
-            self.muxer.start_chunk(StreamConfig::try_from(&info)?)?;
-            self.started = true;
-        }
-        for packet in packets {
-            self.muxer
-                .write(&Sample::from_packet(packet, info.timebase, self.duration)?)?;
-        }
-        Ok(())
-    }
-}
-
 fn submit_loop(
     mut encoder: VideoToolboxEncoder,
     mut consumer: Consumer<Finished>,
@@ -124,7 +101,7 @@ fn submit_loop(
     let packets = encoder.flush()?;
     sink.write(&encoder, packets)?;
     times.mux += started.elapsed();
-    Ok((sink.muxer, times))
+    Ok((sink.into_muxer(), times))
 }
 
 fn main() -> Result<()> {
@@ -218,11 +195,7 @@ fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("spine_bench.mp4"));
     let muxer = Muxer::create(&out, Container::Mp4, FRAME_RATE.num as u32)?;
-    let sink = Sink {
-        muxer,
-        started: false,
-        duration: FRAME_RATE.den as u32,
-    };
+    let sink = Sink::new(muxer, FRAME_RATE.den as u32);
     let (producer, consumer) = sched::ordered::<Finished>(WINDOW);
     let submit_device = gpu.device.clone();
     let submit = std::thread::spawn(move || submit_loop(encoder, consumer, submit_device, sink));

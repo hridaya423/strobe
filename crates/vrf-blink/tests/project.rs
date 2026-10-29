@@ -160,7 +160,7 @@ fn check_assets(view: &mut View) -> Result<()> {
 
 fn pin_online(ui: &Ui, dir: &Path) -> Result<()> {
     let project = Project::open(dir, Mode::Online)?;
-    let mut view = View::open_project(ui, &project, "index.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "index.html", 320, 240, None)?;
     check_assets(&mut view)?;
     view.close()
 }
@@ -200,7 +200,7 @@ fn offline_serves_pinned_without_network(ui: &Ui) -> Result<()> {
     ensure!(cdn.hits() == 1, "pinning made {} requests", cdn.hits());
 
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "index.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "index.html", 320, 240, None)?;
     check_assets(&mut view)?;
     view.close()?;
     ensure!(
@@ -211,7 +211,7 @@ fn offline_serves_pinned_without_network(ui: &Ui) -> Result<()> {
 
     cdn.stop();
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "index.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "index.html", 320, 240, None)?;
     check_assets(&mut view)?;
     view.close()
 }
@@ -240,7 +240,7 @@ fn offline_serves_https_pin_from_lock(ui: &Ui) -> Result<()> {
     )?;
 
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "index.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "index.html", 320, 240, None)?;
     check_assets(&mut view)?;
     view.close()
 }
@@ -250,7 +250,7 @@ fn offline_rejects_unpinned(ui: &Ui) -> Result<()> {
     let url = cdn.url("/lib.js");
     let dir = scratch("unpinned", &url)?;
     let project = Project::open(&dir, Mode::Offline)?;
-    let Err(error) = View::open_project(ui, &project, "index.html", 320, 240) else {
+    let Err(error) = View::open_project(ui, &project, "index.html", 320, 240, None) else {
         bail!("an unpinned dependency loaded offline");
     };
     let message = format!("{error:#}");
@@ -275,7 +275,7 @@ fn offline_rejects_tampered_cache(ui: &Ui) -> Result<()> {
     fs::write(&cache, "window.cdnLoaded = \"tampered\";\n")?;
 
     let project = Project::open(&dir, Mode::Offline)?;
-    let Err(error) = View::open_project(ui, &project, "index.html", 320, 240) else {
+    let Err(error) = View::open_project(ui, &project, "index.html", 320, 240, None) else {
         bail!("a cache that no longer matches its digest was served");
     };
     let message = format!("{error:#}");
@@ -286,7 +286,7 @@ fn offline_rejects_tampered_cache(ui: &Ui) -> Result<()> {
 fn origin_behaves_like_https(ui: &Ui) -> Result<()> {
     let dir = scratch("features", "http://unused.invalid/lib.js")?;
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "features.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "features.html", 320, 240, None)?;
     let state = view.evaluate(
         r#"(async () => {
           const data = await (await fetch('data.json')).json();
@@ -326,7 +326,7 @@ fn range_requests_return_partial_content(ui: &Ui) -> Result<()> {
     let dir = scratch("range", "http://unused.invalid/lib.js")?;
     let clip = fs::read(dir.join("clip.webm"))?;
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "features.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "features.html", 320, 240, None)?;
     let probe = |view: &mut View, range: Option<&str>, path: &str| -> Result<Value> {
         let headers = range.map_or(json!({}), |r| json!({"Range": r}));
         view.evaluate(&format!(
@@ -446,7 +446,7 @@ fn check_frames(view: &mut View, frames: &[u32], canvas: (u32, u32), at: u32) ->
 fn video_seeks_to_frame(ui: &Ui) -> Result<()> {
     let dir = scratch("video", "http://unused.invalid/lib.js")?;
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "video.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "video.html", 320, 240, None)?;
     check_frames(&mut view, &[7, 2, 9], (64, 64), 32)?;
     view.close()
 }
@@ -478,7 +478,7 @@ fn video_seeks_across_ranged_requests(ui: &Ui) -> Result<()> {
         "the clip is too small for Chromium to need more than one request"
     );
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "video.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "video.html", 320, 240, None)?;
     check_frames(&mut view, &[87, 3, 99, 50, 87], (320, 240), 16)?;
     view.close()
 }
@@ -488,10 +488,15 @@ fn render_fails_on_late_unpinned_request(ui: &Ui) -> Result<()> {
     let url = cdn.url("/late.js");
     let dir = scratch("late", &url)?;
     let project = Project::open(&dir, Mode::Offline)?;
-    let mut view = View::open_project(ui, &project, "late.html", 320, 240)?;
+    let mut view = View::open_project(ui, &project, "late.html", 320, 240, None)?;
     let config = Config::new(320, 240, Rational::new(30, 1), Codec::H264, 5);
     let out = dir.join("out.mp4");
-    let Err(error) = render(&mut view, &config, |frame| format!("seek({frame})"), &out) else {
+    let Err(error) = render(
+        &mut view,
+        &config,
+        |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+        &out,
+    ) else {
         bail!("a render with an unpinned request succeeded");
     };
     let message = format!("{error:#}");
