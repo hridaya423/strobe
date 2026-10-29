@@ -131,7 +131,7 @@ pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
         config.channels
     );
     ensure!(
-        samples.len() % config.channels as usize == 0,
+        samples.len().is_multiple_of(config.channels as usize),
         "{} samples are not whole frames of {} channels",
         samples.len(),
         config.channels
