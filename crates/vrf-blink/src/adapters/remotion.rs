@@ -1,20 +1,22 @@
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
+use percent_encoding::percent_decode_str;
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use vrf::audio::{RemotionAsset, mix, remotion_clips, saturate};
 use vrf_encode::{Codec, Rational};
 
-use crate::driver::{Config, Plan, Runs, Summary, render_runs};
+use super::{PerFrame, StageStats, add_audio, audio_samples, cache_dir, hash_tree, short_hex};
+use crate::driver::{Config, Plan, Runs, render_runs};
 use crate::{Mode, Project, Ui, View};
 
 const REMOTION_JS: &str = include_str!("../../js/remotion.js");
@@ -23,7 +25,6 @@ const BUNDLE_JS: &str = include_str!("../../js/remotion-bundle.mjs");
 const SERVE_JS: &str = include_str!("../../js/remotion-serve.mjs");
 
 const PROBE_SIZE: (i32, i32) = (640, 360);
-const NOT_HASHED: [&str; 5] = ["node_modules", ".git", ".vrf", ".cache", "out"];
 const ENTRY_CANDIDATES: [&str; 8] = [
     "src/index.ts",
     "src/index.tsx",
@@ -43,6 +44,7 @@ const REMOTION_COMMANDS: [&str; 6] = [
     "compositions",
 ];
 const RETRY_MARK: &str = "Rendering the frame will be retried";
+const AUDIO_BIT_RATE: u32 = 320_000;
 
 pub struct Options {
     pub project: PathBuf,
@@ -54,6 +56,8 @@ pub struct Options {
     pub mode: Mode,
     pub timeout: Duration,
     pub plan: Plan,
+    /// Mix the composition's audio into the file. Off leaves a video-only file.
+    pub audio: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -85,42 +89,14 @@ pub struct FrameAssets {
 }
 
 #[derive(Debug, Serialize)]
-pub struct StageStats {
-    pub mean_ms: f64,
-    pub p50_ms: f64,
-    pub p99_ms: f64,
-    pub max_ms: f64,
-}
-
-impl StageStats {
-    fn of(samples: &[Duration]) -> StageStats {
-        let summary = Summary::of(samples);
-        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        StageStats {
-            mean_ms: ms(summary.mean),
-            p50_ms: ms(summary.p50),
-            p99_ms: ms(summary.p99),
-            max_ms: ms(samples.iter().copied().max().unwrap_or_default()),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
 pub struct Stages {
     pub bundle_s: f64,
     pub bundle_cached: bool,
     pub frame_server_s: f64,
     pub probe_s: f64,
     pub render_s: f64,
+    pub audio_s: f64,
     pub finish_s: f64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PerFrame {
-    pub seek: StageStats,
-    pub begin_to_paint: StageStats,
-    pub convert: StageStats,
-    pub encode: StageStats,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,11 +122,6 @@ pub struct Report {
 pub struct Bundle {
     pub dir: PathBuf,
     pub cached: bool,
-}
-
-fn cache_dir() -> PathBuf {
-    std::env::var_os("VRF_CACHE_DIR")
-        .map_or_else(|| std::env::temp_dir().join("vrf-cache"), PathBuf::from)
 }
 
 fn entry_in_scripts(project: &Path) -> Option<PathBuf> {
@@ -188,32 +159,6 @@ fn find_entry(project: &Path) -> Result<PathBuf> {
         })
 }
 
-fn hash_tree(context: &mut digest::Context, root: &Path, dir: &Path) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)
-        .with_context(|| format!("read {}", dir.display()))?
-        .collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        if NOT_HASHED
-            .iter()
-            .any(|name| entry.file_name() == OsStr::new(name))
-        {
-            continue;
-        }
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            hash_tree(context, root, &path)?;
-            continue;
-        }
-        let metadata = fs::metadata(&path)?;
-        let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
-        context.update(path.strip_prefix(root)?.as_os_str().as_encoded_bytes());
-        context.update(&metadata.len().to_le_bytes());
-        context.update(&modified.to_le_bytes());
-    }
-    Ok(())
-}
-
 fn input_hash(project: &Path, entry: &Path) -> Result<String> {
     let mut context = digest::Context::new(&digest::SHA256);
     hash_tree(&mut context, project, project)?;
@@ -226,10 +171,7 @@ fn input_hash(project: &Path, entry: &Path) -> Result<String> {
             bundler.display()
         )
     })?);
-    Ok(context.finish().as_ref()[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(short_hex(context))
 }
 
 /// Bundles the project with its own `@remotion/bundler` in a Node subprocess. The result is
@@ -396,6 +338,19 @@ impl Page {
     }
 }
 
+fn project_file(url: &str, roots: &[&Path]) -> Result<PathBuf> {
+    let relative = url
+        .strip_prefix("vrf://project/")
+        .map(|rest| rest.split(['?', '#']).next().unwrap_or_default())
+        .and_then(|rest| percent_decode_str(rest).decode_utf8().ok())
+        .with_context(|| format!("audio source {url} is not a file of the project"))?;
+    roots
+        .iter()
+        .map(|root| root.join(&*relative))
+        .find(|path| path.is_file())
+        .with_context(|| format!("audio source {url} is not in the project or its bundle"))
+}
+
 fn resolve_references(frames: &mut [FrameAssets]) {
     let sources: HashMap<(String, u64), String> = frames
         .iter()
@@ -512,16 +467,38 @@ pub fn render(
     let render_s = render_started.elapsed();
     let Runs {
         plan,
-        muxer,
+        mut muxer,
         frames: mut collected,
         stats,
         lead_in_frames,
     } = runs;
+
+    resolve_references(&mut collected);
+    let step = Instant::now();
+    if options.audio {
+        let per_frame_assets = collected
+            .iter()
+            .map(|f| {
+                f.assets
+                    .iter()
+                    .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
+                    .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let project_dir = options.project.canonicalize()?;
+        let clips = remotion_clips(&per_frame_assets, composition.fps, |url| {
+            project_file(url, &[&bundle.dir, &project_dir])
+        })?;
+        let mut pcm = mix(&clips, audio_samples(count, config.frame_rate))?;
+        saturate(&mut pcm);
+        add_audio(&mut muxer, &pcm, AUDIO_BIT_RATE)?;
+    }
+    let audio_s = step.elapsed();
     let step = Instant::now();
     muxer.finish()?;
     let finish_s = step.elapsed();
 
-    resolve_references(&mut collected);
     let elapsed = started.elapsed();
     Ok(Report {
         composition,
@@ -539,6 +516,7 @@ pub fn render(
             frame_server_s: offthread_s.as_secs_f64(),
             probe_s: probe_s.as_secs_f64(),
             render_s: render_s.as_secs_f64(),
+            audio_s: audio_s.as_secs_f64(),
             finish_s: finish_s.as_secs_f64(),
         },
         per_frame: PerFrame {

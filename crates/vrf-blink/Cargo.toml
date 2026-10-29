@@ -41,3 +41,7 @@ harness = false
 [[test]]
 name = "corpus_raw"
 harness = false
+
+[[test]]
+name = "hyperframes"
+harness = false

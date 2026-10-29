@@ -129,6 +129,7 @@
   const waitHfReady = async (timeoutMs) => {
     const deadline = realNow() + timeoutMs;
     for (;;) {
+      window.__hfFlushSync?.();
       if (typeof window.__hfStartupError === 'string') throw new Error(window.__hfStartupError);
       if (typeof hf.seek === 'function' && hf.duration > 0) return;
       if (realNow() >= deadline) break;
@@ -180,6 +181,7 @@
   const waitSubCompositionTimelines = async (timeoutMs) => {
     const deadline = realNow() + timeoutMs;
     for (;;) {
+      window.__hfFlushSync?.();
       const missing = unregisteredTimelineIds();
       if (missing.length === 0 || !(await authorScriptsMayRegisterTimelines())) break;
       if (realNow() >= deadline) {
