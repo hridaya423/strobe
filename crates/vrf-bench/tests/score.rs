@@ -191,3 +191,10 @@ fn sparse_png_directory_joins_a_full_video_by_frame_number() {
     assert_eq!(r.worst.max_delta.value, 0.0);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn ffprobe_size_with_trailing_field_parses() {
+    assert_eq!(vrf_bench::score::parse_size("1080,1080,\n").unwrap(), (1080, 1080));
+    assert_eq!(vrf_bench::score::parse_size("1920,1080\n").unwrap(), (1920, 1080));
+    assert!(vrf_bench::score::parse_size("\n").is_err());
+}

@@ -261,6 +261,12 @@ pub fn open(path: &Path) -> Result<Source> {
     })
 }
 
+pub fn parse_size(csv: &str) -> Result<(u32, u32)> {
+    let mut fields = csv.trim().split(',');
+    let mut next = || fields.next().context("ffprobe printed no size");
+    Ok((next()?.parse()?, next()?.parse()?))
+}
+
 fn decode(path: &Path) -> Result<Decoder> {
     let probe = Command::new("ffprobe")
         .args([
@@ -282,11 +288,7 @@ fn decode(path: &Path) -> Result<Decoder> {
         path.display()
     );
     let dims = String::from_utf8(probe.stdout)?;
-    let (w, h) = dims
-        .trim()
-        .split_once(',')
-        .context("ffprobe printed no size")?;
-    let (width, height): (u32, u32) = (w.parse()?, h.parse()?);
+    let (width, height) = parse_size(&dims)?;
     let mut child = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
