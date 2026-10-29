@@ -33,6 +33,8 @@ pub use pool::{InputPool, POOL_SIZE, PixelFormat, PoolFrame, Ready};
 
 const NVIDIA: u32 = 0x10DE;
 
+static SETUP: Mutex<()> = Mutex::new(());
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
     P1,
@@ -551,6 +553,9 @@ impl NvencEncoder {
             "frame rate must be positive"
         );
         let id = codec_guid(config.codec)?;
+        let _setup = SETUP
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let session = Session::open(device)?;
         ensure!(
             session.guids()?.contains(&id),
