@@ -1,0 +1,29 @@
+<!doctype html>
+<html><body>
+<script>
+const CODECS = {
+  'h264-baseline': 'avc1.42E01E', 'h264-main': 'avc1.4D401F', 'h264-high': 'avc1.640028',
+  'hevc-main': 'hvc1.1.6.L93.B0', 'hevc-main-hev1': 'hev1.1.6.L93.B0',
+  'vp8': 'vp8', 'vp9': 'vp09.00.10.08', 'av1': 'av01.0.04M.08',
+};
+async function probe() {
+  const out = { userAgent: navigator.userAgent, webcodecs: typeof VideoDecoder, canPlayType: {}, decoder: {}, decoderSw: {}, encoder: {} };
+  const video = document.createElement('video');
+  const mime = { 'h264-high': 'video/mp4; codecs="avc1.640028"', 'hevc-main': 'video/mp4; codecs="hvc1.1.6.L93.B0"', 'vp9': 'video/webm; codecs="vp09.00.10.08"', 'av1': 'video/mp4; codecs="av01.0.04M.08"', 'prores': 'video/quicktime; codecs="apch"' };
+  for (const [k, v] of Object.entries(mime)) out.canPlayType[k] = video.canPlayType(v);
+  for (const [k, codec] of Object.entries(CODECS)) {
+    for (const [slot, pref] of [['decoder', 'no-preference'], ['decoderSw', 'prefer-software']]) {
+      try {
+        const s = await VideoDecoder.isConfigSupported({ codec, codedWidth: 1920, codedHeight: 1080, hardwareAcceleration: pref });
+        out[slot][k] = s.supported;
+      } catch (e) { out[slot][k] = 'error: ' + e.message; }
+    }
+    try {
+      const s = await VideoEncoder.isConfigSupported({ codec, width: 1920, height: 1080 });
+      out.encoder[k] = s.supported;
+    } catch (e) { out.encoder[k] = 'error: ' + e.message; }
+  }
+  return out;
+}
+</script>
+</body></html>
