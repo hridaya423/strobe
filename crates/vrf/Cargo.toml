@@ -5,3 +5,13 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow = "1.0.104"
+objc2 = "0.6.5"
+objc2-core-foundation = "0.3.2"
+objc2-io-surface = "0.3.2"
+objc2-metal = { version = "0.3.2", features = ["objc2-io-surface"] }
+pollster = "0.4.0"
+wgpu = { version = "30.0.1", default-features = false, features = ["metal", "wgsl", "std", "parking_lot"] }
+
+[dev-dependencies]
+objc2-core-video = { version = "0.3.2", features = ["objc2-io-surface"] }
