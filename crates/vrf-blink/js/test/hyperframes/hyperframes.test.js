@@ -434,3 +434,36 @@ describe('item 21: virtual time', () => {
     await hf.close();
   });
 });
+
+describe('item 22: capture image path', () => {
+  const captureFor = async (init) => {
+    const hf = await openHf(browser, basic(), { init });
+    const capture = hf.meta.capture;
+    await hf.close();
+    return capture;
+  };
+
+  test('item_22_capture_image_path', async () => {
+    assert.deepEqual(await captureFor({ quality: 'standard' }), { format: 'jpeg', quality: 100, transparent: false });
+    assert.deepEqual(await captureFor({ quality: 'high' }), { format: 'jpeg', quality: 100, transparent: false });
+    assert.deepEqual(await captureFor({ quality: 'draft' }), { format: 'jpeg', quality: 80, transparent: false });
+    assert.deepEqual(await captureFor({ alpha: true }), { format: 'png', quality: null, transparent: true });
+    assert.deepEqual(await captureFor({ motionBlur: true }), { format: 'png', quality: null, transparent: false });
+  });
+
+  test('item_22_alpha_clears_page_backgrounds_for_the_driver', async () => {
+    const dir = project({ 'index.html': composition({ body: box, script: tween }).replace('<style>', '<style>html{background:#fff}') });
+    const hf = await openHf(browser, dir, { init: { alpha: true } });
+    assert.equal(hf.meta.needsDefaultBackgroundOverride, true);
+    assert.equal(await styleOf(hf, 'body', 'backgroundColor'), 'rgba(0, 0, 0, 0)');
+    assert.equal(await hf.page.evaluate('getComputedStyle(document.documentElement).backgroundColor'), 'rgba(0, 0, 0, 0)');
+    await hf.close();
+  });
+
+  test('item_22_opaque_capture_leaves_page_backgrounds_alone', async () => {
+    const hf = await openHf(browser, basic());
+    assert.equal(hf.meta.needsDefaultBackgroundOverride, false);
+    assert.equal(await styleOf(hf, 'body', 'backgroundColor'), 'rgb(0, 0, 0)');
+    await hf.close();
+  });
+});
