@@ -9,7 +9,7 @@ use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
     CVPixelBufferGetHeightOfPlane, CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress,
     CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
-    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
 };
 
 #[repr(C)]

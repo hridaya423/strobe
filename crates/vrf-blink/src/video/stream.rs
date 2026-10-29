@@ -79,6 +79,11 @@ impl Stream {
     /// Waits for frame `index`, with the following `ahead` frames queued behind it.
     pub fn get(&self, index: usize, ahead: usize) -> Result<Arc<Frame>> {
         self.want(index, ahead);
+        self.wait(index)
+    }
+
+    /// Waits for frame `index`, which must lie in the window the last [`Stream::want`] set.
+    pub fn wait(&self, index: usize) -> Result<Arc<Frame>> {
         let mut state = self.shared.state.lock().unwrap();
         loop {
             if let Some(frame) = state.cache.get(&index) {
