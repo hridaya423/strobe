@@ -24,6 +24,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 ## Scope (user, 2026-10-29)
 
 - User, 2026-10-29: skip Kinetograph runs; benchmark only our engine against HyperFrames and Remotion.
+- User, 2026-10-29: do not overfit speed to the launch videos; make the engine fast in general and make it feel fast. Every speed change is judged on a broad benchmark set (synthetic axes plus the launch corpus), with time to first frame and short-video wall time reported alongside fps.
 - Final deliverable the user asked for: when Gates B and C are done, a visual of our speed-up over HyperFrames and Remotion per launch video (wall time and "N x faster", measured with `vrf-bench` on an idle machine, quality within the noise floor). Speed is the priority: "make it SPEEDY".
 
 - Run Phases 0 to 7. Phase 8 stays gated.
