@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
+import { inflateSync } from 'node:zlib';
 import { benchDir, launch } from './cdp.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,4 +144,46 @@ export async function openHf(browser, root, { width, height, extra, scripts = pa
       server.close();
     },
   };
+}
+
+export function pngPixel(png, x, y) {
+  let offset = 8;
+  const idat = [];
+  let width = 0;
+  let channels = 4;
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.toString('ascii', offset + 4, offset + 8);
+    const data = png.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      channels = data[9] === 6 ? 4 : 3;
+    }
+    if (type === 'IDAT') idat.push(data);
+    offset += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const rows = [];
+  for (let row = 0, pos = 0; pos < raw.length; row++, pos += stride + 1) {
+    const filter = raw[pos];
+    const line = Buffer.from(raw.subarray(pos + 1, pos + 1 + stride));
+    const up = rows[row - 1];
+    for (let i = 0; i < stride; i++) {
+      const left = i >= channels ? line[i - channels] : 0;
+      const above = up ? up[i] : 0;
+      const upLeft = up && i >= channels ? up[i - channels] : 0;
+      const paeth = () => {
+        const p = left + above - upLeft;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - above);
+        const pc = Math.abs(p - upLeft);
+        return pa <= pb && pa <= pc ? left : pb <= pc ? above : upLeft;
+      };
+      line[i] = (line[i] + [0, left, above, (left + above) >> 1, paeth()][filter]) & 255;
+    }
+    rows.push(line);
+  }
+  const at = rows[y].subarray(x * channels, x * channels + channels);
+  return [...at];
 }

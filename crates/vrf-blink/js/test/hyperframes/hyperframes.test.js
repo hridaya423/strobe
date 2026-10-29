@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { compileProject, composition, openHf, project } from './host.js';
+import { compileProject, composition, openHf, pngPixel, project } from './host.js';
 import { launch } from './cdp.js';
 
 let browser;
@@ -604,6 +604,92 @@ describe('item 24: static dedup equivalence', () => {
     const result = await staticFrames(hf);
     assert.equal(result.eligible, false);
     assert.match(result.reason, /no GSAP tweens/);
+    await hf.close();
+  });
+});
+
+describe('shared items 1 to 8', () => {
+  test('item_01_output_geometry_rounds_up_to_even', async () => {
+    const dir = project({ 'index.html': composition({ width: 321, height: 181, body: box, script: tween }) });
+    const hf = await openHf(browser, dir);
+    assert.deepEqual([hf.meta.width, hf.meta.height, hf.meta.outWidth, hf.meta.outHeight], [321, 181, 322, 182]);
+    await hf.close();
+    const even = await openHf(browser, basic());
+    assert.deepEqual([even.meta.outWidth, even.meta.outHeight], [320, 180]);
+    await even.close();
+  });
+
+  test('item_02_frame_count_and_timing', async () => {
+    const framesFor = async (duration, init) => {
+      const dir = project({ 'index.html': composition({ duration, body: box, script: `const tl = gsap.timeline({paused:true}); tl.to("#box", {x: 5, duration: ${duration}}); window.__timelines = {main: tl};` }) });
+      const hf = await openHf(browser, dir, { init });
+      const frames = hf.meta.frames;
+      await hf.close();
+      return frames;
+    };
+    assert.equal(await framesFor(1), 10);
+    assert.equal(await framesFor(1.05), 11);
+    assert.equal(await framesFor(1.00005), 10, 'within 1e-3 frames of an integer counts as that integer');
+    assert.equal(await framesFor(1.004), 11);
+    assert.equal(await framesFor(1, { fps: [30000, 1001] }), 30);
+    assert.equal(await framesFor(10.01, { fps: [30000, 1001] }), 300);
+  });
+
+  test('item_02_frame_i_is_i_over_fps_exactly_for_rational_rates', async () => {
+    const hf = await openHf(browser, basic(), { init: { fps: [30000, 1001] } });
+    await spyRenderSeek(hf);
+    for (const i of [0, 1, 7, 29, 100]) await hf.seek(i);
+    const times = await seeks(hf);
+    [0, 1, 7, 29, 100].forEach((i, k) => assert.ok(Math.abs(times[k] - (i * 1001) / 30000) < 1e-12, `frame ${i}: ${times[k]}`));
+    await hf.close();
+  });
+
+  test('item_03_sparse_rendering_matches_the_full_render', async () => {
+    const full = await openHf(browser, basic());
+    const reference = new Map();
+    for (let i = 0; i < 10; i++) {
+      await full.seek(i);
+      reference.set(i, await full.page.screenshot());
+    }
+    await full.close();
+    const sparse = await openHf(browser, basic());
+    for (const i of [7, 2, 9, 0, 5]) {
+      await sparse.seek(i);
+      assert.ok((await sparse.page.screenshot()).equals(reference.get(i)), `frame ${i} rendered out of order equals the sequential render`);
+    }
+    await sparse.close();
+  });
+
+  test('item_04_colour_pipeline_end_state', { skip: 'encoder side: yuv420p, CRF 18 and BT.709 tags are Task 2.x/3.7' }, () => {});
+  test('item_05_audio_mix_model', { skip: 'Task 5.2' }, () => {});
+  test('item_06_video_frame_choice', { skip: 'host side lookup, Task 5.1; the page applies the chosen frames (item 23)' }, () => {});
+  test('item_07_video_colour_conversion', { skip: 'host side decode, Task 5.1' }, () => {});
+
+  const veil = () =>
+    project({
+      'index.html': composition({
+        body: '<div id="veil" style="position:absolute;inset:0;background:rgba(255,0,0,0.5)"></div>',
+        script: idleTimeline(1),
+        style: 'html,body,#root{background:transparent}',
+      }),
+    });
+
+  test('item_08_opaque_output_keeps_the_browser_default_background_like_the_reference', async () => {
+    const hf = await openHf(browser, veil());
+    assert.equal(hf.meta.needsDefaultBackgroundOverride, false);
+    await hf.seek(0);
+    const [r, g, b] = pngPixel(await hf.page.screenshot(), 10, 10);
+    assert.ok(r === 255 && Math.abs(g - 128) <= 1 && Math.abs(b - 128) <= 1, `got ${[r, g, b]}`);
+    await hf.close();
+  });
+
+  test('item_08_alpha_output_keeps_the_overlay_translucent', async () => {
+    const hf = await openHf(browser, veil(), { init: { alpha: true } });
+    assert.equal(hf.meta.needsDefaultBackgroundOverride, true);
+    await hf.page.send('Emulation.setDefaultBackgroundColorOverride', { color: { r: 0, g: 0, b: 0, a: 0 } });
+    await hf.seek(0);
+    const [r, g, b, a] = pngPixel(await hf.page.screenshot(), 10, 10);
+    assert.ok(r >= 254 && g <= 1 && b <= 1 && Math.abs(a - 128) <= 1, `got ${[r, g, b, a]}`);
     await hf.close();
   });
 });
