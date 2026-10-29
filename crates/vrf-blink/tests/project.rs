@@ -53,7 +53,9 @@ impl Cdn {
                             Ok(n) => request.extend_from_slice(&chunk[..n]),
                         }
                     }
-                    hits.fetch_add(1, Ordering::AcqRel);
+                    if request.starts_with(b"GET /") && !request.starts_with(b"GET / ") {
+                        hits.fetch_add(1, Ordering::AcqRel);
+                    }
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{SCRIPT}",
                         SCRIPT.len()
@@ -524,8 +526,37 @@ fn render_fails_on_late_unpinned_request(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+fn probe(cdn: &Cdn, bytes: &[u8]) -> Result<()> {
+    let mut stream = std::net::TcpStream::connect(cdn.address)?;
+    stream.write_all(bytes)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    stream.read_to_end(&mut Vec::new())?;
+    Ok(())
+}
+
+fn loopback_probes_are_not_counted(_ui: &Ui) -> Result<()> {
+    let cdn = Cdn::start()?;
+    probe(
+        &cdn,
+        b"GET / HTTP/1.1\r\nhost: localhost\r\nuser-agent: node\r\n\r\n",
+    )?;
+    probe(&cdn, b"\x16\x03\x01\x05\xa5\x01\x00\x05\xa1\x03\x03")?;
+    ensure!(cdn.hits() == 0, "probes counted as {} requests", cdn.hits());
+    probe(&cdn, b"GET /lib.js HTTP/1.1\r\nhost: localhost\r\n\r\n")?;
+    ensure!(
+        cdn.hits() == 1,
+        "a script request counted as {}",
+        cdn.hits()
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let code = support::run(&[
+        (
+            "loopback_probes_are_not_counted",
+            loopback_probes_are_not_counted,
+        ),
         ("online_pins_and_renders", online_pins_and_renders),
         (
             "offline_serves_pinned_without_network",
