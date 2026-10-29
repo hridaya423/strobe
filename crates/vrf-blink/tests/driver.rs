@@ -308,6 +308,34 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let config = Config::new(640, 360, FRAME_RATE, Codec::H264, 96);
+    let out = std::env::temp_dir().join("vrf-blink-parallel-failure.mp4");
+    let started = Instant::now();
+    let Err(error) = render_runs(
+        &config,
+        Plan::new(4, 7),
+        0,
+        &out,
+        || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
+        |view, frame| {
+            ensure!(frame != 50, "frame 50 is broken");
+            view.evaluate(&format!("seek({frame})")).map(drop)
+        },
+    ) else {
+        anyhow::bail!("a render with a broken frame succeeded");
+    };
+    let text = format!("{error:#}");
+    ensure!(text.contains("frame 50 is broken"), "{text}");
+    ensure!(
+        started.elapsed() < Duration::from_secs(60),
+        "took {:?} to fail",
+        started.elapsed()
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     support::run(&[
         ("driver_colour_per_frame_300", colour_per_frame_300),
@@ -317,6 +345,10 @@ fn main() -> ExitCode {
         (
             "driver_parallel_views_write_the_same_bytes_as_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "driver_failing_view_stops_the_others",
+            a_failing_view_stops_the_others_and_names_its_frame,
         ),
         (
             "driver_ticking_view_delivers_every_begin_frame",
