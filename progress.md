@@ -11,7 +11,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | 3. Blink path on macOS, Gate B | not started | |
 | 4. Throughput, Gate C | not started | |
 | 5. Media | not started | |
-| 6. Windows and Linux | not started | |
+| 6. Windows and Linux | in progress | Windows spikes 6.6 and 6.7 done (`docs/spikes/6.6-win-begin-frame-delivery.md`, `6.7-win-d3d-import-nvenc.md`). Linux deferred |
 | 7. CEF patch set | not started | |
 | 8. Native fast path (gated) | not opened | |
 
@@ -36,3 +36,4 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 - Surprise: Remotion 4.0.240 unpacked a truncated `chrome-headless-shell` on this machine (Node 26.7). The zip is valid, and `ditto` unpacks it correctly. `fetch-external.sh` checks the binary and re-extracts it.
 - Surprise: Remotion 4.0.169 and 4.0.60 use the system Google Chrome when present. All Remotion runs therefore pass `--browser-executable` with a pinned `chrome-headless-shell` 156.0.8078.73.
 - `metrics.py` computes tail fractions in float32, which counts some deltas of exactly 8 as over 8. The scorer uses integer deltas; see plan Task 0.4.
+- 2026-10-29: `win-pc` has an Intel UHD 770 iGPU beside the RTX 4070 Ti. Chromium picks the iGPU unless started with `--use-adapter-luid=<high>,<low>` or `--force-high-performance-gpu`. Windows work lives in `C:\Users\mukes\vrf` (synced with `git bundle`, no remote). Installed there: rustup with 1.99.1 (user level), `sharkdp.hyperfine` through winget, and `bench/engines` node modules. Build Tools 2022 and 2026, cmake, ninja, ffmpeg with NVENC and Node were already present.
