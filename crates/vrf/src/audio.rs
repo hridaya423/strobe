@@ -76,10 +76,23 @@ pub fn mix(clips: &[Clip], length: u64) -> Result<Vec<f32>> {
     Ok(out)
 }
 
+/// Clips to full scale. Remotion mixes through 16-bit files, so its sum saturates; HyperFrames
+/// keeps floats and lowers the gain of the encoded track instead, so it needs no call.
+pub fn saturate(samples: &mut [f32]) {
+    for sample in samples {
+        *sample = sample.clamp(-1.0, 1.0);
+    }
+}
+
 fn channels(src: &Path) -> Result<u32> {
     let out = Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "a:0"])
-        .args(["-show_entries", "stream=channels", "-of", "default=nw=1:nk=1"])
+        .args([
+            "-show_entries",
+            "stream=channels",
+            "-of",
+            "default=nw=1:nk=1",
+        ])
         .arg(src)
         .output()
         .context("running ffprobe")?;

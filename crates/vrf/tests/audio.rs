@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use vrf::audio::{
     Clip, HyperframesTrack, RemotionAsset, SAMPLE_RATE, Volume, hyperframes_clips, mix,
-    remotion_clips,
+    remotion_clips, saturate,
 };
 
 fn bench_dir() -> PathBuf {
@@ -472,6 +472,7 @@ struct Row {
     error: f64,
     lag: i64,
     worst: f32,
+    worst_at: usize,
 }
 
 fn first_sound(stereo: &[f32], threshold: f32) -> Option<usize> {
@@ -537,12 +538,17 @@ fn compare(
             reach,
         ),
         worst: diff.iter().fold(0.0, |m, v| m.max(v.abs())),
+        worst_at: diff
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .map_or(0, |(i, _)| i / 2),
     }
 }
 
 fn print_row(row: &Row) {
     eprintln!(
-        "{:<24} clips {:>2}  span {:>2}-{:>2}s  onset ours/REF {:?}/{:?}  rms ours {:.5} REF {:.5}  error {:.5} ({:+.1} dB)  lag {:+}  worst {:.5}",
+        "{:<24} clips {:>2}  span {:>2}-{:>2}s  onset ours/REF {:?}/{:?}  rms ours {:.5} REF {:.5}  error {:.5} ({:+.1} dB)  lag {:+}  worst {:.5} at {:.3}s",
         row.id,
         row.clips,
         row.span_start,
@@ -554,7 +560,8 @@ fn print_row(row: &Row) {
         row.error,
         20.0 * (row.error / row.rms_ref.max(1e-12)).log10(),
         row.lag,
-        row.worst
+        row.worst,
+        row.worst_at as f64 / f64::from(SAMPLE_RATE)
     );
 }
 
@@ -569,7 +576,8 @@ fn remotion_corpus_row(entry: &Entry) -> Row {
     let last = first + (SPAN_SECONDS * u64::from(entry.fps)) as usize;
     let span: Vec<Vec<RemotionAsset>> = collected.frames[first..last].to_vec();
     let clips = remotion_clips(&span, collected.fps, public_file(&project)).unwrap();
-    let ours = mix(&clips, SPAN_SECONDS * u64::from(SAMPLE_RATE)).unwrap();
+    let mut ours = mix(&clips, SPAN_SECONDS * u64::from(SAMPLE_RATE)).unwrap();
+    saturate(&mut ours);
     let reference = dir.file("ref.wav");
     run(
         project.join("node_modules/.bin/remotion"),
@@ -586,7 +594,21 @@ fn remotion_corpus_row(entry: &Entry) -> Row {
         &project,
     )
     .unwrap();
-    compare(entry.id, clips.len(), start, &ours, &decode(&reference))
+    let expected = decode(&reference);
+    if let Some(dump) = std::env::var_os("VRF_DUMP") {
+        let bytes = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        fs::write(
+            Path::new(&dump).join(format!("{}.ours", entry.id)),
+            bytes(&ours),
+        )
+        .unwrap();
+        fs::write(
+            Path::new(&dump).join(format!("{}.ref", entry.id)),
+            bytes(&expected),
+        )
+        .unwrap();
+    }
+    compare(entry.id, clips.len(), start, &ours, &expected)
 }
 
 fn hyperframes_corpus_row(entry: &Entry) -> Row {
@@ -645,11 +667,17 @@ fn hyperframes_corpus_row(entry: &Entry) -> Row {
 #[ignore = "renders every corpus composition's audio with its own framework; run with --ignored --nocapture"]
 fn corpus_audio_matches_each_frameworks_own_mix_over_ten_seconds() {
     let mut rows = Vec::new();
-    for entry in &REMOTION {
+    for entry in REMOTION
+        .iter()
+        .filter(|e| std::env::var("VRF_ONLY").map_or(true, |o| o == e.id))
+    {
         rows.push(remotion_corpus_row(entry));
         print_row(rows.last().unwrap());
     }
-    for entry in &HYPERFRAMES {
+    for entry in HYPERFRAMES
+        .iter()
+        .filter(|e| std::env::var("VRF_ONLY").map_or(true, |o| o == e.id))
+    {
         rows.push(hyperframes_corpus_row(entry));
         print_row(rows.last().unwrap());
     }
