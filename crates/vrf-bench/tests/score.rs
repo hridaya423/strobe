@@ -105,6 +105,7 @@ fn scores_a_video_against_png_frames() {
     let st = std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-i"])
         .arg(&video)
+        .args(["-start_number", "0"])
         .arg(pngs.join("%04d.png"))
         .status()
         .unwrap();
@@ -142,5 +143,51 @@ fn different_frame_counts_are_an_error() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("short.mkv has only 5 frames"), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn sparse_png_directory_joins_a_full_video_by_frame_number() {
+    let dir = std::env::temp_dir().join(format!("vrf-score-sparse-{}", std::process::id()));
+    let pngs = dir.join("pngs");
+    std::fs::create_dir_all(&pngs).unwrap();
+    let video = dir.join("v.mkv");
+    let st = std::process::Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x48:rate=10:duration=1",
+        ])
+        .args(["-c:v", "ffv1", "-pix_fmt", "bgr0"])
+        .arg(&video)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let st = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&video)
+        .args([
+            "-vf",
+            "select=not(mod(n\\,4))",
+            "-fps_mode",
+            "passthrough",
+            "-frame_pts",
+            "1",
+        ])
+        .arg(pngs.join("frame_%06d.png"))
+        .status()
+        .unwrap();
+    assert!(st.success());
+
+    let r = score(&pngs, &video, Sampling::All, None).unwrap();
+    assert_eq!(
+        r.per_frame.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        vec![0, 4, 8]
+    );
+    assert_eq!(r.worst.max_delta.value, 0.0);
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "historyId": "4770d9fd-ca82-4b2e-be0f-dd485d71eda4",
+  "currentRevision": null,
+  "pendingChanges": false,
+  "files": {
+    "index.html": {
+      "hash": "fe95a8d9589fdb92f44fda05398f81f16d88c80f10405547dbaaaec165f8c84c",
+      "content": "/Users/hridyaagrawal/.cache/hyperframes/history/4770d9fd-ca82-4b2e-be0f-dd485d71eda4/blobs/fe/fe95a8d9589fdb92f44fda05398f81f16d88c80f10405547dbaaaec165f8c84c"
+    }
+  },
+  "revisions": {},
+  "checks": {
+    "latest": null,
+    "revisions": {},
+    "unversioned": []
+  },
+  "snapshots": {
+    "latest": null,
+    "revisions": {},
+    "unversioned": []
+  },
+  "renders": {
+    "latest": {
+      "id": "51ad1f76-2544-4e8a-8c90-debf370e690e",
+      "completedAt": 1793285609097,
+      "output": "/var/folders/w9/p_fpb3_x05n45_bt9_3wp5hw0000gn/T/vrf-refs-84385/run2.raw",
+      "status": "completed",
+      "revision": null
+    },
+    "retainedRevisions": []
+  },
+  "pendingArtifactCleanup": []
+}

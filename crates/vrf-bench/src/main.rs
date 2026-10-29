@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use vrf_bench::{corpus, engines::Engine, run, score};
+use vrf_bench::{corpus, engines::Engine, refs, run, score};
 
 #[derive(Parser)]
 #[command(name = "vrf-bench")]
@@ -22,6 +22,12 @@ enum Cmd {
         runs: usize,
         #[arg(long)]
         out_dir: Option<PathBuf>,
+    },
+    Refs {
+        #[arg(long, default_value = "all")]
+        corpus: String,
+        #[arg(long, default_value = "every:5")]
+        keep: score::Sampling,
     },
     Score {
         #[arg(long)]
@@ -57,6 +63,21 @@ fn main() -> Result<()> {
                         r.engine, r.corpus_id, r.median_s, r.fps
                     );
                 }
+            }
+        }
+        Cmd::Refs { corpus, keep } => {
+            for c in corpus::select(&corpus)? {
+                let out = corpus::bench_dir().join("refs").join(&c.id);
+                let floor = refs::build(&c, keep, &out)?;
+                let w = &floor.worst;
+                println!(
+                    "{:<24} {} frames, noise floor: FLIP mean {:.5}, max delta {}, over 8 {:.4}%",
+                    c.id,
+                    floor.frames_compared,
+                    w.flip_mean.value,
+                    w.max_delta.value,
+                    w.frac_over_8.value * 100.0
+                );
             }
         }
         Cmd::Score { a, b, frames, out } => {

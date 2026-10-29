@@ -207,7 +207,7 @@ impl std::str::FromStr for Sampling {
 }
 
 impl Sampling {
-    fn keeps(self, index: u32) -> bool {
+    pub fn keeps(self, index: u32) -> bool {
         match self {
             Sampling::All => true,
             Sampling::Every(n) => index % n == 0,
@@ -215,16 +215,53 @@ impl Sampling {
     }
 }
 
-pub fn frames(path: &Path) -> Result<Box<dyn Iterator<Item = Result<Rgb8>> + Send>> {
+pub type Frames = Box<dyn Iterator<Item = Result<(u32, Rgb8)>> + Send>;
+
+pub struct Source {
+    pub frames: Frames,
+    pub sparse: bool,
+}
+
+pub fn frame_index(path: &Path) -> Option<u32> {
+    let stem = path.file_stem()?.to_str()?;
+    let end = stem.rfind(|c: char| c.is_ascii_digit())? + 1;
+    let start = stem[..end]
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |i| i + 1);
+    stem[start..end].parse().ok()
+}
+
+pub fn png_frames(dir: &Path) -> Result<Vec<(u32, std::path::PathBuf)>> {
+    let mut pngs: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
+        .map(|p| {
+            frame_index(&p)
+                .map(|i| (i, p.clone()))
+                .with_context(|| format!("no frame number in {}", p.display()))
+        })
+        .collect::<Result<_>>()?;
+    pngs.sort();
+    ensure!(!pngs.is_empty(), "no PNG frames in {}", dir.display());
+    Ok(pngs)
+}
+
+pub fn open(path: &Path) -> Result<Source> {
     if path.is_dir() {
-        let mut pngs: Vec<_> = std::fs::read_dir(path)?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
-            .collect();
-        pngs.sort();
-        ensure!(!pngs.is_empty(), "no PNG frames in {}", path.display());
-        return Ok(Box::new(pngs.into_iter().map(|p| Rgb8::load_png(&p))));
+        let pngs = png_frames(path)?;
+        let frames = pngs.into_iter().map(|(i, p)| Ok((i, Rgb8::load_png(&p)?)));
+        return Ok(Source {
+            frames: Box::new(frames),
+            sparse: true,
+        });
     }
+    Ok(Source {
+        frames: Box::new(decode(path)?.zip(0u32..).map(|(f, i)| f.map(|f| (i, f)))),
+        sparse: false,
+    })
+}
+
+fn decode(path: &Path) -> Result<Decoder> {
     let probe = Command::new("ffprobe")
         .args([
             "-v",
@@ -264,12 +301,12 @@ pub fn frames(path: &Path) -> Result<Box<dyn Iterator<Item = Result<Rgb8>> + Sen
         .spawn()
         .context("running ffmpeg")?;
     let out = child.stdout.take().context("ffmpeg stdout")?;
-    Ok(Box::new(Decoder {
+    Ok(Decoder {
         child,
         out,
         width,
         height,
-    }))
+    })
 }
 
 struct Decoder {
@@ -340,7 +377,7 @@ pub fn score(
     sampling: Sampling,
     heatmap_path: Option<&Path>,
 ) -> Result<Report> {
-    let (mut fa_iter, mut fb_iter) = (frames(a)?, frames(b)?);
+    let (mut sa, mut sb) = (open(a)?, open(b)?);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
     let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(u32, Rgb8, Rgb8)>(workers * 2);
     let job_rx = std::sync::Mutex::new(job_rx);
@@ -359,28 +396,9 @@ pub fn score(
                 })
             })
             .collect();
-        let mut fed = Ok(());
-        for i in 0u32.. {
-            let (fa, fb) = match (fa_iter.next(), fb_iter.next()) {
-                (None, None) => break,
-                (Some(Ok(fa)), Some(Ok(fb))) => (fa, fb),
-                (Some(Err(e)), _) | (_, Some(Err(e))) => {
-                    fed = Err(e.context(format!("decoding frame {i}")));
-                    break;
-                }
-                (Some(_), None) => {
-                    fed = Err(anyhow::anyhow!("{} has only {i} frames", b.display()));
-                    break;
-                }
-                (None, Some(_)) => {
-                    fed = Err(anyhow::anyhow!("{} has only {i} frames", a.display()));
-                    break;
-                }
-            };
-            if sampling.keeps(i) && job_tx.send((i, fa, fb)).is_err() {
-                break;
-            }
-        }
+        let fed = join(&mut sa, &mut sb, a, b, |i, fa, fb| {
+            sampling.keeps(i) && job_tx.send((i, fa, fb)).is_err()
+        });
         drop(job_tx);
         let mut all = Vec::new();
         for h in handles {
@@ -413,9 +431,17 @@ pub fn score(
         ssim: pick(|s| s.ssim, false),
     };
     if let Some(path) = heatmap_path {
-        let n = worst.flip_mean.frame as usize;
-        let fa = frames(a)?.nth(n).context("worst frame vanished")??;
-        let fb = frames(b)?.nth(n).context("worst frame vanished")??;
+        let n = worst.flip_mean.frame;
+        let find = |p: &Path| -> Result<Rgb8> {
+            for f in open(p)?.frames {
+                let (i, f) = f?;
+                if i == n {
+                    return Ok(f);
+                }
+            }
+            anyhow::bail!("frame {n} vanished from {}", p.display())
+        };
+        let (fa, fb) = (find(a)?, find(b)?);
         heatmap(&compare_with_map(&fa, &fb)?.1).save_png(path)?;
     }
     Ok(Report {
@@ -425,4 +451,53 @@ pub fn score(
         worst,
         per_frame,
     })
+}
+
+fn join(
+    sa: &mut Source,
+    sb: &mut Source,
+    a: &Path,
+    b: &Path,
+    mut pair: impl FnMut(u32, Rgb8, Rgb8) -> bool,
+) -> Result<()> {
+    use std::cmp::Ordering;
+    let (mut x, mut y) = (sa.frames.next().transpose()?, sb.frames.next().transpose()?);
+    let mut compared = 0;
+    loop {
+        let order = match (&x, &y) {
+            (None, None) => return Ok(()),
+            (Some((i, _)), Some((j, _))) => i.cmp(j),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+        };
+        match order {
+            Ordering::Equal => {
+                let ((i, fa), (_, fb)) = (x.take().unwrap(), y.take().unwrap());
+                if pair(i, fa, fb) {
+                    return Ok(());
+                }
+                compared = i + 1;
+                x = sa.frames.next().transpose()?;
+                y = sb.frames.next().transpose()?;
+            }
+            Ordering::Less => {
+                missing(sb.sparse, b, x.as_ref().unwrap().0, y.is_none(), compared)?;
+                x = sa.frames.next().transpose()?;
+            }
+            Ordering::Greater => {
+                missing(sa.sparse, a, y.as_ref().unwrap().0, x.is_none(), compared)?;
+                y = sb.frames.next().transpose()?;
+            }
+        }
+    }
+}
+
+fn missing(sparse: bool, path: &Path, frame: u32, ended: bool, frames: u32) -> Result<()> {
+    ensure!(
+        sparse || !ended,
+        "{} has only {frames} frames",
+        path.display()
+    );
+    ensure!(sparse, "{} has no frame {frame}", path.display());
+    Ok(())
 }
