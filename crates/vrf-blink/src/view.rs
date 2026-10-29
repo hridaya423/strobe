@@ -20,6 +20,8 @@ const SETTLE_QUIET: Duration = Duration::from_millis(50);
 const SETTLE_ROUNDS: usize = 10;
 const SETTLE_CLEAN: usize = 2;
 
+const GENERIC_FONTS: [&str; 4] = ["Times New Roman", "Arial", "Script", "Impact"];
+
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// One `OnAcceleratedPaint`. The surface is retained, so it outlives the callback, and CEF
@@ -291,6 +293,11 @@ impl View {
             let browser_settings = BrowserSettings {
                 windowless_frame_rate: 1000,
                 background_color: 0xFFFFFFFF,
+                standard_font_family: GENERIC_FONTS[0].into(),
+                serif_font_family: GENERIC_FONTS[0].into(),
+                sans_serif_font_family: GENERIC_FONTS[1].into(),
+                cursive_font_family: GENERIC_FONTS[2].into(),
+                fantasy_font_family: GENERIC_FONTS[3].into(),
                 ..Default::default()
             };
             let mut client = BlinkClient::new(
@@ -328,14 +335,17 @@ impl View {
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
         };
         if let Some(source) = init_script {
+            view.execute("Page.enable", serde_json::json!({}))?;
             view.execute(
                 "Page.addScriptToEvaluateOnNewDocument",
                 serde_json::json!({"source": source}),
             )?;
             view.execute("Page.navigate", serde_json::json!({"url": target}))?;
-            loaded
-                .recv_timeout(LOAD_TIMEOUT)
-                .context("the page did not finish loading")?;
+            while view.evaluate("location.href")? != target.as_str() {
+                loaded
+                    .recv_timeout(LOAD_TIMEOUT)
+                    .context("the page did not finish loading")?;
+            }
         }
         view.settle()?;
         Ok(view)

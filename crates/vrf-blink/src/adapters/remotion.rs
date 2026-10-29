@@ -1,0 +1,500 @@
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs;
+use std::ops::RangeInclusive;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+use anyhow::{Context, Result, ensure};
+use ring::digest;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use vrf_encode::{Codec, Rational};
+
+use crate::driver::{Capture, Config, Pipeline, Summary};
+use crate::{Mode, Project, Ui, View};
+
+const REMOTION_JS: &str = include_str!("../../js/remotion.js");
+const CLOCK_JS: &str = include_str!("../../js/clock.js");
+const BUNDLE_JS: &str = include_str!("../../js/remotion-bundle.mjs");
+
+const PROBE_SIZE: (i32, i32) = (640, 360);
+const LEAD_IN: u64 = 10;
+const NOT_HASHED: [&str; 5] = ["node_modules", ".git", ".vrf", ".cache", "out"];
+const ENTRY_CANDIDATES: [&str; 8] = [
+    "src/index.ts",
+    "src/index.tsx",
+    "src/index.js",
+    "src/index.jsx",
+    "remotion/index.ts",
+    "remotion/index.tsx",
+    "index.ts",
+    "index.js",
+];
+const REMOTION_COMMANDS: [&str; 6] = [
+    "studio",
+    "preview",
+    "render",
+    "bundle",
+    "still",
+    "compositions",
+];
+const RETRY_MARK: &str = "Rendering the frame will be retried";
+
+pub struct Options {
+    pub project: PathBuf,
+    /// The file that calls `registerRoot`. Found from `package.json` or the usual places if absent.
+    pub entry: Option<PathBuf>,
+    pub composition: String,
+    /// The input props as JSON text.
+    pub props: Option<String>,
+    pub mode: Mode,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Composition {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub duration_in_frames: u64,
+}
+
+impl Composition {
+    /// The exact frame rate: a whole number, or a whole number over 1001.
+    pub fn frame_rate(&self) -> Result<Rational> {
+        [1, 1001]
+            .into_iter()
+            .map(|den| Rational::new((self.fps * den as f64).round() as i64, den))
+            .find(|rate| (rate.num as f64 / rate.den as f64 - self.fps).abs() < 1e-3)
+            .with_context(|| format!("frame rate {} is not a whole number or n/1001", self.fps))
+    }
+}
+
+/// What Remotion registered for one frame: audio and video the final mix needs. `src` is
+/// resolved, so a `same-as-` reference is replaced by the source it points at.
+#[derive(Debug, Clone)]
+pub struct FrameAssets {
+    pub frame: u64,
+    pub assets: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StageStats {
+    pub mean_ms: f64,
+    pub p50_ms: f64,
+    pub p99_ms: f64,
+}
+
+impl StageStats {
+    fn of(samples: &[Duration]) -> StageStats {
+        let summary = Summary::of(samples);
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        StageStats {
+            mean_ms: ms(summary.mean),
+            p50_ms: ms(summary.p50),
+            p99_ms: ms(summary.p99),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct Stages {
+    pub bundle_s: f64,
+    pub bundle_cached: bool,
+    pub probe_s: f64,
+    pub open_s: f64,
+    pub render_s: f64,
+    pub finish_s: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PerFrame {
+    pub seek: StageStats,
+    pub begin_to_paint: StageStats,
+    pub convert: StageStats,
+    pub encode: StageStats,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Report {
+    pub composition: Composition,
+    pub first_frame: u64,
+    pub frames: u64,
+    pub elapsed_s: f64,
+    pub fps: f64,
+    pub stages: Stages,
+    pub per_frame: PerFrame,
+    pub repeats: u64,
+    pub capture_retries: u64,
+    pub seek_retries: u64,
+    #[serde(skip)]
+    pub assets: Vec<FrameAssets>,
+}
+
+pub struct Bundle {
+    pub dir: PathBuf,
+    pub cached: bool,
+}
+
+fn cache_dir() -> PathBuf {
+    std::env::var_os("VRF_CACHE_DIR")
+        .map_or_else(|| std::env::temp_dir().join("vrf-cache"), PathBuf::from)
+}
+
+fn entry_in_scripts(project: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(project.join("package.json")).ok()?;
+    let package: Value = serde_json::from_str(&text).ok()?;
+    package["scripts"].as_object()?.values().find_map(|script| {
+        let words: Vec<&str> = script.as_str()?.split_whitespace().collect();
+        let at = words.iter().position(|w| *w == "remotion")?;
+        let command = words.get(at + 1)?;
+        REMOTION_COMMANDS.contains(command).then_some(())?;
+        words[at + 2..]
+            .iter()
+            .find(|w| {
+                [".ts", ".tsx", ".js", ".jsx"]
+                    .iter()
+                    .any(|ext| w.ends_with(ext))
+            })
+            .map(PathBuf::from)
+    })
+}
+
+fn find_entry(project: &Path) -> Result<PathBuf> {
+    entry_in_scripts(project)
+        .or_else(|| {
+            ENTRY_CANDIDATES
+                .iter()
+                .map(PathBuf::from)
+                .find(|candidate| project.join(candidate).is_file())
+        })
+        .with_context(|| {
+            format!(
+                "no Remotion entry file in {}; pass one with --entry",
+                project.display()
+            )
+        })
+}
+
+fn hash_tree(context: &mut digest::Context, root: &Path, dir: &Path) -> Result<()> {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .with_context(|| format!("read {}", dir.display()))?
+        .collect::<std::io::Result<_>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if NOT_HASHED
+            .iter()
+            .any(|name| entry.file_name() == OsStr::new(name))
+        {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            hash_tree(context, root, &path)?;
+            continue;
+        }
+        let metadata = fs::metadata(&path)?;
+        let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
+        context.update(path.strip_prefix(root)?.as_os_str().as_encoded_bytes());
+        context.update(&metadata.len().to_le_bytes());
+        context.update(&modified.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn input_hash(project: &Path, entry: &Path) -> Result<String> {
+    let mut context = digest::Context::new(&digest::SHA256);
+    hash_tree(&mut context, project, project)?;
+    context.update(entry.as_os_str().as_encoded_bytes());
+    context.update(BUNDLE_JS.as_bytes());
+    let bundler = project.join("node_modules/@remotion/bundler/package.json");
+    context.update(&fs::read(&bundler).with_context(|| {
+        format!(
+            "{} is missing; run the project's package install",
+            bundler.display()
+        )
+    })?);
+    Ok(context.finish().as_ref()[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+/// Bundles the project with its own `@remotion/bundler` in a Node subprocess. The result is
+/// cached under `VRF_CACHE_DIR` (default: the system temp dir) by a hash of the project's files,
+/// the entry, the bundler version and the bundling script.
+pub fn bundle(project: &Path, entry: Option<&Path>) -> Result<Bundle> {
+    let project = project
+        .canonicalize()
+        .with_context(|| format!("project directory {} does not exist", project.display()))?;
+    let entry = match entry {
+        Some(entry) => entry.to_owned(),
+        None => find_entry(&project)?,
+    };
+    let entry = if entry.is_absolute() {
+        entry
+    } else {
+        project.join(entry)
+    };
+    ensure!(
+        entry.is_file(),
+        "entry file {} does not exist",
+        entry.display()
+    );
+    let hash = input_hash(&project, &entry)?;
+    let root = cache_dir().join("remotion");
+    let dir = root.join(&hash);
+    if dir.join("index.html").is_file() {
+        return Ok(Bundle { dir, cached: true });
+    }
+    fs::create_dir_all(&root)?;
+    let script = root.join("remotion-bundle.mjs");
+    fs::write(&script, BUNDLE_JS)?;
+    let partial = root.join(format!("{hash}.partial-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&partial);
+    let output = Command::new("node")
+        .arg(&script)
+        .arg(&project)
+        .arg(&entry)
+        .arg(&partial)
+        .output()
+        .context("run node to bundle the project")?;
+    ensure!(
+        output.status.success(),
+        "bundling {} failed:\n{}",
+        entry.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if let Err(error) = fs::rename(&partial, &dir) {
+        ensure!(
+            dir.join("index.html").is_file(),
+            "cannot move the bundle into place: {error}"
+        );
+        let _ = fs::remove_dir_all(&partial);
+    }
+    Ok(Bundle { dir, cached: false })
+}
+
+/// A bundled project that can open ready-to-seek views of one composition.
+pub struct Page {
+    project: Project,
+    script: String,
+    composition: String,
+}
+
+impl Page {
+    pub fn new(project: Project, options: &Options) -> Result<Page> {
+        let config = json!({
+            "inputProps": options.props.as_deref().unwrap_or("{}"),
+            "timeoutInMilliseconds": options.timeout.as_millis() as u64,
+            "captureMode": "raw",
+        });
+        Ok(Page {
+            project,
+            script: format!("globalThis.__vrf_rm_config = {config};\n{REMOTION_JS}\n{CLOCK_JS}"),
+            composition: serde_json::to_string(&options.composition)?,
+        })
+    }
+
+    /// Opens a view of `width` x `height` with the adapter and the virtual clock injected, and
+    /// initialises the composition in it.
+    pub fn open(&self, ui: &Ui, width: i32, height: i32) -> Result<(View, Composition)> {
+        let mut view = View::open_project(
+            ui,
+            &self.project,
+            "index.html",
+            width,
+            height,
+            Some(&self.script),
+        )?;
+        let meta = view
+            .evaluate(&format!(
+                "__vrf.rm.init({{ compositionId: {} }})",
+                self.composition
+            ))
+            .context("the composition did not initialise")?;
+        Ok((view, serde_json::from_value(meta)?))
+    }
+
+    fn probe(&self, ui: &Ui) -> Result<Composition> {
+        let (view, composition) = self.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
+        view.close()?;
+        Ok(composition)
+    }
+
+    /// Leaves the view showing `frame` once Remotion's barrier has cleared, and returns the
+    /// assets the frame registered. Frames must be seeked in increasing order for Remotion's
+    /// output to match its own renderer.
+    pub fn seek(view: &mut View, frame: u64, attempt: u32) -> Result<Vec<Value>> {
+        let result = view.evaluate(&format!("__vrf.rm.seek({frame}, {{ attempt: {attempt} }})"))?;
+        Ok(serde_json::from_value(result["assets"].clone())?)
+    }
+}
+
+fn resolve_references(frames: &mut [FrameAssets]) {
+    let sources: HashMap<(String, u64), String> = frames
+        .iter()
+        .flat_map(|f| &f.assets)
+        .filter_map(|asset| {
+            let src = asset["src"]
+                .as_str()
+                .filter(|s| !s.starts_with("same-as-"))?;
+            Some((
+                (asset["id"].as_str()?.to_owned(), asset["frame"].as_u64()?),
+                src.to_owned(),
+            ))
+        })
+        .collect();
+    for asset in frames.iter_mut().flat_map(|f| &mut f.assets) {
+        let Some(reference) = asset["src"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("same-as-"))
+        else {
+            continue;
+        };
+        let source = reference
+            .rsplit_once('-')
+            .and_then(|(id, frame)| sources.get(&(id.to_owned(), frame.parse().ok()?)));
+        if let Some(source) = source.cloned() {
+            asset["src"] = Value::String(source);
+        }
+    }
+}
+
+/// Renders a Remotion composition to a video file: bundle, serve through `vrf://project/`, read
+/// the composition's size, rate and length from the page, then drive each frame through the
+/// page's barrier, one begin frame, the GPU convert, the encoder and the muxer.
+///
+/// `frames` is an inclusive range of composition frames; `None` renders all of them. Frames
+/// before the range run in order without being captured, because Remotion's output depends on
+/// the frames before it. A frame that fails with `delayRender` retries left is retried on a fresh
+/// page with the next attempt number.
+pub fn render(
+    ui: &Ui,
+    options: &Options,
+    frames: Option<RangeInclusive<u64>>,
+    codec: Codec,
+    out: &Path,
+) -> Result<Report> {
+    let started = Instant::now();
+    let step = Instant::now();
+    let bundle = bundle(&options.project, options.entry.as_deref())?;
+    let bundle_s = step.elapsed();
+    let page = Page::new(Project::open(&bundle.dir, options.mode)?, options)?;
+
+    let step = Instant::now();
+    let composition = page.probe(ui)?;
+    let probe_s = step.elapsed();
+    ensure!(
+        composition.width % 2 == 0 && composition.height % 2 == 0,
+        "{}x{} has an odd side; padding to even is not implemented",
+        composition.width,
+        composition.height
+    );
+    let range = frames.unwrap_or(0..=composition.duration_in_frames - 1);
+    let (first, last) = (*range.start(), *range.end());
+    ensure!(
+        first <= last && last < composition.duration_in_frames,
+        "frames {first}-{last} are outside the composition's {} frames",
+        composition.duration_in_frames
+    );
+    let count = last - first + 1;
+
+    let step = Instant::now();
+    let (mut view, _) = page.open(ui, composition.width as i32, composition.height as i32)?;
+    let open_s = step.elapsed();
+
+    let config = Config::new(
+        composition.width,
+        composition.height,
+        composition.frame_rate()?,
+        codec,
+        count,
+    );
+    let mut pipeline = Pipeline::new(&config, out)?;
+    let mut capture = Capture::default();
+    let mut seek_times = Vec::with_capacity(count as usize);
+    let mut collected = Vec::with_capacity(count as usize);
+    let mut seek_retries = 0;
+
+    let render_started = Instant::now();
+    for index in 0..count {
+        let frame = first + index;
+        let step = Instant::now();
+        if index == 0 {
+            for before in first.saturating_sub(LEAD_IN)..first {
+                Page::seek(&mut view, before, 1)?;
+            }
+        }
+        let mut attempt = 1;
+        let assets = loop {
+            match Page::seek(&mut view, frame, attempt) {
+                Ok(assets) => break assets,
+                Err(error) if error.to_string().contains(RETRY_MARK) => {
+                    let (fresh, _) =
+                        page.open(ui, composition.width as i32, composition.height as i32)?;
+                    std::mem::replace(&mut view, fresh).close()?;
+                    attempt += 1;
+                    seek_retries += 1;
+                }
+                Err(error) => {
+                    let error = match view.check_project() {
+                        Err(refused) => error.context(refused.to_string()),
+                        Ok(()) => error,
+                    };
+                    return Err(error.context(format!("seek to frame {frame}")));
+                }
+            }
+        };
+        collected.push(FrameAssets { frame, assets });
+        seek_times.push(step.elapsed());
+
+        match capture
+            .next(&view, config.watchdog)
+            .with_context(|| format!("capture frame {frame}"))?
+        {
+            Some(paint) => pipeline.frame(index, &paint)?,
+            None => pipeline.repeat(index)?,
+        }
+    }
+    let repeats = pipeline.repeats;
+    let convert = std::mem::take(&mut pipeline.convert);
+    let (muxer, encode) = pipeline.finish()?;
+    let render_s = render_started.elapsed();
+    view.check_project()?;
+    view.close()?;
+    let step = Instant::now();
+    muxer.finish()?;
+    let finish_s = step.elapsed();
+
+    resolve_references(&mut collected);
+    let elapsed = started.elapsed();
+    Ok(Report {
+        composition,
+        first_frame: first,
+        frames: count,
+        elapsed_s: elapsed.as_secs_f64(),
+        fps: count as f64 / elapsed.as_secs_f64(),
+        stages: Stages {
+            bundle_s: bundle_s.as_secs_f64(),
+            bundle_cached: bundle.cached,
+            probe_s: probe_s.as_secs_f64(),
+            open_s: open_s.as_secs_f64(),
+            render_s: render_s.as_secs_f64(),
+            finish_s: finish_s.as_secs_f64(),
+        },
+        per_frame: PerFrame {
+            seek: StageStats::of(&seek_times),
+            begin_to_paint: StageStats::of(&capture.begin_to_paint),
+            convert: StageStats::of(&convert),
+            encode: StageStats::of(&encode),
+        },
+        repeats,
+        capture_retries: capture.retries,
+        seek_retries,
+        assets: collected,
+    })
+}
