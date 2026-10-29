@@ -13,6 +13,7 @@ fn parses_hyperfine_wall_clock_summary() {
 
 #[test]
 fn rejects_a_failed_run() {
-    let json = include_str!("fixtures/hyperfine.json").replacen("\"exit_code\": 0", "\"exit_code\": 1", 1);
+    let json =
+        include_str!("fixtures/hyperfine.json").replacen("\"exit_code\": 0", "\"exit_code\": 1", 1);
     assert!(Timing::from_hyperfine(&json).is_err());
 }
