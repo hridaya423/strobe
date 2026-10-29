@@ -56,6 +56,9 @@ enum Command {
         /// Milliseconds before a `delayRender` that is never cleared fails the frame.
         #[arg(long, default_value_t = 30_000)]
         timeout: u64,
+        /// Leave the audio out of the file.
+        #[arg(long)]
+        no_audio: bool,
         /// Print a JSON report on stdout instead of the summary line.
         #[arg(long)]
         json: bool,
@@ -147,6 +150,7 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
         fps,
         props: props_argument,
         timeout,
+        no_audio,
         json,
     } = cli.command;
     let mode = if offline { Mode::Offline } else { Mode::Online };
@@ -158,6 +162,7 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
             props: props(props_argument)?,
             mode,
             timeout: Duration::from_millis(timeout),
+            audio: !no_audio,
         };
         let report = remotion::render(&ui, &options, frames, codec.into(), &output)?;
         let line = summary(
@@ -174,6 +179,7 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
             hyperframes: hyperframes_package,
             fps,
             mode,
+            audio: !no_audio,
         };
         let report = hyperframes::render(&ui, &options, frames, codec.into(), &output)?;
         let line = summary(

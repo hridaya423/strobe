@@ -53,6 +53,7 @@ fn options(project: &Path, composition: &str) -> Options {
         props: None,
         mode: Mode::Offline,
         timeout: Duration::from_millis(2500),
+        audio: true,
     }
 }
 
@@ -237,7 +238,10 @@ fn assets_are_collected_and_resolved(ui: &Ui) -> Result<()> {
     let out = work_dir().join("assets.mp4");
     let report = remotion::render(
         ui,
-        &options(&project, "Offset"),
+        &Options {
+            audio: false,
+            ..options(&project, "Offset")
+        },
         Some(0..=35),
         Codec::H264,
         &out,
@@ -262,6 +266,119 @@ fn assets_are_collected_and_resolved(ui: &Ui) -> Result<()> {
             && offset[0]["src"] == "http://assets.invalid/offset.mp3"
             && offset[0]["playbackRate"] == 2,
         "frame 31: {offset:?}"
+    );
+    Ok(())
+}
+
+fn tone_project(name: &str, tone: bool) -> Result<PathBuf> {
+    let project = work_dir().join(name);
+    let _ = fs::remove_dir_all(&project);
+    fs::create_dir_all(project.join("src"))?;
+    fs::create_dir_all(project.join("public"))?;
+    fs::write(
+        project.join("package.json"),
+        format!(r#"{{"name":"vrf-{name}","private":true}}"#),
+    )?;
+    symlink(
+        bench_dir().join("engines/node_modules"),
+        project.join("node_modules"),
+    )?;
+    let output = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+        .arg("sine=frequency=440:sample_rate=44100:duration=2")
+        .args(["-af", "volume=4", "-ac", "2"])
+        .arg(project.join("public/tone.wav"))
+        .output()?;
+    ensure!(output.status.success(), "ffmpeg could not make the tone");
+    fs::write(
+        project.join("src/index.ts"),
+        "import {registerRoot} from 'remotion';\nimport {Root} from './Root';\nregisterRoot(Root);\n",
+    )?;
+    let audio = if tone {
+        "<Sequence from={7}><Audio src={staticFile('tone.wav')} volume={0.5} /></Sequence>"
+    } else {
+        ""
+    };
+    fs::write(
+        project.join("src/Root.tsx"),
+        format!(
+            "import React from 'react';\n\
+             import {{Audio, Composition, Sequence, staticFile, AbsoluteFill}} from 'remotion';\n\
+             const Tone: React.FC = () => (\n\
+               <AbsoluteFill style={{{{background: '#123'}}}}>{audio}</AbsoluteFill>\n\
+             );\n\
+             export const Root: React.FC = () => (\n\
+               <Composition id=\"Tone\" component={{Tone}} durationInFrames={{90}} fps={{30}} width={{320}} height={{180}} />\n\
+             );\n"
+        ),
+    )?;
+    Ok(project)
+}
+
+fn tone_options(project: &Path) -> Options {
+    Options {
+        entry: Some("src/index.ts".into()),
+        ..options(project, "Tone")
+    }
+}
+
+fn audio_onset_and_level_match_remotions_own_mix_in_the_muxed_file(ui: &Ui) -> Result<()> {
+    let project = tone_project("tone", true)?;
+    let reference = work_dir().join("tone-ref.wav");
+    let output = Command::new(node_bin(&project, "remotion"))
+        .current_dir(&project)
+        .env("REMOTION_DISABLE_TELEMETRY", "1")
+        .args(["render", "src/index.ts", "Tone"])
+        .arg(&reference)
+        .args(["--codec=wav", "--browser-executable"])
+        .arg(headless_shell())
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "remotion render failed:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let out = work_dir().join("tone.mp4");
+    let report = remotion::render(ui, &tone_options(&project), None, Codec::H264, &out)?;
+    ensure!(report.frames == 90);
+
+    let (ours, theirs) = (
+        support::decode_audio(&out)?,
+        support::decode_audio(&reference)?,
+    );
+    let (a, b) = (
+        support::onset(&ours, 0.02).context("our audio is silent")?,
+        support::onset(&theirs, 0.02).context("remotion's audio is silent")?,
+    );
+    let (ra, rb) = (
+        support::rms(&ours, b + 2_000, 90_000),
+        support::rms(&theirs, b + 2_000, 90_000),
+    );
+    println!(
+        "remotion tone: onset ours {a}, remotion {b}, ideal {}; rms ours {ra:.6}, remotion {rb:.6}; {} and {} frames",
+        7.0 / 30.0 * 48000.0,
+        ours.len() / 2,
+        theirs.len() / 2
+    );
+    ensure!(a.abs_diff(b) <= 48, "onset {a} vs remotion {b}");
+    ensure!(((ra - rb) / rb).abs() < 0.01, "rms {ra} vs {rb}");
+    ensure!(
+        (ours.len() / 2).abs_diff(theirs.len() / 2) <= 1024,
+        "{} frames against remotion's {}",
+        ours.len() / 2,
+        theirs.len() / 2
+    );
+    Ok(())
+}
+
+fn a_composition_without_audio_stays_video_only(ui: &Ui) -> Result<()> {
+    let project = tone_project("silent", false)?;
+    let out = work_dir().join("silent.mp4");
+    remotion::render(ui, &tone_options(&project), Some(0..=9), Codec::H264, &out)?;
+    ensure!(
+        !support::has_audio_stream(&out)?,
+        "the file has an audio stream"
     );
     Ok(())
 }
@@ -318,6 +435,14 @@ fn main() -> ExitCode {
             failed_frame_is_retried_on_a_fresh_page,
         ),
         ("remotion_assets", assets_are_collected_and_resolved),
+        (
+            "remotion_audio_matches_remotions_mix",
+            audio_onset_and_level_match_remotions_own_mix_in_the_muxed_file,
+        ),
+        (
+            "remotion_without_audio_stays_video_only",
+            a_composition_without_audio_stays_video_only,
+        ),
         ("remotion_bundle_cache", bundle_is_cached_by_input),
         (
             "remotion_unknown_composition",

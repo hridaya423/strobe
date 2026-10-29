@@ -143,6 +143,7 @@ fn options(project: &Path) -> Options {
         hyperframes: Some(hyperframes_package()),
         fps: 30,
         mode: Mode::Offline,
+        audio: true,
     }
 }
 

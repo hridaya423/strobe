@@ -30,6 +30,8 @@ pub struct Options {
     pub hyperframes: Option<PathBuf>,
     pub fps: u32,
     pub mode: Mode,
+    /// Mix the composition's audio into the file. Off leaves a video-only file.
+    pub audio: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
@@ -374,12 +376,14 @@ pub fn render(
     view.close()?;
 
     let step = Instant::now();
-    let project_dir = options.project.canonicalize()?;
-    let clips = hyperframes_clips(&page.tracks, track_file(&project_dir))?;
-    let timeline = mix(&clips, audio_samples(composition.frames, frame_rate))?;
-    let from = audio_samples(first, frame_rate) as usize * 2;
-    let to = from + audio_samples(count, frame_rate) as usize * 2;
-    add_audio(&mut muxer, &timeline[from..to], AUDIO_BIT_RATE)?;
+    if options.audio {
+        let project_dir = options.project.canonicalize()?;
+        let clips = hyperframes_clips(&page.tracks, track_file(&project_dir))?;
+        let timeline = mix(&clips, audio_samples(composition.frames, frame_rate))?;
+        let from = audio_samples(first, frame_rate) as usize * 2;
+        let to = from + audio_samples(count, frame_rate) as usize * 2;
+        add_audio(&mut muxer, &timeline[from..to], AUDIO_BIT_RATE)?;
+    }
     let audio_s = step.elapsed();
     let step = Instant::now();
     muxer.finish()?;

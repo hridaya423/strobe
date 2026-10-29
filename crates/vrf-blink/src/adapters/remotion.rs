@@ -55,6 +55,8 @@ pub struct Options {
     pub props: Option<String>,
     pub mode: Mode,
     pub timeout: Duration,
+    /// Mix the composition's audio into the file. Off leaves a video-only file.
+    pub audio: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -487,23 +489,25 @@ pub fn render(
 
     resolve_references(&mut collected);
     let step = Instant::now();
-    let per_frame_assets = collected
-        .iter()
-        .map(|f| {
-            f.assets
-                .iter()
-                .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
-                .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let project_dir = options.project.canonicalize()?;
-    let clips = remotion_clips(&per_frame_assets, composition.fps, |url| {
-        project_file(url, &[&bundle.dir, &project_dir])
-    })?;
-    let mut pcm = mix(&clips, audio_samples(count, config.frame_rate))?;
-    saturate(&mut pcm);
-    add_audio(&mut muxer, &pcm, AUDIO_BIT_RATE)?;
+    if options.audio {
+        let per_frame_assets = collected
+            .iter()
+            .map(|f| {
+                f.assets
+                    .iter()
+                    .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
+                    .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let project_dir = options.project.canonicalize()?;
+        let clips = remotion_clips(&per_frame_assets, composition.fps, |url| {
+            project_file(url, &[&bundle.dir, &project_dir])
+        })?;
+        let mut pcm = mix(&clips, audio_samples(count, config.frame_rate))?;
+        saturate(&mut pcm);
+        add_audio(&mut muxer, &pcm, AUDIO_BIT_RATE)?;
+    }
     let audio_s = step.elapsed();
     let step = Instant::now();
     muxer.finish()?;
