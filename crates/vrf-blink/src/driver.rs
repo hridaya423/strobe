@@ -280,6 +280,7 @@ pub fn render(
     let (muxer, encode) = submit.join().expect("submit thread panicked")?;
     stats.elapsed = started.elapsed();
     stats.encode = encode;
+    view.check_project()?;
     muxer.finish()?;
     Ok(stats)
 }
