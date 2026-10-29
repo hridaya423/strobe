@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { adapterSource, seek } from '../../../vrf-blink/js/test/remotion/harness.mjs';
 import { Browser } from '../../../vrf-blink/js/test/remotion/cdp.mjs';
@@ -11,6 +12,9 @@ const BUNDLE = join(HERE, '../../../vrf-blink/js/remotion-bundle.mjs');
 
 const [projectDir, entry, compositionId, to] = process.argv.slice(2);
 const work = mkdtempSync(join(tmpdir(), 'vrf-rm-assets-'));
+const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+const proxy = createServer((_, res) => res.writeHead(200, { 'content-type': 'image/png', 'access-control-allow-origin': '*' }).end(PIXEL));
+await new Promise((resolve) => proxy.listen(0, resolve));
 let browser, server;
 try {
   const bundleDir = join(work, 'bundle');
@@ -19,7 +23,7 @@ try {
   browser = await Browser.launch();
   const page = await browser.newPage({ width: 320, height: 180 });
   const environment = "globalThis.process = { env: { NODE_ENV: 'production' } };";
-  await page.addScript(`${environment}\nglobalThis.__vrf_rm_config = {};\n${adapterSource()}`);
+  await page.addScript(`${environment}\nglobalThis.__vrf_rm_config = { proxyPort: ${proxy.address().port} };\n${adapterSource()}`);
   await page.goto(`${server.url}/index.html`);
   const { fps, durationInFrames } = await page.eval(`__vrf.rm.init(${JSON.stringify({ compositionId })})`);
   const end = to === undefined ? durationInFrames : Number(to);
@@ -32,5 +36,6 @@ try {
 } finally {
   await browser?.close();
   await server?.close();
+  proxy.close();
   rmSync(work, { recursive: true, force: true });
 }

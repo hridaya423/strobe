@@ -79,7 +79,7 @@ pub fn mix(clips: &[Clip], length: u64) -> Result<Vec<f32>> {
 fn channels(src: &Path) -> Result<u32> {
     let out = Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "a:0"])
-        .args(["-show_entries", "stream=channels", "-of", "csv=p=0"])
+        .args(["-show_entries", "stream=channels", "-of", "default=nw=1:nk=1"])
         .arg(src)
         .output()
         .context("running ffprobe")?;
