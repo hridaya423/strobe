@@ -29,8 +29,8 @@ def main():
     prefixes = sys.argv[1:] or [""]
     for prefix in prefixes:
         print(f"\n### {prefix or 'all'}\n")
-        print("| run | frames | id mismatches | worst patch err | prep | seek | paint | post | total mean | total p99 | host cpu | child cpu | full-frame mean abs err (r,g,b), max, >2 / >8 | load |")
-        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        print("| run | frames | id mismatches | worst patch err | prep | seek | paint | post | total mean | total p50 | total p99 | host cpu | child cpu | full-frame mean abs err (r,g,b), max, >2 / >8 | load |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for r in rows:
             if not r["tag"].startswith(prefix):
                 continue
@@ -38,7 +38,7 @@ def main():
             if r["full"]:
                 _, er, eg, eb, mx, o2, o4, o8 = r["full"]
                 full = f"{er}, {eg}, {eb}; {mx}; {o2}% / {o8}%"
-            print(f"| {r['tag']} | {r['frames']} | {r['mismatch']} | {r['patch']:.1f} | {r['prep'][0]:.2f} | {r['seek'][0]:.2f} | {r['paint'][0]:.2f} | {r['post'][0]:.2f} | {r['total'][0]:.2f} | {r['total'][2]:.2f} | {r['host cpu'][0]:.2f} | {r['child']:.2f} | {full} | {r['load']} |")
+            print(f"| {r['tag']} | {r['frames']} | {r['mismatch']} | {r['patch']:.1f} | {r['prep'][0]:.2f} | {r['seek'][0]:.2f} | {r['paint'][0]:.2f} | {r['post'][0]:.2f} | {r['total'][0]:.2f} | {r['total'][1]:.2f} | {r['total'][2]:.2f} | {r['host cpu'][0]:.2f} | {r['child']:.2f} | {full} | {r['load']} |")
 
 
 main()
