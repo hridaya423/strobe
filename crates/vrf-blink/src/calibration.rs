@@ -14,7 +14,7 @@ use crate::{Ui, View};
 const PROBE: &str = include_str!("../js/calibrate.html");
 const SIZE: (i32, i32) = (1920, 1080);
 const CANDIDATES: [usize; 4] = [1, 2, 4, 8];
-const SAMPLE: Duration = Duration::from_millis(350);
+const SAMPLE: Duration = Duration::from_millis(300);
 const WARMUP: Duration = Duration::from_millis(50);
 const GAIN: f64 = 1.25;
 const BASE: u64 = 1_000_003;
@@ -66,7 +66,7 @@ fn frames_in(view: &mut View, deadline: Instant, base: u64) -> Result<u64> {
     Ok(frames)
 }
 
-/// Runs a page of a few hundred moving boxes in up to eight views, one view count at a time, for
+/// Runs a page of a hundred and fifty moving boxes in up to eight views, one view count at a time, for
 /// about two seconds in all, and keeps a view count only if it raises the frame rate by 25%
 /// over the last one kept.
 pub fn measure(ui: &Ui) -> Result<Calibration> {

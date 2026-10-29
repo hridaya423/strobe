@@ -9,7 +9,7 @@ use anyhow::{Context, Result, ensure};
 use objc2_io_surface::IOSurfaceLockOptions;
 use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url};
 use vrf_blink::driver::{Capture, Config, Pipeline, Plan, Stats, Summary, render, render_runs};
-use vrf_blink::{Mode, Paint, Project, Ui, View};
+use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
 use vrf_encode::{Codec, Rational};
 
 const FRAME_RATE: Rational = Rational::new(30, 1);
@@ -336,6 +336,40 @@ fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn calibration_is_measured_once_and_flags_override_it(ui: &Ui) -> Result<()> {
+    let cache = std::env::temp_dir().join(format!("vrf-calibration-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&cache);
+    let started = Instant::now();
+    let measured = calibration::calibrated(ui, &cache)?;
+    let took = started.elapsed();
+    println!("calibration took {took:?}: {measured:?}");
+    ensure!(
+        [1, 2, 4, 8].contains(&measured.views) && measured.run >= 1,
+        "{measured:?}"
+    );
+    ensure!(measured.fps.len() >= 2, "{measured:?}");
+    ensure!(took < Duration::from_secs(10), "calibration took {took:?}");
+    let started = Instant::now();
+    let cached = calibration::calibrated(ui, &cache)?;
+    ensure!(cached == measured, "{cached:?} is not {measured:?}");
+    ensure!(
+        started.elapsed() < Duration::from_millis(100),
+        "the cached calibration took {:?}",
+        started.elapsed()
+    );
+    ensure!(
+        std::fs::read_to_string(&cache)?.contains(&calibration::key()),
+        "the cache is not keyed by machine and CEF version"
+    );
+    std::fs::remove_file(&cache)?;
+    let plan = calibration::plan(ui, Some(3), Some(5), 7)?;
+    ensure!(
+        (plan.views, plan.run, plan.lead_in) == (3, 5, 7),
+        "{plan:?}"
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     support::run(&[
         ("driver_colour_per_frame_300", colour_per_frame_300),
@@ -345,6 +379,10 @@ fn main() -> ExitCode {
         (
             "driver_parallel_views_write_the_same_bytes_as_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "driver_calibration_is_cached_and_flags_override_it",
+            calibration_is_measured_once_and_flags_override_it,
         ),
         (
             "driver_failing_view_stops_the_others",
