@@ -52,12 +52,26 @@ const SHIM: &str = r#"(() => {
       return res;
     });
   };
+  const ga = Document.prototype.getAnimations;
+  p.gaCalls = 0;
+  if (__PROF_NOANIM__) {
+    Document.prototype.getAnimations = function () {
+      p.gaCalls++;
+      return [];
+    };
+  } else {
+    Document.prototype.getAnimations = function () {
+      p.gaCalls++;
+      return ga.call(this);
+    };
+  }
   const seek = __vrf.rm.seek;
   __vrf.rm.seek = async (...a) => {
     p.readyAt = [];
     p.fetches = [];
     p.setFrameStart = p.setFrameEnd = p.collectStart = p.collectEnd = null;
     p.t0 = now();
+    p.gaCalls = 0;
     p.frame = a[0];
     const r = await seek(...a);
     p.t1 = now();
@@ -156,7 +170,8 @@ fn run(ui: Ui) -> Result<()> {
     let (mut view, _) = page.open(&ui, composition.width as i32, composition.height as i32)?;
     let open_s = step.elapsed();
     if shim {
-        view.evaluate(SHIM)?;
+        let noanim = std::env::var_os("VRF_NOANIM").is_some();
+        view.evaluate(&SHIM.replace("__PROF_NOANIM__", if noanim { "true" } else { "false" }))?;
     }
     let step = Instant::now();
     for n in 0..200 {
@@ -187,10 +202,19 @@ fn run(ui: Ui) -> Result<()> {
     let mut pipeline = Pipeline::new(&config, &out)?;
     let mut capture = Capture::default();
     let mut rows = String::from(
-        "hash,frame,seek_rt,page_total,set_frame_sync,ready_after_set,tail,collect,fetch_hdr_max,fetch_body_max,fetches,bytes,watchdog,b2p,pipeline,total\n",
+        "hash,frame,ga_calls,seek_rt,page_total,set_frame_sync,ready_after_set,tail,collect,fetch_hdr_max,fetch_body_max,fetches,bytes,watchdog,b2p,pipeline,total\n",
     );
     for before in first.saturating_sub(10)..first {
         Page::seek(&mut view, before, 1)?;
+    }
+    let cpu_profile = std::env::var_os("VRF_CPUPROFILE");
+    if cpu_profile.is_some() {
+        view.execute("Profiler.enable", serde_json::json!({}))?;
+        view.execute(
+            "Profiler.setSamplingInterval",
+            serde_json::json!({"interval": 200}),
+        )?;
+        view.execute("Profiler.start", serde_json::json!({}))?;
     }
     view.evaluate("console.timeStamp('vrf-render-begin')")?;
     let mut stale = 0u64;
@@ -246,7 +270,8 @@ fn run(ui: Ui) -> Result<()> {
         let pipeline_ms = ms(step.elapsed());
         writeln!(
             rows,
-            "{hash},{frame},{seek_rt:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{bytes},{watchdog:.3},{b2p:.3},{pipeline_ms:.3},{:.3}",
+            "{hash},{frame},{},{seek_rt:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{bytes},{watchdog:.3},{b2p:.3},{pipeline_ms:.3},{:.3}",
+            num(&p["gaCalls"]),
             t1 - t0,
             num(&p["setFrameEnd"]) - num(&p["setFrameStart"]),
             ready_last - num(&p["setFrameEnd"]),
@@ -260,6 +285,10 @@ fn run(ui: Ui) -> Result<()> {
     }
     let render_s = render_started.elapsed();
     view.evaluate("console.timeStamp('vrf-render-end')")?;
+    if let Some(path) = cpu_profile {
+        let stopped = view.execute("Profiler.stop", serde_json::json!({}))?;
+        std::fs::write(path, stopped["profile"].to_string())?;
+    }
     let fetch_log = view.evaluate("JSON.stringify(globalThis.__fetchlog ?? [])")?;
     if let Some(text) = fetch_log.as_str().filter(|t| t.len() > 2) {
         std::fs::write(csv.with_extension("fetches.json"), text)?;
