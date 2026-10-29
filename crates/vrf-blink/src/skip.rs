@@ -28,7 +28,11 @@ impl Skip {
     }
 
     pub fn unchanged(&self, view: &mut View, frame: u64) -> Result<bool> {
-        if self.plan.as_ref().is_some_and(|plan| !plan.contains(&frame)) {
+        if self
+            .plan
+            .as_ref()
+            .is_some_and(|plan| !plan.contains(&frame))
+        {
             return Ok(false);
         }
         Ok(view.evaluate("__vrf.track.take()")?.is_null())

@@ -615,7 +615,11 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
             let value = (shared.seek)(&mut view, frame)
                 .with_context(|| format!("seek to frame {frame}"))?;
             worker.seek.push(step.elapsed());
-            if index > 0 && shared.skip.map_or(Ok(false), |skip| skip.unchanged(&mut view, frame))? {
+            if index > 0
+                && shared
+                    .skip
+                    .map_or(Ok(false), |skip| skip.unchanged(&mut view, frame))?
+            {
                 lane.skip(index)?;
                 worker.frames.push((index, value));
                 continue;

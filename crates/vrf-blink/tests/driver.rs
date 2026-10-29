@@ -342,7 +342,10 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
         let (plain, none) = render("hold.html", None, views)?;
         let (skipping, skipped) = render("hold.html", Some(Skip::tracked()), views)?;
         ensure!(none == 0, "{none} frames skipped with skipping off");
-        ensure!(skipped >= 48, "{views} views skipped only {skipped} of 96 frames");
+        ensure!(
+            skipped >= 48,
+            "{views} views skipped only {skipped} of 96 frames"
+        );
         ensure!(
             plain == skipping,
             "{views} views wrote different bytes with skipping on"
@@ -351,15 +354,27 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
 
         let (planned, none) = render("hold.html", Some(Skip::planned([])), views)?;
         ensure!(none == 0, "{none} frames skipped outside the plan");
-        ensure!(plain == planned, "{views} views: an empty plan changed the bytes");
+        ensure!(
+            plain == planned,
+            "{views} views: an empty plan changed the bytes"
+        );
         let (planned, some) = render("hold.html", Some(Skip::planned(0..96)), views)?;
         ensure!(some >= 48, "a full plan skipped only {some} of 96 frames");
-        ensure!(plain == planned, "{views} views: a full plan changed the bytes");
+        ensure!(
+            plain == planned,
+            "{views} views: a full plan changed the bytes"
+        );
 
         let (every, none) = render("colour.html", None, views)?;
         let (changing, skipped) = render("colour.html", Some(Skip::tracked()), views)?;
-        ensure!(skipped == 0, "{skipped} frames skipped on a page that changes every frame");
-        ensure!(none == 0 && every == changing, "{views} views: changing frames differ");
+        ensure!(
+            skipped == 0,
+            "{skipped} frames skipped on a page that changes every frame"
+        );
+        ensure!(
+            none == 0 && every == changing,
+            "{views} views: changing frames differ"
+        );
     }
     Ok(())
 }
