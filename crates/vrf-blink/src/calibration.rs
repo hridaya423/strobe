@@ -107,7 +107,8 @@ pub fn measure(ui: &Ui) -> Result<Calibration> {
                 .map(|run| run.join().expect("view thread panicked"))
                 .sum::<Result<u64>>()
         })?;
-        fps.insert(count, frames as f64 / started.elapsed().as_secs_f64());
+        let rate = frames as f64 / started.elapsed().as_secs_f64();
+        fps.insert(count, (rate * 10.0).round() / 10.0);
     }
     for view in views {
         view.close()?;

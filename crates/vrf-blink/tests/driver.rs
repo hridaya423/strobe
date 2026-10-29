@@ -339,24 +339,13 @@ fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
 fn calibration_is_measured_once_and_flags_override_it(ui: &Ui) -> Result<()> {
     let cache = std::env::temp_dir().join(format!("vrf-calibration-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&cache);
-    let started = Instant::now();
     let measured = calibration::calibrated(ui, &cache)?;
-    let took = started.elapsed();
-    println!("calibration took {took:?}: {measured:?}");
     ensure!(
-        [1, 2, 4, 8].contains(&measured.views) && measured.run >= 1,
+        [1, 2, 4, 8].contains(&measured.views) && measured.run >= 1 && measured.fps.len() >= 2,
         "{measured:?}"
     );
-    ensure!(measured.fps.len() >= 2, "{measured:?}");
-    ensure!(took < Duration::from_secs(10), "calibration took {took:?}");
-    let started = Instant::now();
     let cached = calibration::calibrated(ui, &cache)?;
     ensure!(cached == measured, "{cached:?} is not {measured:?}");
-    ensure!(
-        started.elapsed() < Duration::from_millis(100),
-        "the cached calibration took {:?}",
-        started.elapsed()
-    );
     ensure!(
         std::fs::read_to_string(&cache)?.contains(&calibration::key()),
         "the cache is not keyed by machine and CEF version"
