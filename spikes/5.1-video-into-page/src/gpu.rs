@@ -14,7 +14,8 @@ pub struct Params {
     pub kb: f32,
     pub limited: u32,
     pub layout: u32,
-    pub pad: [u32; 2],
+    pub chroma_mode: u32,
+    pub pad: u32,
 }
 
 #[derive(Clone, Copy, Debug)]

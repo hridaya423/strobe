@@ -246,7 +246,10 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
     let layout = Layout { width: probed.width, height: probed.height };
     let (w, h) = (probed.width, probed.height);
     let total_frames = probed.output_frames(FPS).min(options.number("frames", usize::MAX));
-    let expected = verify::expected(&clip, ffmpeg_matrix, &range, &layout)?;
+    let compare_every = options.number("compare-every", 15);
+    let expected_full = verify::expected(&clip, ffmpeg_matrix, &range, &options.get("sws", "bilinear+accurate_rnd+full_chroma_int"), &layout, compare_every)?;
+    let expected = expected_full.readings;
+    let reference_frames = expected_full.frames;
     ensure!(expected.len() == probed.pts.len(), "ffmpeg produced {} frames, ffprobe {}", expected.len(), probed.pts.len());
     for (index, reading) in expected.iter().enumerate() {
         ensure!(reading.id == index as u64, "source frame {index} has burned-in id {}", reading.id);
@@ -311,7 +314,8 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
         kb,
         limited: u32::from(range == "limited"),
         layout: layout_flag,
-        pad: [0; 2],
+        chroma_mode: options.number("chroma", 2) as u32,
+        pad: 0,
     };
 
     let mut rows: Vec<Row> = Vec::new();
@@ -320,6 +324,8 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
     let mut worst_colour: f64 = 0.0;
     let mut patch_worst = [[0.0f64; 3]; verify::PATCHES];
     let mut chosen_log = Vec::new();
+    let mut frame_error = verify::FrameError::default();
+    let mut compared = 0usize;
 
     let mut children_start = 0.0;
     let mut children_start_frame = 0;
@@ -496,6 +502,28 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
             }
             reference.patches[2] = [255.0, 0.0, 255.0];
         }
+        if let Some(Some(full)) = reference_frames.get(want).filter(|_| chosen == want) {
+            let skip = |x: usize, y: usize| {
+                (x >= w - 16 && y >= h - 16) || (mode == "composite" && y >= h / 3 && y < h / 2)
+            };
+            let error = match composite_ptr {
+                Some(ptr) => verify::compare(&layout, full, skip, |x, y| unsafe {
+                    let p = ptr.add((y * w + x) * 4);
+                    [*p.add(2), *p.add(1), *p]
+                }),
+                None => {
+                    let _lock = Locked::new(&paint.surface);
+                    let base = paint.surface.base_address().as_ptr() as *const u8;
+                    let stride = paint.surface.bytes_per_row();
+                    verify::compare(&layout, full, skip, |x, y| unsafe {
+                        let p = base.add(y * stride + x * 4);
+                        [*p.add(2), *p.add(1), *p]
+                    })
+                }
+            };
+            frame_error.add(&error);
+            compared += 1;
+        }
         let colour_error = verify::max_patch_error(&reading, &reference);
         let ok = reading.id == reference.id && chosen == want;
         if !ok {
@@ -548,6 +576,14 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
     println!("mode {mode} clip {clip} format {format} draw {draw} cs {colour} range {range} matrix {matrix_name}");
     println!("frames {} (timed {}), id mismatches {failures}, worst patch error {worst_colour:.2}", rows.len(), measured.len());
     println!("worst per-patch error over all frames (r,g,b): {:?}", patch_worst.map(|p| p.map(|v| (v * 10.0).round() / 10.0)));
+    if frame_error.pixels > 0 {
+        let n = frame_error.pixels as f64;
+        println!(
+            "full-frame vs ffmpeg decode over {compared} frames: mean abs error r {:.3} g {:.3} b {:.3}, max {}, pixels over 2: {:.4}%, over 4: {:.4}%, over 8: {:.4}%",
+            frame_error.sum[0] / n, frame_error.sum[1] / n, frame_error.sum[2] / n, frame_error.max,
+            frame_error.over2 as f64 * 100.0 / n, frame_error.over4 as f64 * 100.0 / n, frame_error.over8 as f64 * 100.0 / n
+        );
+    }
     println!("per-frame ms (prep = host work before the page call, seek = page call incl. DevTools round trip, paint = begin frame to paint, post = GPU work after paint):");
     for (label, f) in [
         ("prep", (|r: &Row| r.prep) as fn(&Row) -> f64),

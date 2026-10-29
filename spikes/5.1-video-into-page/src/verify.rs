@@ -127,9 +127,14 @@ pub fn target_ticks(frame: usize, fps: i64, timescale: i64) -> i64 {
     (frame as f64 * timescale as f64 / fps as f64).round() as i64
 }
 
-pub fn expected(path: &str, matrix: &str, range: &str, layout: &Layout) -> Result<Vec<Reading>> {
+pub struct Expected {
+    pub readings: Vec<Reading>,
+    pub frames: Vec<Option<Vec<u8>>>,
+}
+
+pub fn expected(path: &str, matrix: &str, range: &str, flags: &str, layout: &Layout, keep_every: usize) -> Result<Expected> {
     let filter = format!(
-        "scale=in_color_matrix={matrix}:in_range={range}:out_range=full:flags=accurate_rnd+full_chroma_int,format=rgb24"
+        "scale=in_color_matrix={matrix}:in_range={range}:out_range=full:flags={flags},format=rgb24"
     );
     let mut child = Command::new("ffmpeg")
         .args(["-v", "error", "-i", path, "-vf", &filter, "-fps_mode", "passthrough", "-f", "rawvideo", "-"])
@@ -138,12 +143,62 @@ pub fn expected(path: &str, matrix: &str, range: &str, layout: &Layout) -> Resul
     let mut stdout = child.stdout.take().unwrap();
     let mut frame = vec![0u8; layout.width * layout.height * 3];
     let mut readings = Vec::new();
+    let mut frames = Vec::new();
     while stdout.read_exact(&mut frame).is_ok() {
+        frames.push((keep_every > 0 && readings.len() % keep_every == 0).then(|| frame.clone()));
         readings.push(read(layout, |x, y| {
             let i = (y * layout.width + x) * 3;
             [frame[i], frame[i + 1], frame[i + 2]]
         }));
     }
     ensure!(child.wait()?.success(), "ffmpeg failed");
-    Ok(readings)
+    Ok(Expected { readings, frames })
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct FrameError {
+    pub sum: [f64; 3],
+    pub max: u32,
+    pub over2: u64,
+    pub over4: u64,
+    pub over8: u64,
+    pub pixels: u64,
+}
+
+impl FrameError {
+    pub fn add(&mut self, other: &FrameError) {
+        for c in 0..3 {
+            self.sum[c] += other.sum[c];
+        }
+        self.max = self.max.max(other.max);
+        self.over2 += other.over2;
+        self.over4 += other.over4;
+        self.over8 += other.over8;
+        self.pixels += other.pixels;
+    }
+}
+
+pub fn compare(layout: &Layout, reference: &[u8], skip: impl Fn(usize, usize) -> bool, pixel: impl Fn(usize, usize) -> [u8; 3]) -> FrameError {
+    let mut error = FrameError::default();
+    for y in 0..layout.height {
+        for x in 0..layout.width {
+            if skip(x, y) {
+                continue;
+            }
+            let got = pixel(x, y);
+            let i = (y * layout.width + x) * 3;
+            let mut worst = 0u32;
+            for c in 0..3 {
+                let d = (i32::from(got[c]) - i32::from(reference[i + c])).unsigned_abs();
+                error.sum[c] += f64::from(d);
+                worst = worst.max(d);
+            }
+            error.max = error.max.max(worst);
+            error.over2 += u64::from(worst > 2);
+            error.over4 += u64::from(worst > 4);
+            error.over8 += u64::from(worst > 8);
+            error.pixels += 1;
+        }
+    }
+    error
 }

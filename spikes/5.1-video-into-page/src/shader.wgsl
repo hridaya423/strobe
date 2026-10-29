@@ -5,7 +5,7 @@ struct Params {
     kb: f32,
     limited: u32,
     swizzle: u32,
-    pad0: u32,
+    chroma_mode: u32,
     pad1: u32,
 }
 
@@ -15,20 +15,64 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> out: array<u32>;
 @group(0) @binding(4) var page: texture_2d<f32>;
 
+fn chroma_at(cx: i32, cy: i32) -> vec2<f32> {
+    let dims = vec2<i32>(textureDimensions(chroma));
+    let p = clamp(vec2<i32>(cx, cy), vec2<i32>(0), dims - vec2<i32>(1));
+    let c = textureLoad(chroma, vec2<u32>(p), 0);
+    return vec2<f32>(f32(c.r), f32(c.g));
+}
+
+fn chroma_upsampled(x: u32, y: u32) -> vec2<f32> {
+    let ix = i32(x);
+    let iy = i32(y);
+    let cx = ix / 2;
+    let cy = iy / 2;
+    if (params.chroma_mode == 0u) {
+        return chroma_at(cx, cy);
+    }
+    let odd_y = (iy & 1) == 1;
+    let vy = select(cy - 1, cy + 1, odd_y);
+    var h0: vec2<f32>;
+    var h1: vec2<f32>;
+    if (params.chroma_mode == 1u) {
+        let odd_x = (ix & 1) == 1;
+        let a = chroma_at(cx, cy);
+        let b = chroma_at(cx, vy);
+        let a1 = chroma_at(cx + 1, cy);
+        let b1 = chroma_at(cx + 1, vy);
+        if (odd_x) {
+            h0 = 0.5 * (a + a1);
+            h1 = 0.5 * (b + b1);
+        } else {
+            h0 = a;
+            h1 = b;
+        }
+    } else if (params.chroma_mode == 3u) {
+        h0 = chroma_at(cx, cy);
+        h1 = chroma_at(cx, vy);
+    } else {
+        let odd_x = (ix & 1) == 1;
+        let hx = select(cx - 1, cx + 1, odd_x);
+        h0 = 0.75 * chroma_at(cx, cy) + 0.25 * chroma_at(hx, cy);
+        h1 = 0.75 * chroma_at(cx, vy) + 0.25 * chroma_at(hx, vy);
+    }
+    return 0.75 * h0 + 0.25 * h1;
+}
+
 fn video(x: u32, y: u32) -> vec3<f32> {
     let yy = f32(textureLoad(luma, vec2<u32>(x, y), 0).r);
-    let c = textureLoad(chroma, vec2<u32>(x / 2u, y / 2u), 0);
+    let c = chroma_upsampled(x, y);
     var yf: f32;
     var cb: f32;
     var cr: f32;
     if (params.limited == 1u) {
         yf = (yy - 16.0) * (255.0 / 219.0);
-        cb = (f32(c.r) - 128.0) * (255.0 / 224.0);
-        cr = (f32(c.g) - 128.0) * (255.0 / 224.0);
+        cb = (c.x - 128.0) * (255.0 / 224.0);
+        cr = (c.y - 128.0) * (255.0 / 224.0);
     } else {
         yf = yy;
-        cb = f32(c.r) - 128.0;
-        cr = f32(c.g) - 128.0;
+        cb = c.x - 128.0;
+        cr = c.y - 128.0;
     }
     let r = yf + 2.0 * (1.0 - params.kr) * cr;
     let b = yf + 2.0 * (1.0 - params.kb) * cb;

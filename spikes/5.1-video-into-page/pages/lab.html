@@ -67,10 +67,19 @@ window.init = (o) => {
       uniform float uLimited;
       uniform int uHeight;
       out vec4 outColor;
+      vec2 fetchUV(ivec2 q) {
+        ivec2 size = textureSize(uUV, 0);
+        return texelFetch(uUV, clamp(q, ivec2(0), size - 1), 0).rg * 255.0;
+      }
       void main() {
         ivec2 p = ivec2(int(gl_FragCoord.x), uHeight - 1 - int(gl_FragCoord.y));
         float y = texelFetch(uY, p, 0).r * 255.0;
-        vec2 c = texelFetch(uUV, p / 2, 0).rg * 255.0;
+        ivec2 c0 = p / 2;
+        int vy = ((p.y & 1) == 1) ? c0.y + 1 : c0.y - 1;
+        int hx = ((p.x & 1) == 1) ? c0.x + 1 : c0.x - 1;
+        vec2 h0 = 0.75 * fetchUV(c0) + 0.25 * fetchUV(ivec2(hx, c0.y));
+        vec2 h1 = 0.75 * fetchUV(ivec2(c0.x, vy)) + 0.25 * fetchUV(ivec2(hx, vy));
+        vec2 c = 0.75 * h0 + 0.25 * h1;
         float yf, cb, cr;
         if (uLimited > 0.5) {
           yf = (y - 16.0) * (255.0 / 219.0);
