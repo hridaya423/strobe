@@ -1,0 +1,82 @@
+import { execFileSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { Browser } from './cdp.mjs';
+import { serve } from './serve.mjs';
+
+const HERE = new URL('.', import.meta.url).pathname;
+const JS = join(HERE, '../..');
+const REPO = join(JS, '../../..');
+const BENCH = process.env.VRF_BENCH_DIR ?? join(REPO, 'bench');
+const CACHE = process.env.VRF_RM_CACHE ?? join(REPO, 'target/remotion-js');
+
+export const PROJECTS = {
+  '4.0.60': 'transitions-video',
+  '4.0.169': '4-0-trailer',
+  '4.0.240': 'github-unwrapped',
+};
+export const VERSIONS = Object.keys(PROJECTS);
+
+export const corpusDir = (name) => join(BENCH, 'corpus/external', name);
+export const adapterSource = () => readFileSync(join(JS, 'remotion.js'), 'utf8');
+
+const bundled = new Map();
+
+function bundle(projectDir, entry, outDir) {
+  if (!existsSync(join(outDir, 'index.html'))) {
+    mkdirSync(outDir, { recursive: true });
+    execFileSync('node', [join(JS, 'remotion-bundle.mjs'), projectDir, entry, outDir], { stdio: ['ignore', 'ignore', 'inherit'] });
+  }
+  return outDir;
+}
+
+export function bundleFixture(version, fixture) {
+  const key = `${version}/${fixture}`;
+  if (!bundled.has(key)) {
+    const proj = join(CACHE, 'proj', key);
+    if (!existsSync(join(proj, 'package.json'))) {
+      mkdirSync(join(proj, 'src'), { recursive: true });
+      writeFileSync(join(proj, 'package.json'), JSON.stringify({ name: `vrf-${fixture}`, private: true }));
+      symlinkSync(join(corpusDir(PROJECTS[version]), 'node_modules'), join(proj, 'node_modules'));
+    }
+    cpSync(join(HERE, 'fixtures', fixture), join(proj, 'src'), { recursive: true });
+    bundled.set(key, bundle(proj, join(proj, 'src/index.jsx'), join(CACHE, 'out', key)));
+  }
+  return bundled.get(key);
+}
+
+export function bundleCorpus(name, entry) {
+  const key = `corpus/${name}`;
+  if (!bundled.has(key)) {
+    const dir = corpusDir(name);
+    bundled.set(key, bundle(dir, join(dir, entry), join(CACHE, 'out', key)));
+  }
+  return bundled.get(key);
+}
+
+export async function launch(bundleDir, { config = {}, width = 320, height = 180, onRequest, init } = {}) {
+  const source = adapterSource();
+  const server = await serve(bundleDir, { onRequest });
+  const browser = await Browser.launch();
+  const run = {
+    browser,
+    server,
+    config,
+    close: async () => {
+      await browser.close();
+      await server.close();
+    },
+  };
+  try {
+    run.page = await browser.newPage({ width, height });
+    await run.page.addScript(`globalThis.__vrf_rm_config = ${JSON.stringify(config)};\n${source}`);
+    await run.page.goto(`${server.url}/index.html`);
+    if (init) run.meta = await run.page.eval(`__vrf.rm.init(${JSON.stringify(init)})`);
+  } catch (err) {
+    await run.close();
+    throw err;
+  }
+  return run;
+}
+
+export const seek = (page, frame, opts = {}) => page.eval(`__vrf.rm.seek(${frame}, ${JSON.stringify(opts)})`);
