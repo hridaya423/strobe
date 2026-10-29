@@ -105,9 +105,52 @@
       check();
     });
 
+  let compositionId = null;
+  let queue = Promise.resolve();
+
+  const init = async ({ compositionId: id }) => {
+    if (compositionId !== null) throw new Error('init() runs once per page: the bundle keeps the first composition, load a new page for another one');
+    window.remotion_setBundleMode({ type: 'evaluation' });
+    await waitReady(null);
+    const resolved = await window.remotion_calculateComposition(id);
+    window.remotion_setBundleMode({
+      type: 'composition',
+      compositionName: id,
+      serializedResolvedPropsWithSchema: resolved.serializedResolvedPropsWithCustomSchema,
+      compositionDurationInFrames: resolved.durationInFrames,
+      compositionFps: resolved.fps,
+      compositionHeight: resolved.height,
+      compositionWidth: resolved.width,
+      compositionDefaultCodec: resolved.defaultCodec,
+    });
+    await waitReady(null);
+    compositionId = id;
+    const { width, height, fps, durationInFrames, defaultCodec } = resolved;
+    return { id, width, height, fps, durationInFrames, defaultCodec, serializedProps: resolved.serializedResolvedPropsWithCustomSchema };
+  };
+
+  const pendingImages = () => [...document.images].filter((img) => !img.complete);
+
+  const barrier = async (frame, attempt) => {
+    await waitReady(null);
+    window.remotion_setFrame(frame, compositionId, attempt);
+    await waitReady(frame);
+    await document.fonts.ready;
+    await Promise.all(pendingImages().map((img) => img.decode().catch(() => {})));
+    return { frame };
+  };
+
+  const seek = (frame, { attempt = 1 } = {}) => {
+    const result = queue.catch(() => {}).then(() => barrier(frame, attempt));
+    queue = result;
+    return result;
+  };
+
   const vrf = (globalThis.__vrf ??= {});
   vrf.rm = {
     config,
     ready: () => waitReady(null),
+    init,
+    seek,
   };
 })();

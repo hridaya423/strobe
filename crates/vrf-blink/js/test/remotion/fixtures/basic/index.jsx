@@ -13,9 +13,8 @@ const Basic = () => {
   );
 };
 
-const Props = () => {
-  const props = getInputProps();
-  return <div data-props={JSON.stringify(props)}>{props.label}</div>;
+const Props = (props) => {
+  return <div data-props={JSON.stringify(props)} data-input={JSON.stringify(getInputProps())}>{props.label}</div>;
 };
 
 const Transparent = () => {

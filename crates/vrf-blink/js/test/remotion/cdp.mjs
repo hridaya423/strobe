@@ -89,9 +89,12 @@ export class Browser {
   }
 
   async close() {
+    const exited = new Promise((resolve) => this.proc.once('exit', resolve));
+    this.send('Browser.close').catch(() => {});
+    const force = setTimeout(() => this.proc.kill('SIGKILL'), 3000);
+    await exited;
+    clearTimeout(force);
     this.ws.close();
-    this.proc.kill();
-    await new Promise((resolve) => this.proc.once('exit', resolve));
     rmSync(this.dir, { recursive: true, force: true });
   }
 }

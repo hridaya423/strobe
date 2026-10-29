@@ -2,6 +2,7 @@ import React, { useLayoutEffect, useState } from 'react';
 import { Composition, registerRoot, useCurrentFrame, delayRender, continueRender, cancelRender } from 'remotion';
 
 window.__log = [];
+window.__open = [];
 
 const DELAYS = [40, 90, 160];
 
@@ -10,6 +11,7 @@ const Barrier = () => {
   const [state, setState] = useState({ frame, done: 0 });
   const done = state.frame === frame ? state.done : 0;
   useLayoutEffect(() => {
+    window.__open.push({ frame, open: Object.values(window.remotion_delayRenderTimeouts).filter((t) => t.label?.startsWith('barrier-')).length });
     const handles = DELAYS.map((ms, i) => {
       const h = delayRender(`barrier-${frame}-${i}`);
       setTimeout(() => {
