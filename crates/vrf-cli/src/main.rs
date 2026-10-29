@@ -68,6 +68,9 @@ struct RenderArgs {
     /// Frames a view seeks and paints before its run, and discards.
     #[arg(long, default_value_t = driver::LEAD_IN)]
     lead_in: u64,
+    /// Render every frame, even those the page proves unchanged.
+    #[arg(long)]
+    no_skip: bool,
     /// Print a JSON report on stdout instead of the summary line.
     #[arg(long)]
     json: bool,
@@ -153,6 +156,7 @@ impl RenderArgs {
             },
             timeout: Duration::from_millis(self.timeout),
             plan,
+            skip: !self.no_skip,
         };
         Ok(RenderJob {
             options,

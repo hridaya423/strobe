@@ -125,6 +125,7 @@ fn run(ui: Ui) -> Result<()> {
         mode: Mode::Online,
         timeout: Duration::from_secs(30),
         plan: Plan::single(),
+        skip: false,
     };
     let step = Instant::now();
     let bundle = remotion::bundle(&project, None)?;

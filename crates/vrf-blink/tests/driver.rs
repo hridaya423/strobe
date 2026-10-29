@@ -12,6 +12,7 @@ use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_av
 use vrf_blink::driver::{
     Capture, Config, Pipeline, Plan, Stats, Summary, Warm, render, render_runs,
 };
+use vrf_blink::skip::{Skip, TRACK_JS};
 use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
 use vrf_encode::{Codec, Rational};
 
@@ -315,6 +316,39 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let render = |skip: Option<Skip>, views: usize| -> Result<(Vec<u8>, u64)> {
+        let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+        config.skip = skip;
+        let out = std::env::temp_dir().join(format!("vrf-blink-skip-{views}.mov"));
+        let runs = render_runs(
+            &config,
+            Plan::new(views, 7),
+            0,
+            &out,
+            || View::open_project(ui, &project, "hold.html", 640, 360, Some(TRACK_JS)),
+            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+        )?;
+        runs.muxer.finish()?;
+        let bytes = std::fs::read(&out)?;
+        std::fs::remove_file(&out)?;
+        Ok((bytes, runs.stats.skipped))
+    };
+    for views in [1, 3] {
+        let (plain, none) = render(None, views)?;
+        let (skipping, skipped) = render(Some(Skip::tracked()), views)?;
+        ensure!(none == 0, "{none} frames skipped with skipping off");
+        ensure!(skipped >= 48, "{views} views skipped only {skipped} of 96 frames");
+        ensure!(
+            plain == skipping,
+            "{views} views wrote different bytes with skipping on"
+        );
+        println!("skip, {views} views: {skipped} of 96 frames skipped");
+    }
+    Ok(())
+}
+
 fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::H264, 96);
@@ -417,6 +451,10 @@ fn main() -> ExitCode {
         (
             "driver_calibration_is_cached_and_flags_override_it",
             calibration_is_measured_once_and_flags_override_it,
+        ),
+        (
+            "driver_skipped_frames_write_the_same_bytes",
+            unchanged_frames_are_skipped_and_the_bytes_do_not_change,
         ),
         (
             "driver_failing_view_stops_the_others",

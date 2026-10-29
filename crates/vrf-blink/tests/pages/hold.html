@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>html, body { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<script>
+function seek(i) {
+  const level = Math.floor(i / 8);
+  document.documentElement.style.background =
+    `rgb(${16 + 10 * (level % 24)}, ${16 + 10 * Math.floor(level / 24)}, 60)`;
+  return Promise.resolve(i);
+}
+</script>
+</body>
+</html>

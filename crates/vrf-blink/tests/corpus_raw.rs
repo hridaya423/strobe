@@ -25,6 +25,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
         mode: Mode::Online,
         timeout: Duration::from_secs(30),
         plan: Plan::single(),
+        skip: false,
     };
     let bundle = remotion::bundle(&options.project, options.entry.as_deref())?;
     let server = Offthread::start(&options.project.canonicalize()?, &bundle.dir)?;
