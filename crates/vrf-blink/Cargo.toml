@@ -47,5 +47,9 @@ name = "video"
 harness = false
 
 [[test]]
+name = "remotion_video"
+harness = false
+
+[[test]]
 name = "corpus_raw"
 harness = false

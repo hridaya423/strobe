@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use vrf_blink::adapters::remotion::{self, Options, Report};
+use vrf_blink::adapters::remotion::{self, Options, Report, VideoDecoder};
 use vrf_blink::{Mode, Ui};
 use vrf_encode::Codec;
 
@@ -47,6 +47,10 @@ enum Command {
         /// Milliseconds before a `delayRender` that is never cleared fails the frame.
         #[arg(long, default_value_t = 30_000)]
         timeout: u64,
+        /// What decodes <OffthreadVideo>: `native` (VideoToolbox, falling back to Remotion's frame
+        /// server for clips it cannot reproduce exactly) or `remotion` (its frame server for all).
+        #[arg(long, value_enum, default_value = "native")]
+        video: VideoArg,
         /// Print a JSON report on stdout instead of the summary line.
         #[arg(long)]
         json: bool,
@@ -57,6 +61,12 @@ enum Command {
 enum ModeArg {
     Fast,
     Reference,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum VideoArg {
+    Native,
+    Remotion,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -111,6 +121,7 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
         entry,
         props: props_argument,
         timeout,
+        video,
         json,
     } = cli.command;
     let options = Options {
@@ -120,6 +131,10 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
         props: props(props_argument)?,
         mode: if offline { Mode::Offline } else { Mode::Online },
         timeout: Duration::from_millis(timeout),
+        video: match video {
+            VideoArg::Native => VideoDecoder::Native,
+            VideoArg::Remotion => VideoDecoder::Remotion,
+        },
     };
     let report = remotion::render(&ui, &options, frames, codec.into(), &output)?;
     Ok(Rendered {

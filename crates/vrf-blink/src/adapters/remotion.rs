@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
@@ -14,8 +15,10 @@ use serde_json::{Value, json};
 use vrf_encode::{Codec, Rational};
 
 use crate::driver::{Capture, Config, Pipeline, Summary};
+use crate::video::{Clips, Link, StartFallback};
 use crate::{Mode, Project, Ui, View};
 
+const VIDEO_JS: &str = include_str!("../../js/video.js");
 const REMOTION_JS: &str = include_str!("../../js/remotion.js");
 const CLOCK_JS: &str = include_str!("../../js/clock.js");
 const BUNDLE_JS: &str = include_str!("../../js/remotion-bundle.mjs");
@@ -44,6 +47,18 @@ const REMOTION_COMMANDS: [&str; 6] = [
 ];
 const RETRY_MARK: &str = "Rendering the frame will be retried";
 
+/// What decodes the frames of `<OffthreadVideo>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoDecoder {
+    /// VideoToolbox in this process, drawn by the page's own WebGL surface. Clips it cannot
+    /// reproduce exactly (alpha, ProRes, 10-bit, remote URLs) go to Remotion's frame server,
+    /// which is started the first time one is needed.
+    #[default]
+    Native,
+    /// Remotion's own frame server, a Node process, for every clip.
+    Remotion,
+}
+
 pub struct Options {
     pub project: PathBuf,
     /// The file that calls `registerRoot`. Found from `package.json` or the usual places if absent.
@@ -53,6 +68,7 @@ pub struct Options {
     pub props: Option<String>,
     pub mode: Mode,
     pub timeout: Duration,
+    pub video: VideoDecoder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -332,11 +348,53 @@ impl Drop for Offthread {
     }
 }
 
+/// Remotion's frame server, started on first use for the clips the native path refuses.
+pub struct Fallback {
+    project_dir: PathBuf,
+    bundle_dir: PathBuf,
+    project: Project,
+    server: Mutex<Option<Offthread>>,
+}
+
+impl Fallback {
+    pub fn new(project_dir: &Path, bundle_dir: &Path, project: Project) -> Result<Fallback> {
+        Ok(Fallback {
+            project_dir: project_dir.canonicalize()?,
+            bundle_dir: bundle_dir.to_owned(),
+            project,
+            server: Mutex::new(None),
+        })
+    }
+
+    fn port_and_url(&self) -> Result<(u16, String)> {
+        let mut server = self.server.lock().unwrap();
+        if server.is_none() {
+            let started = Offthread::start(&self.project_dir, &self.bundle_dir)?;
+            self.project
+                .allow_direct(format!("http://localhost:{}/", started.port));
+            *server = Some(started);
+        }
+        let server = server.as_ref().expect("the frame server was just started");
+        Ok((server.port, server.serve_url.clone()))
+    }
+
+    /// Whether the frame server had to be started.
+    pub fn started(&self) -> bool {
+        self.server.lock().unwrap().is_some()
+    }
+}
+
+struct Native {
+    clips: Arc<Clips>,
+    fallback: Arc<Fallback>,
+}
+
 /// A bundled project that can open ready-to-seek views of one composition.
 pub struct Page {
     project: Project,
-    script: String,
+    config: Value,
     composition: String,
+    native: Option<Native>,
 }
 
 impl Page {
@@ -352,9 +410,29 @@ impl Page {
         });
         Ok(Page {
             project,
-            script: format!("globalThis.__vrf_rm_config = {config};\n{REMOTION_JS}\n{CLOCK_JS}"),
+            config,
             composition: serde_json::to_string(&options.composition)?,
+            native: None,
         })
+    }
+
+    /// Decodes `<OffthreadVideo>` natively instead of through Remotion's frame server, which
+    /// `fallback` starts only for a clip the native path refuses.
+    pub fn with_native_video(mut self, fallback: Arc<Fallback>) -> Page {
+        self.config["nativeVideo"] = Value::Bool(true);
+        self.native = Some(Native {
+            clips: Arc::default(),
+            fallback,
+        });
+        self
+    }
+
+    fn script(&self) -> String {
+        let video = if self.native.is_some() { VIDEO_JS } else { "" };
+        format!(
+            "globalThis.__vrf_rm_config = {};\n{video}\n{REMOTION_JS}\n{CLOCK_JS}",
+            self.config
+        )
     }
 
     /// Opens a view of `width` x `height` with the adapter and the virtual clock injected, and
@@ -366,8 +444,13 @@ impl Page {
             "index.html",
             width,
             height,
-            Some(&self.script),
+            Some(&self.script()),
         )?;
+        if let Some(native) = &self.native {
+            let fallback = native.fallback.clone();
+            let start: StartFallback = Arc::new(move || fallback.port_and_url());
+            Link::attach(&mut view, self.project.clone(), native.clips.clone(), start);
+        }
         let meta = view
             .evaluate(&format!(
                 "__vrf.rm.init({{ compositionId: {} }})",
@@ -442,13 +525,20 @@ pub fn render(
     let bundle = bundle(&options.project, options.entry.as_deref())?;
     let bundle_s = step.elapsed();
     let step = Instant::now();
-    let offthread = Offthread::start(&options.project.canonicalize()?, &bundle.dir)?;
+    let project = Project::open(&bundle.dir, options.mode)?;
+    let fallback = Arc::new(Fallback::new(&options.project, &bundle.dir, project.clone())?);
+    let offthread = match options.video {
+        VideoDecoder::Remotion => Some(Offthread::start(
+            &options.project.canonicalize()?,
+            &bundle.dir,
+        )?),
+        VideoDecoder::Native => None,
+    };
     let offthread_s = step.elapsed();
-    let page = Page::new(
-        Project::open(&bundle.dir, options.mode)?,
-        options,
-        Some(&offthread),
-    )?;
+    let mut page = Page::new(project, options, offthread.as_ref())?;
+    if options.video == VideoDecoder::Native {
+        page = page.with_native_video(fallback.clone());
+    }
 
     let step = Instant::now();
     let composition = page.probe(ui)?;

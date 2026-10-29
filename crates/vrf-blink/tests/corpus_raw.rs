@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use vrf::gpu::Gpu;
 use vrf_bench::corpus;
 use vrf_bench::score::{self, Rgb8};
-use vrf_blink::adapters::remotion::{self, Offthread, Options, Page};
+use vrf_blink::adapters::remotion::{self, Offthread, Options, Page, VideoDecoder};
 use vrf_blink::{Mode, Project, Ui};
 
 fn corpus_raw(ui: &Ui) -> Result<()> {
@@ -23,6 +23,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
         props: None,
         mode: Mode::Online,
         timeout: Duration::from_secs(30),
+        video: VideoDecoder::Remotion,
     };
     let bundle = remotion::bundle(&options.project, options.entry.as_deref())?;
     let server = Offthread::start(&options.project.canonicalize()?, &bundle.dir)?;

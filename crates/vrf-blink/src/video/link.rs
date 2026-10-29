@@ -97,6 +97,10 @@ impl Clips {
     }
 }
 
+/// Starts the server for clips the NV12 path refuses, once, and returns its port and the URL it
+/// serves the bundle from.
+pub type StartFallback = Arc<dyn Fn() -> Result<(u16, String)> + Send + Sync>;
+
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Message {
@@ -118,21 +122,27 @@ pub struct Link;
 
 impl Link {
     /// Starts the thread. It ends when the view closes.
-    pub fn attach(view: &mut View, project: Project, clips: Arc<Clips>) {
+    pub fn attach(view: &mut View, project: Project, clips: Arc<Clips>, fallback: StartFallback) {
         let pusher = view.pusher();
         let messages = view.take_pages().expect("the view's page messages were already taken");
-        thread::spawn(move || serve(messages, pusher, project, clips));
+        thread::spawn(move || serve(messages, pusher, project, clips, fallback));
     }
 }
 
-fn serve(messages: Receiver<String>, pusher: Pusher, project: Project, clips: Arc<Clips>) {
+fn serve(
+    messages: Receiver<String>,
+    pusher: Pusher,
+    project: Project,
+    clips: Arc<Clips>,
+    fallback: StartFallback,
+) {
     let mut playing: Vec<Playing> = Vec::new();
     while let Ok(text) = messages.recv() {
         let result = serde_json::from_str::<Message>(&text)
             .context("the page sent a message the host does not know")
             .and_then(|message| match message {
                 Message::Open { req, src } => {
-                    open(&pusher, &project, &clips, &mut playing, req, &src)
+                    open(&pusher, &project, &clips, &fallback, &mut playing, req, &src)
                 }
                 Message::Want { clip, k, hit } => match playing.get_mut(clip as usize) {
                     Some(playing) => want(&pusher, clip, playing, k, hit),
@@ -149,6 +159,7 @@ fn open(
     pusher: &Pusher,
     project: &Project,
     clips: &Clips,
+    fallback: &StartFallback,
     playing: &mut Vec<Playing>,
     req: u32,
     src: &str,
@@ -163,7 +174,10 @@ fn open(
     let clip = match clip {
         Ok(clip) => clip,
         Err(reason) => {
-            let meta = json!({"req": req, "eligible": false, "reason": reason});
+            let meta = match fallback() {
+                Ok((port, serve_url)) => json!({"req": req, "eligible": false, "reason": reason, "fallback": {"port": port, "serveUrl": serve_url}}),
+                Err(error) => json!({"req": req, "eligible": false, "reason": reason, "fallbackError": format!("{error:#}")}),
+            };
             return pusher.text(META, id, 0, 0, &meta, &[]);
         }
     };
