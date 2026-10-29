@@ -15,8 +15,8 @@ use crate::scheme::Project;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const EVALUATE_TIMEOUT: Duration = Duration::from_secs(60);
-const SETTLE_DELIVERY: Duration = Duration::from_millis(250);
-const SETTLE_QUIET: Duration = Duration::from_millis(50);
+const SETTLE_DELIVERY: Duration = Duration::from_millis(60);
+const SETTLE_QUIET: Duration = Duration::from_millis(20);
 const SETTLE_ROUNDS: usize = 10;
 const SETTLE_CLEAN: usize = 2;
 
