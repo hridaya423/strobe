@@ -4,6 +4,9 @@ mod gpu_support;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+use gpu_support::D3d11;
+#[cfg(target_os = "macos")]
 use gpu_support::{NV12, P010, Surface};
 use vrf::colour::{self, Chroma, Format, Rect};
 use vrf::gpu::Gpu;
@@ -429,6 +432,7 @@ fn solid_colours_land_on_the_bt709_limited_range_values() {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn converts_straight_into_iosurface_planes() {
     let gpu = Gpu::new().unwrap();
@@ -468,6 +472,218 @@ fn converts_straight_into_iosurface_planes() {
             want_c,
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn converts_an_imported_shared_handle_with_and_without_a_copy() {
+    let gpu = Gpu::new().unwrap();
+    let d3d11 = D3d11::new(gpu.luid());
+    let image = noise();
+    let rect = Rect {
+        x: 101,
+        y: 51,
+        width: 1280,
+        height: 720,
+    };
+    let mut bgra = image.rgba.clone();
+    bgra.chunks_exact_mut(4).for_each(|px| px.swap(0, 2));
+    let shared = d3d11.shared_texture(image.width, image.height);
+    d3d11.write(&shared, &bgra);
+    let handle = unsafe { vrf::gpu::d3d12::SharedHandle::duplicate(shared.handle()) }.unwrap();
+    for format in FORMATS {
+        let want = colour::convert(&image.rgba, image.width, rect, Chroma::Swscale, format);
+        let converter = Converter::new(&gpu, format);
+        let (yf, cf) = Converter::plane_formats(format);
+        for direct in [false, true] {
+            let usage = if direct {
+                wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING
+            } else {
+                wgpu::TextureUsages::COPY_SRC
+            };
+            let imported = gpu.import_shared_handle(&handle, usage).unwrap();
+            let view = if direct {
+                imported.create_view(&Default::default())
+            } else {
+                let owned = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: imported.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: imported.format(),
+                    usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                encoder.copy_texture_to_texture(
+                    imported.as_image_copy(),
+                    owned.as_image_copy(),
+                    imported.size(),
+                );
+                gpu.queue.submit([encoder.finish()]);
+                owned.create_view(&Default::default())
+            };
+            let y = plane_texture(&gpu, yf, rect.width, rect.height);
+            let cbcr = plane_texture(&gpu, cf, rect.width / 2, rect.height / 2);
+            run_converter(&gpu, &converter, &view, &y, &cbcr, rect, Chroma::Swscale);
+            let mut got = gpu.read_texture(&y).unwrap();
+            got.extend(gpu.read_texture(&cbcr).unwrap());
+            assert_same(&format!("{format:?} direct={direct}"), &got, &want);
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn every_adapter_writes_the_plane_formats_and_converts_exactly() {
+    let image = noise();
+    let rect = Rect {
+        x: 101,
+        y: 51,
+        width: 1280,
+        height: 720,
+    };
+    for (name, luid) in Gpu::adapters() {
+        let gpu = Gpu::with_luid(luid).unwrap();
+        for format in FORMATS {
+            let (yf, cf) = Converter::plane_formats(format);
+            for plane in [yf, cf] {
+                let usages = gpu
+                    .adapter
+                    .get_texture_format_features(plane)
+                    .allowed_usages;
+                println!("{name} {plane:?}: {usages:?}");
+                assert!(
+                    usages.contains(wgpu::TextureUsages::STORAGE_BINDING),
+                    "{name} {plane:?}"
+                );
+            }
+            let want = colour::convert(&image.rgba, image.width, rect, Chroma::Swscale, format);
+            let got = gpu_convert(&gpu, &image, rect, Chroma::Swscale, format, false);
+            assert_same(&format!("{name} {format:?}"), &got, &want);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn deferred_cost(direct: bool) {
+    use std::time::{Duration, Instant};
+
+    const FRAMES: usize = 2000;
+    const BUCKET: usize = 250;
+    let gpu = Gpu::new().unwrap();
+    let d3d11 = D3d11::new(gpu.luid());
+    let (w, h) = (1920, 1080);
+    let pool: Vec<_> = (0..3).map(|_| d3d11.shared_texture(w, h)).collect();
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let converter = Converter::new(&gpu, Format::Nv12);
+    let (yf, cf) = Converter::plane_formats(Format::Nv12);
+    let y = plane_texture(&gpu, yf, w, h);
+    let cbcr = plane_texture(&gpu, cf, w / 2, h / 2);
+    let target = converter.target(
+        &y.create_view(&Default::default()),
+        &cbcr.create_view(&Default::default()),
+    );
+    let owned = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let owned_view = owned.create_view(&Default::default());
+    let wait = || {
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+    };
+    let mut rows: Vec<[Duration; 5]> = Vec::new();
+    for frame in 0..FRAMES {
+        d3d11.clear(&pool[frame % pool.len()], [(frame % 251) as u8, 7, 9, 255]);
+        let handle =
+            unsafe { vrf::gpu::d3d12::SharedHandle::duplicate(pool[frame % pool.len()].handle()) }
+                .unwrap();
+        let t0 = Instant::now();
+        let usage = if direct {
+            wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING
+        } else {
+            wgpu::TextureUsages::COPY_SRC
+        };
+        let imported = gpu.import_shared_handle(&handle, usage).unwrap();
+        let t1 = Instant::now();
+        if !direct {
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_texture(
+                imported.as_image_copy(),
+                owned.as_image_copy(),
+                imported.size(),
+            );
+            gpu.queue.submit([encoder.finish()]);
+            wait();
+        }
+        let t2 = Instant::now();
+        let source = if direct {
+            converter.source(&imported.create_view(&Default::default()))
+        } else {
+            converter.source(&owned_view)
+        };
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            converter.encode(&mut pass, &source, &target, rect, Chroma::Swscale);
+        }
+        gpu.queue.submit([encoder.finish()]);
+        wait();
+        let t3 = Instant::now();
+        drop(source);
+        drop(imported);
+        wait();
+        let t4 = Instant::now();
+        rows.push([t1 - t0, t2 - t1, t3 - t2, t4 - t3, t4 - t0]);
+    }
+    println!("{} direct={direct}", gpu.adapter.get_info().name,);
+    for (i, bucket) in rows.chunks(BUCKET).enumerate() {
+        let mean = |k: usize| {
+            bucket.iter().map(|r| r[k].as_secs_f64()).sum::<f64>() / bucket.len() as f64 * 1e3
+        };
+        println!(
+            "frames {:>4}..{:>4}: open {:.3} ms, copy {:.3} ms, convert {:.3} ms, release {:.3} ms, total {:.3} ms",
+            i * BUCKET,
+            i * BUCKET + bucket.len(),
+            mean(0),
+            mean(1),
+            mean(2),
+            mean(3),
+            mean(4)
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore]
+fn deferred_cost_with_a_copy() {
+    deferred_cost(false);
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore]
+fn deferred_cost_converting_the_opened_resource() {
+    deferred_cost(true);
 }
 
 #[test]
