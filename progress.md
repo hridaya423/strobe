@@ -7,7 +7,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | Research and plan | done 2026-10-29 | baseline timings and six research reports in `docs/research/2026-10-29/` |
 | 0. Measurement harness and baselines | in progress | 0.1 scaffold `926e94e`; 0.2 corpus `5d1f7a4` (7 launch videos, all render with their own framework); 0.3 runner `6f9d16f` (2 tests); 0.4 scorer `c5ffe1a` (8 tests, pinned to `metrics.py`). 0.5 refs `da09c99`. Refs built for hf-figma-launch and hf-heygen-stripe; the rest were re-running at 15:05. Next: 0.6 baseline on an idle machine |
 | 1. Spikes (1.6 done in research) | not started | `02-encode.md` |
-| 2. Spine on macOS | not started | |
+| 2. Spine on macOS | in progress | 2.5 muxer and 2.6 scheduler merged `aed2a3f` (17 + 9 tests; stitched VideoToolbox + x264 file decodes to identical md5s in ffmpeg and AVFoundation) |
 | 3. Blink path on macOS, Gate B | not started | |
 | 4. Throughput, Gate C | not started | |
 | 5. Media | not started | |
@@ -51,3 +51,4 @@ Kept for the orchestrator: Task 0.6 and spikes 1.8 and 1.9, which need an idle m
 - Noise floors so far: hf-figma-launch FLIP mean 0.00002 and max delta 4; hf-heygen-stripe FLIP mean 0.00018 and max delta 7. HyperFrames is not bit-identical run to run.
 - Noise floors (HyperFrames, every 5th frame): figma FLIP 0.00002, max delta 4; stripe 0.00018, max delta 7; spacex 0.00001, max delta 1; hyperframes-launch worst 0.0132, max delta 13, on frames 485 to 495 only (the talking-head video at 16 s; the heatmap shows a faint uniform difference across the video region, so HyperFrames decodes the same source video frame slightly differently between runs). The other 296 frames average 0.00009. Gate rule to apply at Gates B and C: a frame passes if it meets the §2 bars or sits within its own noise floor plus margin, whichever is looser (contract item 25), because no engine can beat a reference that misses the bar against itself.
 - Surprise: Remotion's CLI rejects an image-sequence output path with a dot anywhere in it (this repo is under `~/.t3`). `refs` renders into the system temp folder and moves the kept frames.
+- Integration notes from the Task 2.5/2.6 review: the scheduler keeps a clone of the last released frame for `Repeat`, so the `CVPixelBufferPool` needs one buffer more than the reorder window plus encoder frames in flight. The muxer's faststart rewrites the whole file once in `finish`; measure that in Task 2.7.
