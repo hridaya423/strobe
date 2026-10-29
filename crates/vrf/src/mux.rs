@@ -15,6 +15,7 @@ pub enum Container {
 pub enum Codec {
     H264,
     Hevc,
+    Av1,
     ProRes422Hq,
     ProRes422,
 }
@@ -24,6 +25,7 @@ impl Codec {
         match self {
             Codec::H264 => b"avc1",
             Codec::Hevc => b"hvc1",
+            Codec::Av1 => b"av01",
             Codec::ProRes422Hq => b"apch",
             Codec::ProRes422 => b"apcn",
         }
@@ -33,6 +35,7 @@ impl Codec {
         match self {
             Codec::H264 => Some(b"avcC"),
             Codec::Hevc => Some(b"hvcC"),
+            Codec::Av1 => Some(b"av1C"),
             Codec::ProRes422Hq | Codec::ProRes422 => None,
         }
     }
@@ -56,7 +59,7 @@ impl Colour {
     };
 }
 
-/// One sample entry. `config` is the body of the `avcC` or `hvcC` box (the decoder configuration
+/// One sample entry. `config` is the body of the `avcC`, `hvcC` or `av1C` box (the decoder configuration
 /// record, without the box header) and is empty for ProRes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamConfig {
@@ -86,6 +89,7 @@ impl TryFrom<&vrf_encode::StreamInfo> for StreamConfig {
             codec: match info.codec {
                 vrf_encode::Codec::H264 => Codec::H264,
                 vrf_encode::Codec::Hevc => Codec::Hevc,
+                vrf_encode::Codec::Av1 => Codec::Av1,
                 vrf_encode::Codec::ProRes422 => Codec::ProRes422,
             },
             width: u16::try_from(info.width).context("width does not fit 16 bits")?,

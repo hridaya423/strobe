@@ -342,6 +342,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "cudarc"
+version = "0.16.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17200eb07e7d85a243aa1bf4569a7aa998385ba98d14833973a817a63cc86e92"
+dependencies = [
+ "libloading 0.8.9",
+]
+
+[[package]]
 name = "defmt"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,6 +815,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
+
+[[package]]
 name = "libbz2-rs-sys"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -990,6 +1005,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "932e1eed40002ba70fccac6dab3b64be3301607c3ee88bd14989c4d4e1c1c993"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "nvidia-video-codec-sdk"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b150dfc88653e761947906dfc0ea14af16ae366cfc55122caab94381761605a"
+dependencies = [
+ "cudarc",
+ "lazy_static",
 ]
 
 [[package]]
@@ -1909,6 +1934,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "libc",
+ "libloading 0.9.0",
+ "nvidia-video-codec-sdk",
  "objc2-audio-toolbox",
  "objc2-core-audio-types",
  "objc2-core-foundation",
@@ -1916,6 +1943,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-io-surface",
  "objc2-video-toolbox",
+ "windows",
 ]
 
 [[package]]

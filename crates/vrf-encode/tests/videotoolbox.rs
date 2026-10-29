@@ -97,7 +97,7 @@ fn annex_b(packets: &[Packet], info: &StreamInfo) -> Vec<u8> {
     let (length_size, parameter_sets) = match info.codec {
         Codec::H264 => parse_avcc(&info.config),
         Codec::Hevc => parse_hvcc(&info.config),
-        Codec::ProRes422 => unreachable!(),
+        Codec::Av1 | Codec::ProRes422 => unreachable!(),
     };
     let mut out = Vec::new();
     for packet in packets {

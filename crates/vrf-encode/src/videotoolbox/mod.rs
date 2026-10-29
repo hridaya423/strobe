@@ -11,8 +11,8 @@ use objc2_core_foundation::{
 use objc2_core_media::{
     CMSampleBuffer, CMTime, CMTimeFlags,
     kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms, kCMSampleAttachmentKey_NotSync,
-    kCMTimeInvalid, kCMVideoCodecType_AppleProRes422, kCMVideoCodecType_H264,
-    kCMVideoCodecType_HEVC,
+    kCMTimeInvalid, kCMVideoCodecType_AV1, kCMVideoCodecType_AppleProRes422,
+    kCMVideoCodecType_H264, kCMVideoCodecType_HEVC,
 };
 use objc2_core_video::{
     kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferTransferFunction_ITU_R_709_2,
@@ -93,6 +93,7 @@ fn codec_type(codec: Codec) -> u32 {
     match codec {
         Codec::H264 => kCMVideoCodecType_H264,
         Codec::Hevc => kCMVideoCodecType_HEVC,
+        Codec::Av1 => kCMVideoCodecType_AV1,
         Codec::ProRes422 => kCMVideoCodecType_AppleProRes422,
     }
 }
@@ -273,6 +274,7 @@ unsafe fn config_of(sample: &CMSampleBuffer, codec: Codec) -> Vec<u8> {
     let atom = match codec {
         Codec::H264 => "avcC",
         Codec::Hevc => "hvcC",
+        Codec::Av1 => "av1C",
         Codec::ProRes422 => return Vec::new(),
     };
     let atoms = unsafe {
