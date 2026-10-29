@@ -89,6 +89,15 @@ pub struct VideoToolboxEncoder {
 // VideoToolbox sessions may be used from any thread; the encoder is only moved, never shared.
 unsafe impl Send for VideoToolboxEncoder {}
 
+/// The pixel format the encoder takes for `config`.
+pub fn pixel_format(config: &EncoderConfig) -> PixelFormat {
+    if config.ten_bit {
+        PixelFormat::P010
+    } else {
+        PixelFormat::Nv12
+    }
+}
+
 fn codec_type(codec: Codec) -> u32 {
     match codec {
         Codec::H264 => kCMVideoCodecType_H264,
@@ -358,12 +367,11 @@ unsafe extern "C-unwind" fn on_output(
 
 impl VideoToolboxEncoder {
     pub fn new(config: EncoderConfig) -> Result<Self> {
-        let format = if config.ten_bit {
-            PixelFormat::P010
-        } else {
-            PixelFormat::Nv12
-        };
-        let pool = PixelPool::new(config.width as usize, config.height as usize, format)?;
+        let pool = PixelPool::new(
+            config.width as usize,
+            config.height as usize,
+            pixel_format(&config),
+        )?;
         Self::with_pool(config, pool, None)
     }
 

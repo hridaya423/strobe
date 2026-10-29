@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
 pub mod audiotoolbox;
@@ -50,7 +51,7 @@ impl Rational {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Codec {
     H264,
     Hevc,

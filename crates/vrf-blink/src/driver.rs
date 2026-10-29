@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
+use serde::{Deserialize, Serialize};
 use vrf::colour::{Chroma, Format};
 use vrf::gpu::Gpu;
 use vrf::gpu::convert::{Converter, Source};
@@ -14,8 +15,8 @@ use vrf::gpu::metal::PoolTargets;
 use vrf::mux::{Container, Muxer};
 use vrf::sched::{self, Consumer, Producer, Submission};
 use vrf::sink::Sink;
-use vrf_encode::videotoolbox::VideoToolboxEncoder;
 use vrf_encode::videotoolbox::pool::{PixelFormat, PixelPool, PoolBuffer};
+use vrf_encode::videotoolbox::{self, VideoToolboxEncoder};
 use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
 
 use crate::{Paint, View};
@@ -54,6 +55,7 @@ impl Config {
 #[derive(Debug, Default)]
 pub struct Stats {
     pub elapsed: Duration,
+    pub pipeline: Duration,
     pub finish: Duration,
     pub repeats: u64,
     pub retries: u64,
@@ -88,9 +90,68 @@ impl Summary {
     }
 }
 
+const WARM_POOLS: usize = 2;
+
+type PoolKey = (u32, u32, PixelFormat, usize);
+
+struct PoolSlot {
+    key: PoolKey,
+    pool: PixelPool,
+    targets: PoolTargets,
+}
+
+/// The GPU device, the converter and the encoder pixel pools, kept from one render to the next.
+/// Creating them costs more than a short render takes.
+pub struct Warm {
+    gpu: Arc<Gpu>,
+    converter: Arc<Converter>,
+    pools: Vec<PoolSlot>,
+}
+
+// Metal devices and CoreVideo pools are thread-safe; a `Warm` is only ever used by one thread
+// at a time.
+unsafe impl Send for Warm {}
+
+impl Warm {
+    pub fn new() -> Result<Warm> {
+        let gpu = Gpu::new()?;
+        let converter = Converter::new(&gpu, Format::Nv12);
+        Ok(Warm {
+            gpu: Arc::new(gpu),
+            converter: Arc::new(converter),
+            pools: Vec::new(),
+        })
+    }
+
+    /// Allocates the pixel pool for frames of `width` x `height` if no render has yet.
+    pub fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
+        let key = (width, height, PixelFormat::Nv12, WINDOW + POOL_MARGIN);
+        self.slot(key).map(|_| ())
+    }
+
+    fn slot(&mut self, key: PoolKey) -> Result<&mut PoolSlot> {
+        let at = match self.pools.iter().position(|slot| slot.key == key) {
+            Some(at) => at,
+            None => {
+                if self.pools.len() >= WARM_POOLS {
+                    self.pools.remove(0);
+                }
+                let (width, height, format, size) = key;
+                self.pools.push(PoolSlot {
+                    key,
+                    pool: PixelPool::with_size(width as usize, height as usize, format, size)?,
+                    targets: PoolTargets::default(),
+                });
+                self.pools.len() - 1
+            }
+        };
+        Ok(&mut self.pools[at])
+    }
+}
+
 struct Converting {
-    gpu: Gpu,
-    converter: Converter,
+    gpu: Arc<Gpu>,
+    converter: Arc<Converter>,
     targets: PoolTargets,
     imports: HashMap<u32, Source>,
     pool: PixelPool,
@@ -225,8 +286,8 @@ impl LaneSpec {
         let converter = Converter::new(&gpu, Format::Nv12);
         Ok(Lane {
             converting: Converting {
-                gpu,
-                converter,
+                gpu: Arc::new(gpu),
+                converter: Arc::new(converter),
                 targets: PoolTargets::default(),
                 imports: HashMap::new(),
                 pool: self.pool,
@@ -285,13 +346,15 @@ impl Lane {
 }
 
 /// Feeds frames, in frame order, to an encoder and muxer on a submit thread. Frames come in
-/// through lanes; the pipeline is itself the first lane.
-pub struct Pipeline {
+/// through lanes; the pipeline is itself the first lane, and uses the GPU state of `warm`.
+pub struct Pipeline<'w> {
     lane: Lane,
     submit: JoinHandle<Result<(Muxer, Vec<Duration>)>>,
+    warm: &'w mut Warm,
+    key: PoolKey,
 }
 
-impl Deref for Pipeline {
+impl Deref for Pipeline<'_> {
     type Target = Lane;
 
     fn deref(&self) -> &Lane {
@@ -299,25 +362,28 @@ impl Deref for Pipeline {
     }
 }
 
-impl DerefMut for Pipeline {
+impl DerefMut for Pipeline<'_> {
     fn deref_mut(&mut self) -> &mut Lane {
         &mut self.lane
     }
 }
 
-impl Pipeline {
-    pub fn new(config: &Config, out: &Path) -> Result<Pipeline> {
-        let pool = PixelPool::with_size(
-            config.width as usize,
-            config.height as usize,
-            PixelFormat::Nv12,
+impl<'w> Pipeline<'w> {
+    pub fn new(config: &Config, out: &Path, warm: &'w mut Warm) -> Result<Pipeline<'w>> {
+        let encoder_config =
+            EncoderConfig::new(config.codec, config.width, config.height, config.frame_rate);
+        let key = (
+            config.width,
+            config.height,
+            videotoolbox::pixel_format(&encoder_config),
             config.window + POOL_MARGIN,
-        )?;
-        let encoder = VideoToolboxEncoder::with_pool(
-            EncoderConfig::new(config.codec, config.width, config.height, config.frame_rate),
-            pool,
-            None,
-        )?;
+        );
+        let gpu = warm.gpu.clone();
+        let converter = warm.converter.clone();
+        let slot = warm.slot(key)?;
+        let pool = slot.pool.clone();
+        let targets = std::mem::take(&mut slot.targets);
+        let encoder = VideoToolboxEncoder::with_pool(encoder_config, pool.clone(), None)?;
         let (producer, consumer) = sched::ordered::<PoolBuffer>(config.window);
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
@@ -327,23 +393,49 @@ impl Pipeline {
             Muxer::create(out, container, config.frame_rate.num as u32)?,
             config.frame_rate.den as u32,
         );
-        let lane = LaneSpec {
+        let lane = Lane {
+            converting: Converting {
+                gpu,
+                converter,
+                targets,
+                imports: HashMap::new(),
+                pool,
+            },
             producer,
-            pool: encoder.pool().clone(),
             width: config.width,
             height: config.height,
-        }
-        .open()?;
+            repeats: 0,
+            convert: Vec::new(),
+        };
         let frame_rate = config.frame_rate;
         let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
-        Ok(Pipeline { lane, submit })
+        Ok(Pipeline {
+            lane,
+            submit,
+            warm,
+            key,
+        })
     }
 
     /// Waits for every queued frame to be encoded and returns the muxer, still open, and the
     /// time each encoder submit took. Every other lane must be dropped first.
     pub fn finish(self) -> Result<(Muxer, Vec<Duration>)> {
-        let Pipeline { lane, submit } = self;
-        drop(lane);
+        let Pipeline {
+            lane,
+            submit,
+            warm,
+            key,
+        } = self;
+        let Lane {
+            converting,
+            producer,
+            ..
+        } = lane;
+        drop(producer);
+        let Converting { targets, .. } = converting;
+        if let Some(slot) = warm.pools.iter_mut().find(|slot| slot.key == key) {
+            slot.targets = targets;
+        }
         submit.join().expect("submit thread panicked")
     }
 }
@@ -358,7 +450,8 @@ pub fn render(
     mut seek: impl FnMut(&mut View, u64) -> Result<()>,
     out: &Path,
 ) -> Result<Stats> {
-    let mut pipeline = Pipeline::new(config, out)?;
+    let mut warm = Warm::new()?;
+    let mut pipeline = Pipeline::new(config, out, &mut warm)?;
     let mut stats = Stats::default();
     let mut capture = Capture::default();
     let started = Instant::now();
@@ -393,7 +486,7 @@ pub const LEAD_IN: u64 = 20;
 /// output can depend on the frames before it, and on their having been painted, not only seeked.
 /// Views must be ticking, since a repeat of the frame before a run would repeat another view's
 /// frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     pub views: usize,
     pub run: u64,
@@ -452,6 +545,8 @@ struct Shared<'a, T> {
     plan: Plan,
     watchdog: Duration,
     next_run: AtomicU64,
+    done: AtomicU64,
+    on_frame: &'a (dyn Fn(u64) -> Result<()> + Sync),
     open: &'a (dyn Fn() -> Result<View> + Sync),
     seek: &'a (dyn Fn(&mut View, u64) -> Result<T> + Sync),
 }
@@ -512,6 +607,8 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
                 None => lane.repeat(index)?,
             }
             worker.frames.push((index, value));
+            let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
+            (shared.on_frame)(done)?;
         }
         last = Some(shared.first + to - 1);
     }
@@ -525,21 +622,26 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
 /// Renders `config.frames` frames starting at `first` to a file at `out`, with `plan.views` views
 /// each on its own thread. `open` makes a view and `seek` leaves it showing a frame and returns
 /// what the adapter collects for it; `seek` may replace the view. The first error any view hits
-/// stops the others and is the one returned.
+/// stops the others and is the one returned. `on_frame` gets the number of frames done after each
+/// one, from whichever view finished it.
 pub fn render_runs<T: Send>(
     config: &Config,
     plan: Plan,
     first: u64,
     out: &Path,
+    warm: &mut Warm,
     open: impl Fn() -> Result<View> + Sync,
     seek: impl Fn(&mut View, u64) -> Result<T> + Sync,
+    on_frame: impl Fn(u64) -> Result<()> + Sync,
 ) -> Result<Runs<T>> {
     let started = Instant::now();
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
     let plan = plan.fit(frame_bytes);
     let mut config = config.clone();
     config.window = config.window.max(plan.window());
-    let mut pipeline = Pipeline::new(&config, out)?;
+    let step = Instant::now();
+    let mut pipeline = Pipeline::new(&config, out, warm)?;
+    let pipeline_s = step.elapsed();
     let views = (plan.views as u64)
         .min(config.frames.div_ceil(plan.run))
         .max(1) as usize;
@@ -551,6 +653,8 @@ pub fn render_runs<T: Send>(
         plan,
         watchdog: config.watchdog,
         next_run: AtomicU64::new(0),
+        done: AtomicU64::new(0),
+        on_frame: &on_frame,
         open: &open,
         seek: &seek,
     };
@@ -586,6 +690,7 @@ pub fn render_runs<T: Send>(
     let (muxer, encode) = finished?;
     let mut stats = Stats {
         elapsed: started.elapsed(),
+        pipeline: pipeline_s,
         encode,
         ..Stats::default()
     };

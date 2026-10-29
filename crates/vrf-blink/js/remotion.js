@@ -173,15 +173,24 @@
 
   let compositionFps = null;
 
-  const init = async ({ compositionId: id }) => {
-    if (compositionId !== null) throw new Error('init() runs once per page: the bundle keeps the first composition, load a new page for another one');
+  let resolved = null;
+  let resolving = null;
+
+  const resolve = async ({ compositionId: id }) => {
+    if (compositionId !== null || resolving !== null) throw new Error('init() runs once per page: the bundle keeps the first composition, load a new page for another one');
+    resolving = id;
     window.remotion_setBundleMode({ type: 'evaluation' });
     await waitReady(null);
     await registered(id);
-    const resolved = await window.remotion_calculateComposition(id);
+    resolved = await window.remotion_calculateComposition(id);
+    const { width, height, fps, durationInFrames, defaultCodec } = resolved;
+    return { id, width, height, fps, durationInFrames, defaultCodec, serializedProps: resolved.serializedResolvedPropsWithCustomSchema };
+  };
+
+  const mount = async () => {
     window.remotion_setBundleMode({
       type: 'composition',
-      compositionName: id,
+      compositionName: resolving,
       serializedResolvedPropsWithSchema: resolved.serializedResolvedPropsWithCustomSchema,
       compositionDurationInFrames: resolved.durationInFrames,
       compositionFps: resolved.fps,
@@ -190,10 +199,14 @@
       compositionDefaultCodec: resolved.defaultCodec,
     });
     await waitReady(null);
-    compositionId = id;
+    compositionId = resolving;
     compositionFps = resolved.fps;
-    const { width, height, fps, durationInFrames, defaultCodec } = resolved;
-    return { id, width, height, fps, durationInFrames, defaultCodec, serializedProps: resolved.serializedResolvedPropsWithCustomSchema };
+  };
+
+  const init = async (options) => {
+    const meta = await resolve(options);
+    await mount();
+    return meta;
   };
 
   const pendingImages = () => [...document.images].filter((img) => !img.complete);
@@ -225,6 +238,8 @@
     config,
     ready: () => waitReady(null),
     init,
+    resolve,
+    mount,
     seek,
     captureParams: () => CAPTURE[config.captureMode],
   };

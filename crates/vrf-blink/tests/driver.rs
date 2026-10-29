@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use objc2_io_surface::IOSurfaceLockOptions;
 use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url};
-use vrf_blink::driver::{Capture, Config, Pipeline, Plan, Stats, Summary, render, render_runs};
+use vrf_blink::driver::{
+    Capture, Config, Pipeline, Plan, Stats, Summary, Warm, render, render_runs,
+};
 use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
 use vrf_encode::{Codec, Rational};
 
@@ -77,7 +79,8 @@ fn render_delayed(
     delay: Duration,
     out: &Path,
 ) -> Result<Stats> {
-    let mut pipeline = Pipeline::new(config, out)?;
+    let mut warm = Warm::new()?;
+    let mut pipeline = Pipeline::new(config, out, &mut warm)?;
     let mut capture = Capture::default();
     let started = Instant::now();
     for index in 0..config.frames {
@@ -278,6 +281,7 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
     let mut files = Vec::new();
+    let mut warm = Warm::new()?;
     for views in [1, 2, 4, 8] {
         let out = std::env::temp_dir().join(format!("vrf-blink-parallel-{views}.mov"));
         let runs = render_runs(
@@ -285,8 +289,10 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
             Plan::new(views, 7),
             0,
             &out,
+            &mut warm,
             || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
             |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |_| Ok(()),
         )?;
         runs.muxer.finish()?;
         ensure!(runs.plan.views == views, "{} views ran", runs.plan.views);
@@ -318,11 +324,13 @@ fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
         Plan::new(4, 7),
         0,
         &out,
+        &mut Warm::new()?,
         || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
         |view, frame| {
             ensure!(frame != 50, "frame 50 is broken");
             view.evaluate(&format!("seek({frame})")).map(drop)
         },
+        |_| Ok(()),
     ) else {
         anyhow::bail!("a render with a broken frame succeeded");
     };

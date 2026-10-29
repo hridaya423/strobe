@@ -1995,6 +1995,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-io-surface",
  "objc2-video-toolbox",
+ "serde",
  "windows",
 ]
 
