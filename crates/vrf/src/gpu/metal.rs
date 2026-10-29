@@ -29,10 +29,17 @@ impl Gpu {
         plane: usize,
         format: wgpu::TextureFormat,
     ) -> Result<wgpu::Texture> {
-        let (width, height) = (surface.width_of_plane(plane) as u32, surface.height_of_plane(plane) as u32);
+        let (width, height) = (
+            surface.width_of_plane(plane) as u32,
+            surface.height_of_plane(plane) as u32,
+        );
         let desc = wgpu::TextureDescriptor {
             label: Some("iosurface"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -66,13 +73,21 @@ impl Gpu {
                 MTLTextureType::Type2D,
                 1,
                 1,
-                wgpu::hal::CopyExtent { width, height, depth: 1 },
+                wgpu::hal::CopyExtent {
+                    width,
+                    height,
+                    depth: 1,
+                },
                 None,
             )
         };
         Ok(unsafe {
             self.device
-                .create_texture_from_hal::<wgpu::hal::api::Metal>(hal, &desc, wgpu::TextureUses::RESOURCE)
+                .create_texture_from_hal::<wgpu::hal::api::Metal>(
+                    hal,
+                    &desc,
+                    wgpu::TextureUses::RESOURCE,
+                )
         })
     }
 }

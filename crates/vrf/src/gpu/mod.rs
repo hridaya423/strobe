@@ -1,3 +1,4 @@
+pub mod convert;
 mod metal;
 
 use anyhow::{Context, Result};
@@ -25,17 +26,23 @@ impl Gpu {
         .context("no Metal adapter")?;
         let features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | (wgpu::Features::TIMESTAMP_QUERY & adapter.features());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("vrf"),
-            required_features: features,
-            required_limits: adapter.limits(),
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("vrf"),
+                required_features: features,
+                required_limits: adapter.limits(),
+                ..Default::default()
+            }))?;
         let mtl_device = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
             .context("device is not Metal")?
             .raw_device()
             .clone();
-        Ok(Self { device, queue, adapter, mtl_device })
+        Ok(Self {
+            device,
+            queue,
+            adapter,
+            mtl_device,
+        })
     }
 
     pub fn read_texture(&self, texture: &wgpu::Texture) -> Result<Vec<u8>> {
@@ -62,7 +69,9 @@ impl Gpu {
         );
         self.queue.submit([encoder.finish()]);
         buffer.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
-        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         let mapped = buffer.get_mapped_range(..)?;
         Ok(mapped
             .chunks(stride as usize)

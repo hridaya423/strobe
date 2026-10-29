@@ -57,22 +57,34 @@ impl Surface {
 
     pub fn write_plane(&self, plane: usize, row_bytes: usize, rows: usize, data: &[u8]) {
         self.with_locked(|| {
-            let base = self.surface.base_address_of_plane(plane).as_ptr().cast::<u8>();
+            let base = self
+                .surface
+                .base_address_of_plane(plane)
+                .as_ptr()
+                .cast::<u8>();
             let stride = self.surface.bytes_per_row_of_plane(plane);
             for y in 0..rows {
                 let src = &data[y * row_bytes..(y + 1) * row_bytes];
-                unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), base.add(y * stride), row_bytes) };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(src.as_ptr(), base.add(y * stride), row_bytes)
+                };
             }
         });
     }
 
     pub fn read_plane(&self, plane: usize, row_bytes: usize, rows: usize) -> Vec<u8> {
         self.with_locked(|| {
-            let base = self.surface.base_address_of_plane(plane).as_ptr().cast::<u8>();
+            let base = self
+                .surface
+                .base_address_of_plane(plane)
+                .as_ptr()
+                .cast::<u8>();
             let stride = self.surface.bytes_per_row_of_plane(plane);
             let mut out = Vec::with_capacity(row_bytes * rows);
             for y in 0..rows {
-                out.extend_from_slice(unsafe { std::slice::from_raw_parts(base.add(y * stride), row_bytes) });
+                out.extend_from_slice(unsafe {
+                    std::slice::from_raw_parts(base.add(y * stride), row_bytes)
+                });
             }
             out
         })
