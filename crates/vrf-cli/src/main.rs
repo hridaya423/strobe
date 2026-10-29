@@ -1,11 +1,11 @@
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use vrf_blink::adapters::remotion::{self, Options, Report};
+use vrf_blink::adapters::{hyperframes, remotion};
 use vrf_blink::{Mode, Ui};
 use vrf_encode::Codec;
 
@@ -18,12 +18,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Render a Remotion project to a video file.
+    /// Render a Remotion or HyperFrames project to a video file.
     Render {
-        /// The Remotion project directory, with its dependencies installed.
+        /// The project directory: a Remotion project with its dependencies installed, or a
+        /// HyperFrames project (an `index.html`).
         project: PathBuf,
+        /// The Remotion composition to render. Required for a Remotion project.
         #[arg(long)]
-        composition: String,
+        composition: Option<String>,
         #[arg(short, long)]
         output: PathBuf,
         #[arg(long, value_enum, default_value = "h264")]
@@ -38,9 +40,16 @@ enum Command {
         /// Fail on any http(s) request that is not pinned in the project's `vrf.lock.json`.
         #[arg(long)]
         offline: bool,
-        /// The file that calls `registerRoot`, relative to the project. Found if absent.
+        /// Remotion: the file that calls `registerRoot`, relative to the project. Found if absent.
         #[arg(long)]
         entry: Option<PathBuf>,
+        /// HyperFrames: the installed `hyperframes` package. Found in `node_modules` above the
+        /// project if absent.
+        #[arg(long)]
+        hyperframes: Option<PathBuf>,
+        /// HyperFrames: frames per second.
+        #[arg(long, default_value_t = 30)]
+        fps: u32,
         /// Input props as JSON, or the path of a JSON file.
         #[arg(long)]
         props: Option<String>,
@@ -94,9 +103,34 @@ fn props(argument: Option<String>) -> Result<Option<String>> {
 }
 
 struct Rendered {
-    report: Report,
-    output: PathBuf,
+    report: serde_json::Value,
+    line: String,
     json: bool,
+}
+
+fn is_remotion(project: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(project.join("package.json")) else {
+        return false;
+    };
+    let package: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    ["dependencies", "devDependencies"].iter().any(|kind| {
+        package[kind]
+            .as_object()
+            .is_some_and(|deps| deps.contains_key("remotion"))
+    })
+}
+
+fn summary(
+    output: &Path,
+    frames: u64,
+    (width, height): (u32, u32),
+    elapsed_s: f64,
+    fps: f64,
+) -> String {
+    format!(
+        "{}: {frames} frames of {width}x{height} in {elapsed_s:.2} s = {fps:.1} fps",
+        output.display()
+    )
 }
 
 fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
@@ -109,24 +143,49 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
         frames,
         offline,
         entry,
+        hyperframes: hyperframes_package,
+        fps,
         props: props_argument,
         timeout,
         json,
     } = cli.command;
-    let options = Options {
-        project,
-        entry,
-        composition,
-        props: props(props_argument)?,
-        mode: if offline { Mode::Offline } else { Mode::Online },
-        timeout: Duration::from_millis(timeout),
+    let mode = if offline { Mode::Offline } else { Mode::Online };
+    let (report, line) = if composition.is_some() || is_remotion(&project) {
+        let options = remotion::Options {
+            project,
+            entry,
+            composition: composition.context("a Remotion project needs --composition")?,
+            props: props(props_argument)?,
+            mode,
+            timeout: Duration::from_millis(timeout),
+        };
+        let report = remotion::render(&ui, &options, frames, codec.into(), &output)?;
+        let line = summary(
+            &output,
+            report.frames,
+            (report.composition.width, report.composition.height),
+            report.elapsed_s,
+            report.fps,
+        );
+        (serde_json::to_value(&report)?, line)
+    } else {
+        let options = hyperframes::Options {
+            project,
+            hyperframes: hyperframes_package,
+            fps,
+            mode,
+        };
+        let report = hyperframes::render(&ui, &options, frames, codec.into(), &output)?;
+        let line = summary(
+            &output,
+            report.frames,
+            (report.composition.width, report.composition.height),
+            report.elapsed_s,
+            report.fps,
+        );
+        (serde_json::to_value(&report)?, line)
     };
-    let report = remotion::render(&ui, &options, frames, codec.into(), &output)?;
-    Ok(Rendered {
-        report,
-        output,
-        json,
-    })
+    Ok(Rendered { report, line, json })
 }
 
 fn main() -> ExitCode {
@@ -144,26 +203,14 @@ fn main() -> ExitCode {
     let outcome =
         vrf_blink::run(move |ui| execute(ui, cli.expect("a helper process never runs the worker")));
     match outcome {
-        Ok(Rendered {
-            report,
-            output,
-            json,
-        }) => {
+        Ok(Rendered { report, line, json }) => {
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&report).expect("a report serialises")
                 );
             } else {
-                println!(
-                    "{}: {} frames of {}x{} in {:.2} s = {:.1} fps",
-                    output.display(),
-                    report.frames,
-                    report.composition.width,
-                    report.composition.height,
-                    report.elapsed_s,
-                    report.fps
-                );
+                println!("{line}");
             }
             ExitCode::SUCCESS
         }

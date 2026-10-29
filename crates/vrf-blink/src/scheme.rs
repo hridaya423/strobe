@@ -55,6 +55,7 @@ struct Lock {
 
 struct Inner {
     root: PathBuf,
+    fallbacks: Vec<PathBuf>,
     mode: Mode,
     lock: Mutex<Lock>,
     failures: Mutex<Vec<String>>,
@@ -69,10 +70,25 @@ pub struct Project(Arc<Inner>);
 impl Project {
     /// Opens `root` and reads `vrf.lock.json` if the project has one.
     pub fn open(root: impl AsRef<Path>, mode: Mode) -> Result<Project> {
-        let root = root.as_ref();
-        let root = root
-            .canonicalize()
-            .with_context(|| format!("project directory {} does not exist", root.display()))?;
+        Project::open_layers(root, &[], mode)
+    }
+
+    /// Opens `root` with directories that serve the files it lacks, tried in order. The lock file
+    /// and the cache of pinned dependencies belong to `root`.
+    pub fn open_layers(
+        root: impl AsRef<Path>,
+        fallbacks: &[PathBuf],
+        mode: Mode,
+    ) -> Result<Project> {
+        let canonical = |dir: &Path| {
+            dir.canonicalize()
+                .with_context(|| format!("project directory {} does not exist", dir.display()))
+        };
+        let root = canonical(root.as_ref())?;
+        let fallbacks = fallbacks
+            .iter()
+            .map(|dir| canonical(dir))
+            .collect::<Result<Vec<_>>>()?;
         let lock = match fs::read(root.join(LOCK_FILE)) {
             Ok(bytes) => {
                 let lock: Lock = serde_json::from_slice(&bytes)
@@ -92,6 +108,7 @@ impl Project {
         };
         Ok(Project(Arc::new(Inner {
             root,
+            fallbacks,
             mode,
             lock: Mutex::new(lock),
             failures: Mutex::default(),
@@ -156,15 +173,21 @@ impl Project {
     }
 
     fn local(&self, url: &str, range: Option<&str>) -> Result<Served> {
-        let path = url_path(url).and_then(|path| safe_join(&self.0.root, &path));
-        let path = path.map(|path| {
-            if path.is_dir() {
-                path.join("index.html")
-            } else {
-                path
-            }
-        });
-        match path.filter(|path| path.is_file()) {
+        let Some(relative) = url_path(url) else {
+            return Ok(Served::not_found());
+        };
+        let found = std::iter::once(&self.0.root)
+            .chain(&self.0.fallbacks)
+            .filter_map(|root| safe_join(root, &relative))
+            .map(|path| {
+                if path.is_dir() {
+                    path.join("index.html")
+                } else {
+                    path
+                }
+            })
+            .find(|path| path.is_file());
+        match found {
             Some(path) => Served::file(&path, mime(&path), range),
             None => Ok(Served::not_found()),
         }
