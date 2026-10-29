@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Result, bail, ensure};
 use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_video::{
-    CVAttachmentMode, CVPixelBuffer, CVPixelBufferPool, CVPixelBufferGetIOSurface,
+    CVAttachmentMode, CVPixelBuffer, CVPixelBufferGetIOSurface, CVPixelBufferPool,
     kCVImageBufferChromaLocation_Left, kCVImageBufferChromaLocationBottomFieldKey,
     kCVImageBufferChromaLocationTopFieldKey, kCVImageBufferColorPrimaries_ITU_R_709_2,
     kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunction_ITU_R_709_2,
@@ -112,10 +112,7 @@ impl PixelPool {
         };
         let size = number(POOL_SIZE);
         let pool_attributes = unsafe {
-            Dict::from_slices(
-                &[kCVPixelBufferPoolMinimumBufferCountKey],
-                &[size.as_ref()],
-            )
+            Dict::from_slices(&[kCVPixelBufferPoolMinimumBufferCountKey], &[size.as_ref()])
         };
         let mut raw = null_mut();
         let status = unsafe {
@@ -126,12 +123,18 @@ impl PixelPool {
                 NonNull::from(&mut raw),
             )
         };
-        ensure!(status == kCVReturnSuccess, "CVPixelBufferPoolCreate: {status}");
+        ensure!(
+            status == kCVReturnSuccess,
+            "CVPixelBufferPoolCreate: {status}"
+        );
         let pool = unsafe {
             CFRetained::from_raw(NonNull::new(raw).expect("pool created without a pointer"))
         };
         let threshold = unsafe {
-            Dict::from_slices(&[kCVPixelBufferPoolAllocationThresholdKey], &[size.as_ref()])
+            Dict::from_slices(
+                &[kCVPixelBufferPoolAllocationThresholdKey],
+                &[size.as_ref()],
+            )
         };
         let this = PixelPool { pool, threshold };
         let warm = (0..POOL_SIZE)
@@ -154,7 +157,10 @@ impl PixelPool {
         if status == kCVReturnWouldExceedAllocationThreshold {
             return Ok(None);
         }
-        ensure!(status == kCVReturnSuccess, "CVPixelBufferPoolCreatePixelBuffer: {status}");
+        ensure!(
+            status == kCVReturnSuccess,
+            "CVPixelBufferPoolCreatePixelBuffer: {status}"
+        );
         let buffer = unsafe {
             CFRetained::from_raw(NonNull::new(raw).expect("buffer created without a pointer"))
         };
