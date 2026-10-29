@@ -704,7 +704,11 @@ impl NvencEncoder {
             sender,
             config: OnceLock::new(),
             frame_duration: Rational::new(config.frame_rate.den, config.frame_rate.num),
-            delay: options.b_frames as i64,
+            delay: if config.codec == Codec::Av1 {
+                0
+            } else {
+                options.b_frames as i64
+            },
         });
         let collector = std::thread::Builder::new()
             .name("nvenc-collect".into())

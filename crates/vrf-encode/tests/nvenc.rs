@@ -442,7 +442,7 @@ fn write_mp4(file: &Path, packets: Vec<Packet>, info: &StreamInfo, frame_rate: R
     muxer.finish().unwrap();
 }
 
-fn check_packets(packets: &[Packet], info: &StreamInfo, frame_rate: Rational, b_frames: u32) {
+fn check_packets(packets: &[Packet], info: &StreamInfo, frame_rate: Rational, reorders: bool) {
     assert_eq!(packets.len(), FRAMES);
     assert_eq!((info.width, info.height), (WIDTH as u32, HEIGHT as u32));
     assert_eq!(info.timebase, Rational::new(1, frame_rate.num));
@@ -472,7 +472,7 @@ fn check_packets(packets: &[Packet], info: &StreamInfo, frame_rate: Rational, b_
             "dts {dts:?} after pts {pts:?}"
         );
     }
-    if b_frames > 0 {
+    if reorders {
         assert!(
             packets.windows(2).any(|pair| {
                 pair[1].pts.num * pair[0].pts.den < pair[0].pts.num * pair[1].pts.den
@@ -494,7 +494,7 @@ fn check_mp4(codec: Codec, ten_bit: bool, b_frames: u32, name: &str, expected: &
     let mut config = config(codec, frame_rate);
     config.ten_bit = ten_bit;
     let (packets, info) = encode(config, options(b_frames), FRAMES).unwrap();
-    check_packets(&packets, &info, frame_rate, b_frames);
+    check_packets(&packets, &info, frame_rate, b_frames > 0 && codec != Codec::Av1);
     assert_eq!(info.codec, codec);
     assert!(!info.config.is_empty());
 
@@ -549,7 +549,7 @@ fn hevc_with_b_frames_keeps_presentation_order_and_valid_dts() {
 }
 
 #[test]
-fn av1_with_b_frames_keeps_presentation_order_and_valid_dts() {
+fn av1_with_b_frames_emits_temporal_units_in_presentation_order() {
     check_mp4(Codec::Av1, false, 2, "nv-av1-b", "av1");
 }
 
