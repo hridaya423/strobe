@@ -7,8 +7,11 @@ corpus=${CORPUS:-all}
 runs=${RUNS:-5}
 here=$(cd "$(dirname "$0")" && pwd)
 
-cd "$here/.." && cargo build --release -p vrf-bench -q
+cd "$here/.." && cargo build --release -p vrf-bench -p vrf-cli -q
 rsync -a target/release/vrf-bench "$host:$root/bin/"
+ssh "$host" "mkdir -p \$HOME/$root/target/release/bundle"
+rsync -a target/release/vrf "$host:$root/target/release/"
+rsync -a --delete target/release/bundle/vrf.app "$host:$root/target/release/bundle/"
 
 status=0
 for engine in "$@"; do
