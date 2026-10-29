@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+const log = [];
+function frame() {
+  log.push([Date.now(), performance.now()]);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.sample = () => log;
+</script>

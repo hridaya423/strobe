@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+const Captured = Date;
+const capturedDateNow = Date.now;
+const capturedPerfNow = performance.now.bind(performance);
+const capturedRaf = window.requestAnimationFrame;
+const capturedTimeout = window.setTimeout;
+const log = { raf: [], dateNow: [], perfNow: [], ctor: [], timeout: [] };
+function frame(ts) {
+  log.raf.push(ts);
+  log.dateNow.push(capturedDateNow());
+  log.perfNow.push(capturedPerfNow());
+  log.ctor.push(new Captured().getTime());
+  capturedRaf(frame);
+}
+capturedRaf(frame);
+capturedTimeout(() => log.timeout.push(capturedDateNow()), 100);
+window.sample = () => JSON.parse(JSON.stringify(log));
+</script>
