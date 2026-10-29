@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod colour;
 pub mod gpu;
 pub mod mux;

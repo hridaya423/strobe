@@ -1851,6 +1851,8 @@ dependencies = [
  "objc2-io-surface",
  "objc2-metal",
  "pollster",
+ "serde",
+ "serde_json",
  "vrf-encode",
  "wgpu",
 ]
