@@ -10,11 +10,14 @@ publish = false
 cef = { version = "156.2.0", default-features = false, features = ["accelerated_osr"] }
 wgpu = "30"
 pollster = "0.4"
+nvidia-video-codec-sdk = { version = "0.4.0", features = ["ci-check"] }
+libloading = "0.9"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
 features = [
     "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
