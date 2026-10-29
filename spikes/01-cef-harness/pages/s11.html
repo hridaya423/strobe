@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #fff; overflow: hidden; }
+#sq { position: absolute; left: 0; top: 0; width: 64px; height: 64px; }
+</style>
+<div id="sq"></div>
+<script>
+const el = location.search.includes('small') ? document.getElementById('sq') : document.documentElement;
+window.seek = (i) => {
+  el.style.backgroundColor = `rgb(${i & 255},${(i >> 8) & 255},165)`;
+  return Promise.resolve(i);
+};
+</script>
