@@ -16,3 +16,19 @@ objc2-video-toolbox = "0.3.2"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+libloading = "0.9"
+nvidia-video-codec-sdk = { version = "0.4.0", features = ["ci-check"] }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Threading",
+]

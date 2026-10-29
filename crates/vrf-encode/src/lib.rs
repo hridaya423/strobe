@@ -1,5 +1,9 @@
 use anyhow::Result;
 
+#[cfg(any(windows, test))]
+mod bitstream;
+#[cfg(windows)]
+pub mod nvenc;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
 
@@ -19,6 +23,7 @@ impl Rational {
 pub enum Codec {
     H264,
     Hevc,
+    Av1,
     ProRes422,
 }
 
@@ -54,7 +59,7 @@ pub struct EncoderConfig {
     pub frame_rate: Rational,
     pub keyframe_interval: u32,
     pub quality: Quality,
-    /// HEVC Main10 from P010 input. Rejected for other codecs.
+    /// 10-bit from P010 input: HEVC Main10, or AV1 on NVENC. Rejected for other codecs.
     pub ten_bit: bool,
 }
 
@@ -73,7 +78,8 @@ impl EncoderConfig {
 }
 
 /// One compressed frame. `data` is length-prefixed (AVCC or HVCC) sample data
-/// for H.264 and HEVC, never Annex B. Times are in seconds.
+/// for H.264 and HEVC, never Annex B, and a run of size-delimited OBUs without
+/// the temporal delimiter for AV1. Times are in seconds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Packet {
     pub data: Vec<u8>,
@@ -89,14 +95,16 @@ pub struct StreamInfo {
     pub height: u32,
     /// `1 / frame_rate.num`, so frame `i` lands on a whole tick.
     pub timebase: Rational,
-    /// The payload of the `avcC` (H.264) or `hvcC` (HEVC) box, with the
-    /// parameter sets. Empty for ProRes.
+    /// The payload of the `avcC` (H.264), `hvcC` (HEVC) or `av1C` (AV1) box,
+    /// with the parameter sets or sequence header. Empty for ProRes.
     pub config: Vec<u8>,
 }
 
 pub enum EncoderFrame {
     #[cfg(target_os = "macos")]
     PixelBuffer(videotoolbox::pool::PoolBuffer),
+    #[cfg(windows)]
+    D3d12(nvenc::PoolFrame),
 }
 
 /// Packets queue without bound until `drain`; the pixel-buffer pool bounds frames in flight.
