@@ -37,7 +37,8 @@ pub fn set_cpu_raster(on: bool) {
 }
 
 fn apply_flags(command_line: &mut CommandLine) {
-    for flag in FLAGS {
+    let extra = std::env::var("VRF_CEF_FLAGS").unwrap_or_default();
+    for flag in FLAGS.into_iter().chain(extra.split_whitespace()) {
         match flag.split_once('=') {
             Some((key, value)) => {
                 command_line.append_switch_with_value(Some(&key.into()), Some(&value.into()))
@@ -121,6 +122,37 @@ wrap_browser_process_handler! {
 }
 
 type Job = Box<dyn FnOnce() + Send>;
+
+wrap_end_tracing_callback! {
+    struct TraceDone {
+        done: mpsc::Sender<()>,
+    }
+
+    impl EndTracingCallback {
+        fn on_end_tracing_complete(&self, _tracing_file: Option<&CefString>) {
+            let _ = self.done.send(());
+        }
+    }
+}
+
+fn begin_trace() -> Option<String> {
+    let categories = std::env::var("VRF_TRACE").ok()?;
+    let file = std::env::var("VRF_TRACE_FILE").ok()?;
+    begin_tracing(Some(&categories.as_str().into()), None);
+    Some(file)
+}
+
+fn end_trace(file: &str) {
+    let (done, finished) = mpsc::channel();
+    let mut callback = TraceDone::new(done);
+    end_tracing(Some(&file.into()), Some(&mut callback));
+    for _ in 0..6000 {
+        do_message_loop_work();
+        if finished.recv_timeout(Duration::from_millis(10)).is_ok() {
+            return;
+        }
+    }
+}
 
 wrap_task! {
     struct UiTask {
@@ -228,6 +260,7 @@ pub fn run<R: Send + 'static>(work: impl FnOnce(Ui) -> R + Send + 'static) -> R 
         "CEF initialisation failed"
     );
 
+    let trace = begin_trace();
     let done = Arc::new(AtomicBool::new(false));
     let worker = {
         let (done, wake) = (done.clone(), wake.clone());
@@ -243,6 +276,9 @@ pub fn run<R: Send + 'static>(work: impl FnOnce(Ui) -> R + Send + 'static) -> R 
         wake.wait();
     }
     let result = worker.join().expect("worker thread cannot be joined");
+    if let Some(file) = trace {
+        end_trace(&file);
+    }
     let Ok(result) = result else {
         exit(101);
     };
