@@ -9,6 +9,7 @@ use objc2_io_surface::IOSurfaceRef;
 use vrf::colour;
 
 use crate::app::{OnUi, Ui};
+use crate::scheme::Project;
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -150,9 +151,14 @@ wrap_client! {
         render_handler: RenderHandler,
         load_handler: LoadHandler,
         life_span_handler: LifeSpanHandler,
+        request_handler: Option<RequestHandler>,
     }
 
     impl Client {
+        fn request_handler(&self) -> Option<RequestHandler> {
+            self.request_handler.clone()
+        }
+
         fn render_handler(&self) -> Option<RenderHandler> {
             Some(self.render_handler.clone())
         }
@@ -198,11 +204,56 @@ pub struct View {
     paints: Receiver<Paint>,
     methods: Receiver<MethodResult>,
     closed: Receiver<()>,
+    project: Option<Project>,
     next_id: i32,
 }
 
 impl View {
     pub fn open(ui: &Ui, url: &str, width: i32, height: i32) -> Result<View> {
+        View::launch(ui, url, width, height, None)
+    }
+
+    /// Opens `entry` from `project` at `vrf://project/`. Fails if the page asked for anything
+    /// the project refused, such as an unpinned URL in offline mode.
+    pub fn open_project(
+        ui: &Ui,
+        project: &Project,
+        entry: &str,
+        width: i32,
+        height: i32,
+    ) -> Result<View> {
+        let view = View::launch(
+            ui,
+            &project.url(entry),
+            width,
+            height,
+            Some(project.clone()),
+        )?;
+        if let Err(error) = view.check_project() {
+            let _ = view.close();
+            return Err(error);
+        }
+        Ok(view)
+    }
+
+    /// Fails if the project refused or could not serve a request since it was opened.
+    pub fn check_project(&self) -> Result<()> {
+        let failures = self
+            .project
+            .as_ref()
+            .map(Project::failures)
+            .unwrap_or_default();
+        ensure!(failures.is_empty(), "{}", failures.join("; "));
+        Ok(())
+    }
+
+    fn launch(
+        ui: &Ui,
+        url: &str,
+        width: i32,
+        height: i32,
+        project: Option<Project>,
+    ) -> Result<View> {
         let (paints_tx, paints) = mpsc::channel();
         let (methods_tx, methods) = mpsc::channel();
         let (loaded_tx, loaded) = mpsc::channel();
@@ -214,7 +265,10 @@ impl View {
             closed: closed_tx,
         };
         let url = url.to_owned();
+        let bound = project.clone();
         let (host, observer) = ui.call(move || -> Result<_> {
+            let (mut context, request_handler) =
+                bound.map(|project| project.bind()).transpose()?.unzip();
             let window_info = WindowInfo {
                 windowless_rendering_enabled: true as _,
                 shared_texture_enabled: true as _,
@@ -230,6 +284,7 @@ impl View {
                 BlinkRenderHandler::new(width, height, channels.paints),
                 BlinkLoadHandler::new(channels.loaded),
                 BlinkLifeSpanHandler::new(channels.closed),
+                request_handler,
             );
             let browser = browser_host_create_browser_sync(
                 Some(&window_info),
@@ -237,7 +292,7 @@ impl View {
                 Some(&url.as_str().into()),
                 Some(&browser_settings),
                 None,
-                None,
+                context.as_mut(),
             )
             .context("CEF did not create the browser")?;
             let host = browser.host().context("browser has no host")?;
@@ -255,6 +310,7 @@ impl View {
             paints,
             methods,
             closed,
+            project,
             next_id: 1,
         };
         view.settle()?;

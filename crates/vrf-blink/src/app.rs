@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use cef::{args::Args, rc::Rc as _, *};
 
-use crate::{bundle, mac};
+use crate::{bundle, mac, scheme};
 
 const FLAGS: [&str; 13] = [
     "run-all-compositor-stages-before-draw",
@@ -74,6 +74,12 @@ wrap_app! {
         ) {
             if let Some(command_line) = command_line {
                 apply_flags(command_line);
+            }
+        }
+
+        fn on_register_custom_schemes(&self, registrar: Option<&mut SchemeRegistrar>) {
+            if let Some(registrar) = registrar {
+                scheme::register_scheme(registrar);
             }
         }
 
