@@ -1,5 +1,6 @@
 target/
 bench/results/*.json
 bench/refs/
-bench/node_modules/
+bench/engines/node_modules/
 bench/corpus/external/
+bench/engines/browsers/

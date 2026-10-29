@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "external/transitions-video"
+entry = "src/index.ts"
+composition = "Main"
+width = 1080
+height = 1080
+fps = 30
+frames = 840
+stresses = ["@remotion/transitions", "google fonts", "square format"]

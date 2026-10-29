@@ -1,0 +1,8 @@
+framework = "hyperframes"
+source = "external/hyperframes-launches/figma-launch"
+entry = "index.html"
+width = 1080
+height = 1080
+fps = 30
+frames = 1922
+stresses = ["video", "audio", "blur", "square format"]

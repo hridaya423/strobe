@@ -43,13 +43,20 @@ impl Engine {
     }
 
     pub fn invocation(self, corpus: &Corpus, out: &Path) -> Invocation {
-        let bin = |name: &str| bench_dir().join("node_modules/.bin").join(name);
+        let bin = |name: &str| bench_dir().join("engines/node_modules/.bin").join(name);
         let out = out.display().to_string();
         let s = |p: PathBuf| p.display().to_string();
         match self {
             Engine::Hyperframes => Invocation {
-                cwd: bench_dir(),
-                argv: vec![s(bin("hyperframes")), "render".into(), s(corpus.project_dir()), "-o".into(), out, "--quiet".into()],
+                cwd: bench_dir().join("engines"),
+                argv: vec![
+                    s(bin("hyperframes")),
+                    "render".into(),
+                    s(corpus.project_dir()),
+                    "-o".into(),
+                    out,
+                    "--quiet".into(),
+                ],
             },
             Engine::Remotion => {
                 let dir = corpus.project_dir();
@@ -60,12 +67,18 @@ impl Engine {
                         corpus.entry.display().to_string(),
                         corpus.composition.clone().unwrap_or_default(),
                         out,
+                        "--browser-executable".into(),
+                        s(headless_shell()),
                     ],
                     cwd: dir,
                 }
             }
             Engine::Kinetograph | Engine::Kinetograph4 => {
-                let workers = if self == Engine::Kinetograph { "1" } else { "4" };
+                let workers = if self == Engine::Kinetograph {
+                    "1"
+                } else {
+                    "4"
+                };
                 let mut argv = vec![
                     s(bin("kinetograph")),
                     "render".into(),
@@ -78,8 +91,32 @@ impl Engine {
                 if let Some(comp) = &corpus.composition {
                     argv.extend(["--comp".into(), comp.clone()]);
                 }
-                Invocation { cwd: corpus.project_dir(), argv }
+                Invocation {
+                    cwd: corpus.project_dir(),
+                    argv,
+                }
             }
         }
     }
 }
+
+pub fn headless_shell() -> PathBuf {
+    let dir = bench_dir().join("engines/browsers/chrome-headless-shell");
+    let platform = if cfg!(target_os = "macos") {
+        "mac_arm"
+    } else if cfg!(windows) {
+        "win64"
+    } else {
+        "linux"
+    };
+    let leaf = if cfg!(target_os = "macos") {
+        "chrome-headless-shell-mac-arm64/chrome-headless-shell"
+    } else if cfg!(windows) {
+        "chrome-headless-shell-win64/chrome-headless-shell.exe"
+    } else {
+        "chrome-headless-shell-linux64/chrome-headless-shell"
+    };
+    dir.join(format!("{platform}-{HEADLESS_SHELL}")).join(leaf)
+}
+
+pub const HEADLESS_SHELL: &str = "156.0.8078.73";

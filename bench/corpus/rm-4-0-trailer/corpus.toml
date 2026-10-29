@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "external/4-0-trailer"
+entry = "src/index.ts"
+composition = "Intro"
+width = 1920
+height = 1080
+fps = 30
+frames = 1900
+stresses = ["@remotion/shapes", "@remotion/noise", "@remotion/paths", "audio"]

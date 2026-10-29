@@ -1,0 +1,8 @@
+framework = "hyperframes"
+source = "external/hyperframes-launches/hyperframes-launch"
+entry = "index.html"
+width = 1920
+height = 1080
+fps = 30
+frames = 1494
+stresses = ["video", "audio", "canvas", "three.js", "lottie", "blur", "nested compositions"]

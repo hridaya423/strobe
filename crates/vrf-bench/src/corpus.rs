@@ -44,8 +44,10 @@ pub fn bench_dir() -> PathBuf {
 pub fn load(id: &str) -> Result<Corpus> {
     let root = bench_dir().join("corpus");
     let path = root.join(id).join("corpus.toml");
-    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let mut c: Corpus = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut c: Corpus =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     c.id = id.to_string();
     c.root = root;
     Ok(c)

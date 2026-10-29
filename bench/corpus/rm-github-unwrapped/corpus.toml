@@ -1,0 +1,9 @@
+framework = "remotion"
+source = "external/github-unwrapped"
+entry = "remotion/index.ts"
+composition = "Main"
+width = 1080
+height = 1080
+fps = 30
+frames = 1692
+stresses = ["calculateMetadata", "gradients", "noise", "many scenes"]
