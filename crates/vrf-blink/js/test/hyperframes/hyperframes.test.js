@@ -130,3 +130,138 @@ describe('item 18: time quantization', () => {
     await unsnapped.close();
   });
 });
+
+const styleOf = (hf, selector, prop) =>
+  hf.page.evaluate(`getComputedStyle(document.querySelector(${JSON.stringify(selector)})).${prop}`);
+
+describe('item 19: seek semantics', () => {
+  test('item_19_from_tween_applies_start_state_at_frame_zero', async () => {
+    const dir = project({
+      'index.html': composition({
+        body: box,
+        script: 'const tl = gsap.timeline({paused:true}); tl.from("#box", {opacity: 0, x: 100, duration: 1, ease:"none"}); window.__timelines = {main: tl};',
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    await hf.seek(0);
+    assert.equal(await styleOf(hf, '#box', 'opacity'), '0');
+    assert.equal(await boxX(hf), 100);
+    await hf.seek(5);
+    assert.equal(await boxX(hf), 50);
+    await hf.close();
+  });
+
+  test('item_19_callbacks_fire_once_when_the_playhead_crosses_them_forward', async () => {
+    const dir = project({
+      'index.html': composition({
+        body: box,
+        script:
+          'window.hits = 0; const tl = gsap.timeline({paused:true}); tl.to("#box", {x: 200, duration: 1, ease:"none"}); tl.call(() => { window.hits++; }, [], 0.5); window.__timelines = {main: tl};',
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    const hits = () => hf.page.evaluate('window.hits');
+    for (let i = 0; i < 5; i++) await hf.seek(i);
+    assert.equal(await hits(), 0);
+    await hf.seek(5);
+    assert.equal(await hits(), 1);
+    for (let i = 6; i < 10; i++) await hf.seek(i);
+    assert.equal(await hits(), 1);
+    await hf.close();
+  });
+
+  test('item_19_callback_fires_once_when_a_seek_jumps_over_it', async () => {
+    const dir = project({
+      'index.html': composition({
+        body: box,
+        script:
+          'window.hits = 0; const tl = gsap.timeline({paused:true}); tl.call(() => { window.hits++; }, [], 0.5); tl.set({}, {}, 1); window.__timelines = {main: tl};',
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    await hf.seek(2);
+    await hf.seek(9);
+    assert.equal(await hf.page.evaluate('window.hits'), 1);
+    await hf.close();
+  });
+
+  test('item_19_holds_last_frame_beyond_timeline_end', async () => {
+    const dir = project({
+      'index.html': composition({
+        duration: 2,
+        body: box,
+        script: 'const tl = gsap.timeline({paused:true}); tl.to("#box", {x: 200, duration: 1, ease:"none"}); window.__timelines = {main: tl};',
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    assert.equal(hf.meta.frames, 20);
+    await hf.seek(10);
+    assert.equal(await boxX(hf), 200);
+    await hf.seek(19);
+    assert.equal(await boxX(hf), 200);
+    await hf.close();
+  });
+
+  test('item_19_sibling_timelines_seek_before_the_master', async () => {
+    const dir = project({
+      'index.html': composition({
+        body:
+          box +
+          '<div id="side" data-composition-id="side" data-start="0" data-duration="1" style="position:absolute;width:10px;height:10px"></div>',
+        script: `window.order = [];
+          const side = gsap.timeline({paused:true, onUpdate: () => window.order.push('side')}); side.to("#side", {x: 50, duration: 1, ease:"none"});
+          const main = gsap.timeline({paused:true, onUpdate: () => window.order.push('main')}); main.to("#box", {x: 200, duration: 1, ease:"none"});
+          window.__timelines = {side, main};`,
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    await hf.page.evaluate('window.order.length = 0');
+    await hf.seek(5);
+    const order = await hf.page.evaluate('window.order');
+    assert.ok(order.includes('side') && order.includes('main'));
+    assert.ok(order.indexOf('side') < order.indexOf('main'), `order was ${order}`);
+    await hf.close();
+  });
+
+  test('item_19_css_animation_adapter_seeks_in_the_same_pass', async () => {
+    const dir = project({
+      'index.html': composition({
+        body: '<div id="pulse" style="position:absolute;width:20px;height:20px;background:#fff;animation:fade 1s linear both"></div>',
+        style: '@keyframes fade{from{opacity:0}to{opacity:1}}',
+        script: 'const tl = gsap.timeline({paused:true}); tl.set({}, {}, 1); window.__timelines = {main: tl};',
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    await hf.seek(5);
+    assert.ok(Math.abs(Number(await styleOf(hf, '#pulse', 'opacity')) - 0.5) < 0.01);
+    await hf.seek(2);
+    assert.ok(Math.abs(Number(await styleOf(hf, '#pulse', 'opacity')) - 0.2) < 0.01);
+    await hf.close();
+  });
+
+  test('item_19_waapi_adapter_seeks_in_the_same_pass', async () => {
+    const dir = project({
+      'index.html': composition({
+        body: '<div id="slide" style="position:absolute;width:20px;height:20px;background:#fff"></div>',
+        script: `document.querySelector('#slide').animate([{opacity: 0}, {opacity: 1}], {duration: 1000, fill: 'both', easing: 'linear'});
+          const tl = gsap.timeline({paused:true}); tl.set({}, {}, 1); window.__timelines = {main: tl};`,
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    await hf.seek(5);
+    assert.ok(Math.abs(Number(await styleOf(hf, '#slide', 'opacity')) - 0.5) < 0.01);
+    await hf.seek(8);
+    assert.ok(Math.abs(Number(await styleOf(hf, '#slide', 'opacity')) - 0.8) < 0.01);
+    await hf.close();
+  });
+
+  test('item_19_random_access_equals_sequential_playback', async () => {
+    const hf = await openHf(browser, basic());
+    for (let i = 0; i <= 7; i++) await hf.seek(i);
+    const sequential = await boxX(hf);
+    await hf.seek(0);
+    await hf.seek(7);
+    assert.equal(await boxX(hf), sequential);
+    await hf.close();
+  });
+});

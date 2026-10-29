@@ -261,6 +261,7 @@
     window.__hfFlushSync?.();
     await waitHfReady(timeoutMs);
     await waitSubCompositionTimelines(timeoutMs);
+    await waitHfReady(timeoutMs);
     await Promise.all([waitVideosReady(timeoutMs, new Set(skipVideoIds)), waitImagesReady(timeoutMs), document.fonts?.ready]);
     if (alpha) applyTransparentBackground();
     ensureRenderFrameSiblings();
