@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use vrf_bench::{corpus, engines::Engine, refs, run, score};
 
@@ -52,18 +52,29 @@ fn main() -> Result<()> {
             let out_dir = out_dir.unwrap_or_else(|| std::env::temp_dir().join("vrf-bench"));
             let date = jiff::Zoned::now().date();
             std::fs::create_dir_all(run::results_dir())?;
+            let mut failed = 0;
             for c in corpus::select(&corpus)? {
                 for &e in engine.iter().filter(|e| e.supports(c.framework)) {
-                    let r = run::run(e, &c, runs, &out_dir)?;
-                    let path = run::results_dir()
-                        .join(format!("{date}-{}-{}.json", r.engine, r.corpus_id));
-                    std::fs::write(&path, serde_json::to_string_pretty(&r)?)?;
-                    println!(
-                        "{:<14} {:<24} {:>8.3} s {:>8.1} fps",
-                        r.engine, r.corpus_id, r.median_s, r.fps
-                    );
+                    let path = |suffix: &str| {
+                        run::results_dir().join(format!("{date}-{}-{}{suffix}", e.name(), c.id))
+                    };
+                    match run::run(e, &c, runs, &out_dir) {
+                        Ok(r) => {
+                            std::fs::write(path(".json"), serde_json::to_string_pretty(&r)?)?;
+                            println!(
+                                "{:<14} {:<24} {:>8.3} s {:>8.1} fps",
+                                r.engine, r.corpus_id, r.median_s, r.fps
+                            );
+                        }
+                        Err(err) => {
+                            failed += 1;
+                            std::fs::write(path(".failed.txt"), format!("{err:#}\n"))?;
+                            println!("{:<14} {:<24} FAILED: {err:#}", e.name(), c.id);
+                        }
+                    }
                 }
             }
+            ensure!(failed == 0, "{failed} runs failed");
         }
         Cmd::Refs { corpus, keep } => {
             for c in corpus::select(&corpus)? {

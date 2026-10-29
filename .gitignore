@@ -4,3 +4,4 @@ bench/refs/
 bench/engines/node_modules/
 bench/corpus/external/
 bench/engines/browsers/
+bench/out/

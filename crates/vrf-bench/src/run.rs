@@ -9,6 +9,7 @@ use crate::corpus::{Corpus, bench_dir};
 use crate::engines::Engine;
 
 pub const MAX_LOAD: f64 = 2.0;
+pub const IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Timing {
@@ -117,7 +118,12 @@ fn load_one() -> Result<f64> {
 }
 
 pub fn ensure_idle() -> Result<f64> {
-    let load = load_one()?;
+    let deadline = std::time::Instant::now() + IDLE_WAIT;
+    let mut load = load_one()?;
+    while load >= MAX_LOAD && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        load = load_one()?;
+    }
     if load < MAX_LOAD {
         return Ok(load);
     }
@@ -133,7 +139,7 @@ pub fn ensure_idle() -> Result<f64> {
         .map(|p| format!("  {:6.1}%  {}", p.cpu_usage(), p.name().to_string_lossy()))
         .collect();
     bail!(
-        "load average {load:.2} is at or over {MAX_LOAD}; busiest processes:\n{}",
+        "load average {load:.2} stayed at or over {MAX_LOAD} for {IDLE_WAIT:?}; busiest processes:\n{}",
         top.join("\n")
     )
 }
