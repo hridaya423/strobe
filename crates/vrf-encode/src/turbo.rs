@@ -478,7 +478,9 @@ impl Encoder for TurboEncoder {
             "frame {index} is out of order; expected {}",
             first + self.submitted
         );
-        let keyframe = self.submitted % u64::from(self.options.chunk_frames) == 0;
+        let keyframe = self
+            .submitted
+            .is_multiple_of(u64::from(self.options.chunk_frames));
         if keyframe {
             self.current = self.pick();
             self.lanes[self.current].chunks += 1;

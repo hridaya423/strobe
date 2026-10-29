@@ -79,7 +79,7 @@ pub fn nv12_frame(index: usize, width: usize, height: usize) -> (Vec<u8>, Vec<u8
     let mut chroma = vec![128u8; width * height / 2];
     let phase = index as f32;
     for (y, line) in luma.chunks_mut(width).enumerate() {
-        let row = (y + index * 3 / 2) % 8 == 0;
+        let row = (y + index * 3 / 2).is_multiple_of(8);
         for (x, byte) in line.iter_mut().enumerate() {
             let (fx, fy) = (x as f32, y as f32);
             let wave = 40.0 * (fx * 0.21).sin() * (fy * 0.17).cos()

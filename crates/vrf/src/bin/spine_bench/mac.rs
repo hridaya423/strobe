@@ -75,6 +75,13 @@ fn parse_args() -> Result<Args> {
                     .context("--x264-threads follows --turbo")?
                     .x264_threads = threads;
             }
+            "--vt-headroom" => {
+                let headroom = it.next().context("--vt-headroom needs a value")?.parse()?;
+                args.turbo
+                    .as_mut()
+                    .context("--vt-headroom follows --turbo")?
+                    .vt_headroom = headroom;
+            }
             "--no-cpu-lane" => {
                 args.turbo
                     .as_mut()

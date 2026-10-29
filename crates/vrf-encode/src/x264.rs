@@ -168,7 +168,7 @@ impl X264Encoder {
         ensure!(config.codec == Codec::H264, "libx264 encodes only H.264");
         ensure!(!config.ten_bit, "the libx264 lane is 8-bit");
         ensure!(
-            config.width % 2 == 0 && config.height % 2 == 0,
+            config.width.is_multiple_of(2) && config.height.is_multiple_of(2),
             "libx264 needs even dimensions"
         );
         ensure!(
