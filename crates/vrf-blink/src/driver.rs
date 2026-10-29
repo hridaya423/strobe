@@ -224,7 +224,7 @@ impl Pipeline {
         let (producer, consumer) = sched::ordered::<PoolBuffer>(WINDOW);
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
-            Codec::H264 | Codec::Hevc => Container::Mp4,
+            Codec::H264 | Codec::Hevc | Codec::Av1 => Container::Mp4,
         };
         let sink = Sink::new(
             Muxer::create(out, container, config.frame_rate.num as u32)?,

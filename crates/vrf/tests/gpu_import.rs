@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 #[allow(dead_code)]
 mod gpu_support;
 

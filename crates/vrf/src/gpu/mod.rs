@@ -1,29 +1,29 @@
 pub mod convert;
+#[cfg(windows)]
+pub mod d3d12;
+#[cfg(target_os = "macos")]
 pub mod metal;
 
-use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+use anyhow::Result;
+#[cfg(target_os = "macos")]
 use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
 use objc2::runtime::ProtocolObject;
+#[cfg(target_os = "macos")]
 use objc2_metal::MTLDevice;
 
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter: wgpu::Adapter,
+    #[cfg(target_os = "macos")]
     pub mtl_device: Retained<ProtocolObject<dyn MTLDevice>>,
 }
 
 impl Gpu {
-    pub fn new() -> Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        }))
-        .context("no Metal adapter")?;
+    fn open(adapter: wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue, wgpu::Adapter)> {
         let features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgpu::Features::IMMEDIATES
             | (wgpu::Features::TIMESTAMP_QUERY & adapter.features())
@@ -35,6 +35,21 @@ impl Gpu {
                 required_limits: adapter.limits(),
                 ..Default::default()
             }))?;
+        Ok((device, queue, adapter))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn new() -> Result<Self> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .context("no Metal adapter")?;
+        let (device, queue, adapter) = Self::open(adapter)?;
         let mtl_device = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
             .context("device is not Metal")?
             .raw_device()

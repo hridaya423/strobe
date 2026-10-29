@@ -104,7 +104,7 @@ fn submit_loop(
     Ok((sink.into_muxer(), times))
 }
 
-fn main() -> Result<()> {
+pub fn main() -> Result<()> {
     let args = parse_args()?;
     let gpu = Gpu::new()?;
     let converter = Converter::new(&gpu, Format::Nv12);
