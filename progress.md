@@ -5,7 +5,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | Phase | Status | Evidence |
 |---|---|---|
 | Research and plan | done 2026-10-29 | baseline timings and six research reports in `docs/research/2026-10-29/` |
-| 0. Measurement harness and baselines | in progress | 0.1 scaffold `926e94e`; 0.2 corpus `5d1f7a4` (7 launch videos, all render with their own framework); 0.3 runner `6f9d16f` (2 tests); 0.4 scorer `c5ffe1a` (8 tests, pinned to `metrics.py`). Next: 0.5 references, 0.6 baseline |
+| 0. Measurement harness and baselines | in progress | 0.1 scaffold `926e94e`; 0.2 corpus `5d1f7a4` (7 launch videos, all render with their own framework); 0.3 runner `6f9d16f` (2 tests); 0.4 scorer `c5ffe1a` (8 tests, pinned to `metrics.py`). 0.5 refs `da09c99`. Refs built for hf-figma-launch and hf-heygen-stripe; the rest were re-running at 15:05. Next: 0.6 baseline on an idle machine |
 | 1. Spikes (1.6 done in research) | not started | `02-encode.md` |
 | 2. Spine on macOS | not started | |
 | 3. Blink path on macOS, Gate B | not started | |
@@ -36,3 +36,16 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 - Surprise: Remotion 4.0.240 unpacked a truncated `chrome-headless-shell` on this machine (Node 26.7). The zip is valid, and `ditto` unpacks it correctly. `fetch-external.sh` checks the binary and re-extracts it.
 - Surprise: Remotion 4.0.169 and 4.0.60 use the system Google Chrome when present. All Remotion runs therefore pass `--browser-executable` with a pinned `chrome-headless-shell` 156.0.8078.73.
 - `metrics.py` computes tail fractions in float32, which counts some deltas of exactly 8 as over 8. The scorer uses integer deltas; see plan Task 0.4.
+
+## In flight (2026-10-29 15:05), Sonnet 5.5 delegates, one worktree each from `da09c99`
+
+| Agent | Scope |
+|---|---|
+| A | Phase 1 spikes 1.1, 1.2, 1.3, 1.5, 1.7, 1.10 on macOS (`spikes/01-cef-harness`) |
+| B | Tasks 2.1 and 2.2: IOSurface import, NV12/P010 convert, CPU oracle |
+| C | Task 2.4 and the pool half of 2.3: VideoToolbox encoder, `CVPixelBufferPool` (`crates/vrf-encode`) |
+| D | Tasks 2.5 and 2.6: MP4/MOV muxer, ordered scheduler |
+| E | win-pc: Rust toolchain, Windows build, spikes R6 (begin-frame delivery) and R7 (D3D import, NVENC) |
+
+Kept for the orchestrator: Task 0.6 and spikes 1.8 and 1.9, which need an idle machine (load average under 2). Task 2.3's GPU half and 2.7 come after B and C merge.
+- Noise floors so far: hf-figma-launch FLIP mean 0.00002 and max delta 4; hf-heygen-stripe FLIP mean 0.00018 and max delta 7. HyperFrames is not bit-identical run to run.
