@@ -33,7 +33,8 @@
     return [q(y + off(config.r, v)), q(y + off(config.gu, u) + off(config.gv, v) - g0), q(y + off(config.b, u))];
   };
 
-  const chooseFrame = (pts, target) => {
+  const chooseFrame = (pts, ticks) => {
+    const target = Math.trunc(ticks);
     let low = 0;
     let high = pts.length;
     while (low < high) {
@@ -41,11 +42,16 @@
       if (pts[mid] <= target) low = mid + 1;
       else high = mid;
     }
-    return Math.max(0, low - 1);
+    const before = low - 1;
+    if (before < 0) return 0;
+    if (before === pts.length - 1) return before;
+    return target - pts[before] < pts[before + 1] - target ? before : before + 1;
   };
 
   const send = (message) => globalThis.__vrf_video_send(JSON.stringify(message));
 
+  let fallbackInfo = null;
+  let lastRefusal = '';
   const clips = new Map();
   const opening = new Map();
   const pendingOpen = new Map();
@@ -102,6 +108,8 @@
       };
       clips.set(id, clip);
     }
+    if (meta.fallback) fallbackInfo = meta.fallback;
+    if (!meta.eligible) lastRefusal = meta.reason ?? meta.fallbackError ?? '';
     pendingOpen.get(meta.req)(clip);
     pendingOpen.delete(meta.req);
   };
@@ -249,7 +257,7 @@
   const request = async (src, time) => {
     const clip = await open(src);
     if (!clip) return null;
-    const k = chooseFrame(clip.pts, Math.round(time * clip.timescale));
+    const k = chooseFrame(clip.pts, time * clip.timescale);
     const [picture, bytes] = await Promise.all([frame(clip, k), placeholder()]);
     const response = new Response(null, { status: 200 });
     response.blob = async () => {
@@ -286,6 +294,8 @@
     open,
     request,
     present,
+    fallback: () => fallbackInfo,
+    refusal: () => lastRefusal,
     chooseFrame,
     swsRgb,
     swsConfig,

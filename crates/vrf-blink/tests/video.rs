@@ -35,7 +35,12 @@ fn stage(ui: &Ui, names: &[&str]) -> Result<Stage> {
     }
     let project = Project::open(&dir, Mode::Offline)?;
     let mut view = View::open_project(ui, &project, "index.html", SIZE.0, SIZE.1, None)?;
-    Link::attach(&mut view, project, Arc::new(Clips::default()));
+    Link::attach(
+        &mut view,
+        project,
+        Arc::new(Clips::default()),
+        Arc::new(|| anyhow::bail!("no fallback in this test")),
+    );
     Ok(Stage {
         gpu: Gpu::new()?,
         view,
@@ -68,8 +73,16 @@ fn frame_id(bgra: &[u8]) -> u32 {
 }
 
 fn expected(pts: &[i64], timescale: i64, time: f64) -> usize {
-    let target = (time * timescale as f64).round() as i64;
-    pts.iter().rposition(|p| *p <= target).unwrap_or(0)
+    let target = (time * timescale as f64).trunc() as i64;
+    let after = pts.partition_point(|p| *p <= target);
+    match after {
+        0 => 0,
+        n if n == pts.len() => n - 1,
+        n => {
+            let (before, next) = (pts[n - 1], pts[n]);
+            if target - before < next - target { n - 1 } else { n }
+        }
+    }
 }
 
 fn ids_are_exact(stage: &mut Stage, name: &str, order: impl Fn(usize) -> usize) -> Result<()> {

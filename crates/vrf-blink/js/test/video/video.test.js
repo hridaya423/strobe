@@ -7,33 +7,43 @@ globalThis.__vrf_video_send = () => {};
 (0, eval)(fs.readFileSync(path.join(__dirname, '../../video.js'), 'utf8'));
 const { chooseFrame, swsRgb, swsConfig } = globalThis.__vrf.video;
 
-test('latest frame at or before the target, earliest if none precedes', () => {
-  const vfr = [0, 33, 66, 166, 183, 216, 249, 349];
-  assert.equal(chooseFrame(vfr, 0), 0);
-  assert.equal(chooseFrame(vfr, 32), 0);
-  assert.equal(chooseFrame(vfr, 33), 1);
-  assert.equal(chooseFrame(vfr, 100), 2);
-  assert.equal(chooseFrame(vfr, 165), 2);
-  assert.equal(chooseFrame(vfr, 166), 3);
-  assert.equal(chooseFrame(vfr, 10_000), vfr.length - 1);
-  const offset = [23040, 23552, 24064];
-  assert.equal(chooseFrame(offset, 0), 0);
-  assert.equal(chooseFrame(offset, 23551), 0);
-  assert.equal(chooseFrame(offset, 23552), 1);
-  assert.equal(chooseFrame(offset, -5), 0);
+const VFR = [0, 33, 66, 166, 183, 216, 249, 348, 366, 399, 432, 532, 549, 582];
+const CFR = Array.from({ length: 120 }, (_, i) => i * 512);
+
+test("the nearest frame wins, as in Remotion's frame server (probed on vfr1080.mp4)", () => {
+  const remotion = [
+    [0, 0], [32, 1], [33, 1], [65, 2], [66, 2], [100, 2], [165, 3], [166, 3], [200, 5], [215, 5], [216, 5],
+    [248, 6], [249, 6], [250, 6], [300, 7], [333, 7], [348, 7], [349, 7], [400, 9],
+  ];
+  for (const [ms, index] of remotion) assert.equal(chooseFrame(VFR, ms), index, `${ms} ms`);
 });
 
-test('duplicate timestamps pick the later frame', () => {
-  assert.equal(chooseFrame([0, 10, 10, 20], 10), 2);
-  assert.equal(chooseFrame([0, 10, 10, 20], 15), 2);
+test("ties and unrounded targets follow Remotion on a constant frame rate (probed on cfr1080.mp4)", () => {
+  const ts = 15360;
+  const remotion = [
+    [0.016, 0], [0.0166, 0], [0.016666666666666666, 1], [0.01667, 1], [0.0168, 1],
+    [0.05, 2], [0.0499, 1], [0.050000001, 2], [0.083333333333333, 2], [0.1, 3],
+  ];
+  for (const [seconds, index] of remotion) assert.equal(chooseFrame(CFR, seconds * ts), index, `${seconds} s`);
 });
 
-test('container ticks are round(time * timescale), as the compositor computes them', () => {
-  const pts = Array.from({ length: 120 }, (_, i) => i * 512);
-  for (let frame = 0; frame < 120; frame++) {
-    const time = frame / 30;
-    assert.equal(chooseFrame(pts, Math.round(time * 15360)), frame, `frame ${frame}`);
+test('targets are truncated to whole ticks and switch at the midpoint between two frames (probed on every gap near 4.5 s)', () => {
+  const gap = [4425, 4458, 4558, 4575, 4608, 4641, 4741, 4758, 4791];
+  for (const [tick, index] of [[4441, 0], [4442, 1], [4566, 2], [4567, 3], [4591, 3], [4592, 4], [4749, 6], [4750, 7]]) {
+    assert.equal(chooseFrame(gap, tick), index, `${tick}`);
   }
+  assert.equal(chooseFrame(gap, 4566.666666666666), 2);
+  assert.equal(chooseFrame(gap, 4566.999), 2);
+});
+
+test('before the first frame the earliest is shown, after the last the last', () => {
+  assert.equal(chooseFrame([23040, 23552, 24064], 0), 0);
+  assert.equal(chooseFrame([23040, 23552, 24064], -5), 0);
+  assert.equal(chooseFrame(VFR, 10_000), VFR.length - 1);
+});
+
+test('every output frame of a constant frame rate clip shows its own frame', () => {
+  for (let frame = 0; frame < 120; frame++) assert.equal(chooseFrame(CFR, (frame / 30) * 15360), frame, `frame ${frame}`);
 });
 
 const oracle = JSON.parse(fs.readFileSync(path.join(__dirname, 'swscale-oracle.json'), 'utf8'));
