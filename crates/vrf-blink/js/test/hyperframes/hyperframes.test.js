@@ -379,3 +379,58 @@ describe('item 20: clip windows', () => {
     await hf.close();
   });
 });
+
+describe('item 21: virtual time', () => {
+  const sampled = (extraScript = '') =>
+    project({
+      'index.html': composition({
+        body: box,
+        script: tween + 'window.sample = () => ({date: Date.now(), perf: performance.now(), newDate: new Date().getTime(), raf: window.lastRaf}); window.lastRaf = null; const loop = (ts) => { window.lastRaf = ts; requestAnimationFrame(loop); }; requestAnimationFrame(loop);' + extraScript,
+      }),
+    });
+
+  test('item_21_virtual_time', async () => {
+    const hf = await openHf(browser, sampled());
+    for (const frame of [0, 1, 4, 9]) {
+      await hf.seek(frame);
+      const sample = await hf.page.evaluate('window.sample()');
+      const expected = (frame / 10) * 1000;
+      assert.deepEqual([sample.date, sample.perf, sample.newDate, sample.raf], [expected, expected, expected, expected], `frame ${frame}`);
+    }
+    await hf.close();
+  });
+
+  test('item_21_rational_fps_sets_the_clock_from_the_exact_ratio', async () => {
+    const hf = await openHf(browser, sampled(), { init: { fps: [30000, 1001] } });
+    await hf.seek(7);
+    const sample = await hf.page.evaluate('window.sample()');
+    assert.ok(Math.abs(sample.date - (7 * 1001 * 1000) / 30000) < 1e-9);
+    assert.deepEqual(await hf.page.evaluate('__vrf.clock.calls.at(-1).slice(0, 3)'), [7, 30000, 1001]);
+    await hf.close();
+  });
+
+  test('item_21_clock_is_set_once_per_seek_after_the_timeline_seek', async () => {
+    const hf = await openHf(browser, sampled());
+    await hf.page.evaluate(`(() => {
+      window.trace = [];
+      const original = window.__player.renderSeek;
+      window.__player.renderSeek = (t, o) => { window.trace.push('seek'); return original.call(window.__player, t, o); };
+      const set = window.__vrf.clock.set;
+      window.__vrf.clock.set = (...args) => { window.trace.push('clock'); return set.apply(window.__vrf.clock, args); };
+    })()`);
+    await hf.seek(3);
+    await hf.seek(4);
+    assert.deepEqual(await hf.page.evaluate('window.trace'), ['seek', 'clock', 'seek', 'clock']);
+    await hf.close();
+  });
+
+  test('item_21_math_random_stays_native', async () => {
+    const hf = await openHf(browser, sampled());
+    await hf.seek(2);
+    assert.match(await hf.page.evaluate('Math.random.toString()'), /\[native code\]/);
+    const a = await hf.page.evaluate('Math.random()');
+    await hf.seek(2);
+    assert.notEqual(await hf.page.evaluate('Math.random()'), a);
+    await hf.close();
+  });
+});
