@@ -42,8 +42,9 @@ const SHIM: &str = r#"(() => {
     const url = String(input);
     return fetch0(input, init).then((res) => {
       const t1 = now();
-      const entry = { url: url.slice(0, 160), headers: t1 - t };
+      const entry = { frame: p.frame, url: url.slice(0, 200), headers: t1 - t };
       p.fetches.push(entry);
+      (globalThis.__fetchlog ??= []).push(entry);
       res.clone().arrayBuffer().then((b) => {
         entry.body = now() - t;
         entry.bytes = b.byteLength;
@@ -57,6 +58,7 @@ const SHIM: &str = r#"(() => {
     p.fetches = [];
     p.setFrameStart = p.setFrameEnd = p.collectStart = p.collectEnd = null;
     p.t0 = now();
+    p.frame = a[0];
     const r = await seek(...a);
     p.t1 = now();
     return { ...r, prof: { ...p, assets: undefined } };
@@ -95,8 +97,9 @@ fn run(ui: Ui) -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let project = PathBuf::from(&args[1]).canonicalize()?;
     let composition = args[2].clone();
-    let first: u64 = args[3].parse()?;
-    let last: u64 = args[4].parse()?;
+    let viewloop = args[3] == "viewloop";
+    let first: u64 = args[3].parse().unwrap_or(0);
+    let last: u64 = args[4].parse().unwrap_or(0);
     let csv = PathBuf::from(&args[5]);
     let shim = args.get(6).is_none_or(|s| s != "noshim");
     let started = Instant::now();
@@ -119,6 +122,32 @@ fn run(ui: Ui) -> Result<()> {
         &options,
         Some(&offthread),
     )?;
+    if viewloop {
+        let n: usize = args[4].parse()?;
+        let mut times = Vec::new();
+        let mut failures = 0;
+        for _ in 0..n {
+            let t = Instant::now();
+            match page.open(&ui, 1080, 1080) {
+                Ok((view, _)) => {
+                    times.push(ms(t.elapsed()));
+                    view.close()?;
+                }
+                Err(error) => {
+                    failures += 1;
+                    eprintln!("open failed: {error:#}");
+                }
+            }
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "viewloop n={n} failures={failures} mean={:.0} p50={:.0} max={:.0}",
+            times.iter().sum::<f64>() / times.len().max(1) as f64,
+            times.get(times.len() / 2).copied().unwrap_or(0.0),
+            times.last().copied().unwrap_or(0.0)
+        );
+        return Ok(());
+    }
     let step = Instant::now();
     let (probe, composition) = page.open(&ui, 640, 360)?;
     probe.close()?;
@@ -231,6 +260,10 @@ fn run(ui: Ui) -> Result<()> {
     }
     let render_s = render_started.elapsed();
     view.evaluate("console.timeStamp('vrf-render-end')")?;
+    let fetch_log = view.evaluate("JSON.stringify(globalThis.__fetchlog ?? [])")?;
+    if let Some(text) = fetch_log.as_str().filter(|t| t.len() > 2) {
+        std::fs::write(csv.with_extension("fetches.json"), text)?;
+    }
     let repeats = pipeline.repeats;
     let convert = std::mem::take(&mut pipeline.convert);
     let (muxer, _) = pipeline.finish()?;
