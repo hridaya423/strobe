@@ -38,7 +38,9 @@ impl Corpus {
 }
 
 pub fn bench_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench")
+    std::env::var_os("VRF_BENCH_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench"))
 }
 
 pub fn load(id: &str) -> Result<Corpus> {
