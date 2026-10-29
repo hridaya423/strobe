@@ -7,6 +7,8 @@ mod avcc;
 #[cfg(any(windows, test))]
 mod bitstream;
 #[cfg(windows)]
+pub mod mediafoundation;
+#[cfg(windows)]
 pub mod nvenc;
 #[cfg(target_os = "macos")]
 pub mod turbo;

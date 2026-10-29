@@ -5,6 +5,10 @@ use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 use vrf::mux::{AudioTrack, Codec, Colour, Container, Muxer, Sample, StreamConfig};
+#[cfg(target_os = "macos")]
+use vrf_encode::audiotoolbox::encode_aac;
+#[cfg(windows)]
+use vrf_encode::mediafoundation::encode_aac;
 
 struct Dir(PathBuf);
 
@@ -884,7 +888,7 @@ fn av_fixture(dir: &Dir, frames: u32) -> (StreamConfig, Vec<Sample>) {
 }
 
 fn aac_track(samples: &[f32]) -> AudioTrack {
-    let stream = vrf_encode::audiotoolbox::encode_aac(
+    let stream = encode_aac(
         samples,
         vrf_encode::AacConfig {
             sample_rate: RATE,
@@ -960,13 +964,13 @@ fn aac_round_trip(container: Container, name: &str) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn aac_in_mp4_lands_clicks_on_their_video_frames() {
     aac_round_trip(Container::Mp4, "aac-mp4.mp4");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn aac_in_mov_lands_clicks_on_their_video_frames() {
     aac_round_trip(Container::Mov, "aac-mov.mov");

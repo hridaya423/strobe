@@ -4,6 +4,25 @@ use anyhow::Result;
 use vrf::gpu::Gpu;
 use vrf_blink::{Paint, Ui};
 
+pub fn link_dir(
+    target: impl AsRef<std::path::Path>,
+    link: impl AsRef<std::path::Path>,
+) -> Result<()> {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link)?;
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link.as_ref())
+            .arg(target.as_ref())
+            .stdout(std::process::Stdio::null())
+            .status()?;
+        anyhow::ensure!(status.success(), "mklink /J failed");
+    }
+    Ok(())
+}
+
 pub type Case = (&'static str, fn(&Ui) -> Result<()>);
 
 pub fn run(cases: &[Case]) -> ExitCode {
@@ -126,4 +145,61 @@ pub fn load_average() -> String {
         .unwrap_or("?")
         .trim()
         .to_owned()
+}
+
+pub fn decode_audio(path: &std::path::Path) -> Result<Vec<f32>> {
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-map", "0:a:0", "-f", "f32le", "-ar", "48000", "-ac", "2", "-",
+        ])
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "ffmpeg: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output
+        .stdout
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect())
+}
+
+pub fn has_audio_stream(path: &std::path::Path) -> Result<bool> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "ffprobe failed on {}",
+        path.display()
+    );
+    Ok(!output.stdout.is_empty())
+}
+
+pub fn onset(stereo: &[f32], threshold: f32) -> Option<usize> {
+    stereo
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .position(|frame| frame[0].abs() > threshold)
+}
+
+pub fn rms(stereo: &[f32], from: usize, frames: usize) -> f64 {
+    let window = &stereo[from * 2..(from + frames) * 2];
+    (window.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / window.len() as f64).sqrt()
 }

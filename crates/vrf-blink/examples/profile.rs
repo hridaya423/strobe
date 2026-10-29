@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use vrf_blink::adapters::remotion::{self, Offthread, Options, Page};
-use vrf_blink::driver::{Capture, Config, Pipeline};
+use vrf_blink::driver::{Capture, Config, Pipeline, Plan};
 use vrf_blink::{Mode, Project, Ui};
 use vrf_encode::Codec;
 
@@ -79,6 +79,12 @@ const SHIM: &str = r#"(() => {
   };
 })()"#;
 
+#[cfg(not(target_os = "macos"))]
+fn digest_of(_: &vrf_blink::Paint) -> String {
+    String::new()
+}
+
+#[cfg(target_os = "macos")]
 fn digest_of(paint: &vrf_blink::Paint) -> String {
     use objc2_io_surface::IOSurfaceLockOptions;
     let surface = &paint.surface;
@@ -124,6 +130,8 @@ fn run(ui: Ui) -> Result<()> {
         props: None,
         mode: Mode::Online,
         timeout: Duration::from_secs(30),
+        plan: Plan::single(),
+        audio: false,
     };
     let step = Instant::now();
     let bundle = remotion::bundle(&project, None)?;

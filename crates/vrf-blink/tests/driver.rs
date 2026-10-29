@@ -273,10 +273,8 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, 96);
     let mut files = Vec::new();
     for views in [1, 2, 4, 8] {
-        let out = std::env::temp_dir().join(format!(
-            "vrf-blink-parallel-{views}.{}",
-            DETERMINISTIC.1
-        ));
+        let out =
+            std::env::temp_dir().join(format!("vrf-blink-parallel-{views}.{}", DETERMINISTIC.1));
         let runs = render_runs(
             &config,
             Plan::new(views, 7),

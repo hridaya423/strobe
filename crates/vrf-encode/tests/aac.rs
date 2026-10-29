@@ -1,6 +1,9 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", windows))]
 
+#[cfg(target_os = "macos")]
 use vrf_encode::audiotoolbox::{AAC_FRAME_SAMPLES, AacConfig, encode_aac};
+#[cfg(windows)]
+use vrf_encode::mediafoundation::{AAC_FRAME_SAMPLES, AacConfig, encode_aac};
 
 fn tone(frames: usize, channels: usize) -> Vec<f32> {
     (0..frames)
