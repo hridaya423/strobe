@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -8,11 +8,12 @@ use vrf::colour::{Chroma, Format};
 use vrf::gpu::Gpu;
 use vrf::gpu::convert::{Converter, Source};
 use vrf::gpu::metal::PoolTargets;
-use vrf::mux::{Container, Muxer, Sample, StreamConfig};
-use vrf::sched::{self, Consumer, Submission};
+use vrf::mux::{Container, Muxer};
+use vrf::sched::{self, Consumer, Producer, Submission};
+use vrf::sink::Sink;
 use vrf_encode::videotoolbox::VideoToolboxEncoder;
 use vrf_encode::videotoolbox::pool::{PixelPool, PoolBuffer};
-use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Rational};
+use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
 
 use crate::{Paint, View};
 
@@ -27,7 +28,6 @@ pub struct Config {
     pub codec: Codec,
     pub frames: u64,
     pub watchdog: Duration,
-    pub import_delay: Duration,
 }
 
 impl Config {
@@ -38,8 +38,7 @@ impl Config {
             frame_rate,
             codec,
             frames,
-            watchdog: Duration::from_millis(100),
-            import_delay: Duration::ZERO,
+            watchdog: Duration::from_millis(500),
         }
     }
 }
@@ -47,6 +46,7 @@ impl Config {
 #[derive(Debug, Default)]
 pub struct Stats {
     pub elapsed: Duration,
+    pub finish: Duration,
     pub repeats: u64,
     pub retries: u64,
     pub seek: Vec<Duration>,
@@ -123,30 +123,6 @@ impl Converting {
     }
 }
 
-struct Sink {
-    muxer: Muxer,
-    started: bool,
-    duration: u32,
-}
-
-impl Sink {
-    fn write(&mut self, encoder: &impl Encoder, packets: Vec<Packet>) -> Result<()> {
-        if packets.is_empty() {
-            return Ok(());
-        }
-        let info = encoder.stream_info()?;
-        if !self.started {
-            self.muxer.start_chunk(StreamConfig::try_from(&info)?)?;
-            self.started = true;
-        }
-        for packet in packets {
-            self.muxer
-                .write(&Sample::from_packet(packet, info.timebase, self.duration)?)?;
-        }
-        Ok(())
-    }
-}
-
 fn submit_loop(
     mut encoder: VideoToolboxEncoder,
     mut consumer: Consumer<PoolBuffer>,
@@ -164,28 +140,36 @@ fn submit_loop(
     }
     let packets = encoder.flush()?;
     sink.write(&encoder, packets)?;
-    Ok((sink.muxer, encode))
+    Ok((sink.into_muxer(), encode))
 }
 
+/// Takes one begin frame at a time from a view and checks the delivery against CEF's capture
+/// counter. Replacing the view it captures from is allowed: the counter restarts with the new
+/// view.
 #[derive(Default)]
-struct Capture {
+pub struct Capture {
+    view: Option<u64>,
     last_counter: Option<u64>,
+    pub retries: u64,
+    pub begin_to_paint: Vec<Duration>,
 }
 
 impl Capture {
-    fn next(
-        &mut self,
-        view: &View,
-        watchdog: Duration,
-        stats: &mut Stats,
-    ) -> Result<Option<Paint>> {
+    /// Sends begin frames until a delivery arrives, and returns `None` when none arrives within
+    /// `watchdog` of a begin frame on a view that has already delivered once, which means the
+    /// page did not change.
+    pub fn next(&mut self, view: &View, watchdog: Duration) -> Result<Option<Paint>> {
+        if self.view != Some(view.serial()) {
+            self.view = Some(view.serial());
+            self.last_counter = None;
+        }
         for _ in 0..2 {
             let sent = view.begin_frame();
             let Some(paint) = view.recv_paint(watchdog) else {
                 if self.last_counter.is_some() {
                     return Ok(None);
                 }
-                stats.retries += 1;
+                self.retries += 1;
                 view.invalidate();
                 continue;
             };
@@ -193,7 +177,7 @@ impl Capture {
                 paint.at >= sent,
                 "a delivery from before this begin frame arrived; the watchdog of {watchdog:?} is too short"
             );
-            stats.begin_to_paint.push(paint.at - sent);
+            self.begin_to_paint.push(paint.at - sent);
             let gap = self
                 .last_counter
                 .is_some_and(|last| paint.counter != last + 1);
@@ -201,86 +185,128 @@ impl Capture {
             if !gap {
                 return Ok(Some(paint));
             }
-            stats.retries += 1;
+            self.retries += 1;
             view.invalidate();
         }
         bail!("no clean delivery in two attempts")
     }
 }
 
-/// Renders `config.frames` frames of the page in `view` to an MP4 at `out`. Frame `i` runs
-/// `seek(i)` in the page, sends one begin frame, and converts the delivered IOSurface into the
-/// encoder's pixel buffer. A frame with no delivery within `config.watchdog` repeats the previous
-/// one.
+/// Converts painted surfaces into encoder buffers and feeds them, in frame order, to an encoder
+/// and muxer on a submit thread.
+pub struct Pipeline {
+    converting: Converting,
+    producer: Producer<PoolBuffer>,
+    submit: JoinHandle<Result<(Muxer, Vec<Duration>)>>,
+    width: u32,
+    height: u32,
+    pub repeats: u64,
+    pub convert: Vec<Duration>,
+}
+
+impl Pipeline {
+    pub fn new(config: &Config, out: &Path) -> Result<Pipeline> {
+        let gpu = Gpu::new()?;
+        let converter = Converter::new(&gpu, Format::Nv12);
+        let encoder = VideoToolboxEncoder::new(EncoderConfig::new(
+            config.codec,
+            config.width,
+            config.height,
+            config.frame_rate,
+        ))?;
+        let converting = Converting {
+            gpu,
+            converter,
+            targets: PoolTargets::default(),
+            imports: HashMap::new(),
+            pool: encoder.pool().clone(),
+        };
+        let (producer, consumer) = sched::ordered::<PoolBuffer>(WINDOW);
+        let container = match config.codec {
+            Codec::ProRes422 => Container::Mov,
+            Codec::H264 | Codec::Hevc => Container::Mp4,
+        };
+        let sink = Sink::new(
+            Muxer::create(out, container, config.frame_rate.num as u32)?,
+            config.frame_rate.den as u32,
+        );
+        let frame_rate = config.frame_rate;
+        let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
+        Ok(Pipeline {
+            converting,
+            producer,
+            submit,
+            width: config.width,
+            height: config.height,
+            repeats: 0,
+            convert: Vec::new(),
+        })
+    }
+
+    /// Imports `paint`, converts it, and queues it as frame `index`.
+    pub fn frame(&mut self, index: u64, paint: &Paint) -> Result<()> {
+        ensure!(
+            (paint.visible.width, paint.visible.height) == (self.width, self.height),
+            "frame {index} is {}x{}, expected {}x{}",
+            paint.visible.width,
+            paint.visible.height,
+            self.width,
+            self.height
+        );
+        let step = Instant::now();
+        let buffer = self.converting.convert(paint)?;
+        self.convert.push(step.elapsed());
+        self.producer.submit(index, Submission::Frame(buffer))
+    }
+
+    /// Queues frame `index` as a copy of the one before it.
+    pub fn repeat(&mut self, index: u64) -> Result<()> {
+        self.repeats += 1;
+        self.producer.submit(index, Submission::Repeat)
+    }
+
+    /// Waits for every queued frame to be encoded and returns the muxer, still open, and the
+    /// time each encoder submit took.
+    pub fn finish(self) -> Result<(Muxer, Vec<Duration>)> {
+        drop(self.producer);
+        self.submit.join().expect("submit thread panicked")
+    }
+}
+
+/// Renders `config.frames` frames of the page in `view` to a file at `out`. Frame `i` runs
+/// `seek(view, i)`, which must leave the page showing that frame and may replace the view, sends
+/// one begin frame, and converts the delivered IOSurface into the encoder's pixel buffer. A frame
+/// with no delivery within `config.watchdog` repeats the previous one.
 pub fn render(
     view: &mut View,
     config: &Config,
-    seek: impl Fn(u64) -> String,
+    mut seek: impl FnMut(&mut View, u64) -> Result<()>,
     out: &Path,
 ) -> Result<Stats> {
-    let gpu = Gpu::new()?;
-    let converter = Converter::new(&gpu, Format::Nv12);
-    let encoder = VideoToolboxEncoder::new(EncoderConfig::new(
-        config.codec,
-        config.width,
-        config.height,
-        config.frame_rate,
-    ))?;
-    let mut converting = Converting {
-        gpu,
-        converter,
-        targets: PoolTargets::default(),
-        imports: HashMap::new(),
-        pool: encoder.pool().clone(),
-    };
-    let (producer, consumer) = sched::ordered::<PoolBuffer>(WINDOW);
-    let sink = Sink {
-        muxer: Muxer::create(out, Container::Mp4, config.frame_rate.num as u32)?,
-        started: false,
-        duration: config.frame_rate.den as u32,
-    };
-    let frame_rate = config.frame_rate;
-    let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
-
+    let mut pipeline = Pipeline::new(config, out)?;
     let mut stats = Stats::default();
     let mut capture = Capture::default();
     let started = Instant::now();
     for index in 0..config.frames {
         let step = Instant::now();
-        view.evaluate(&seek(index))
-            .with_context(|| format!("seek to frame {index}"))?;
+        seek(view, index).with_context(|| format!("seek to frame {index}"))?;
         stats.seek.push(step.elapsed());
 
-        let submission = match capture.next(view, config.watchdog, &mut stats)? {
-            Some(paint) => {
-                ensure!(
-                    (paint.visible.width, paint.visible.height) == (config.width, config.height),
-                    "frame {index} is {}x{}, expected {}x{}",
-                    paint.visible.width,
-                    paint.visible.height,
-                    config.width,
-                    config.height
-                );
-                if !config.import_delay.is_zero() {
-                    thread::sleep(config.import_delay);
-                }
-                let step = Instant::now();
-                let buffer = converting.convert(&paint)?;
-                stats.convert.push(step.elapsed());
-                Submission::Frame(buffer)
-            }
-            None => {
-                stats.repeats += 1;
-                Submission::Repeat
-            }
-        };
-        producer.submit(index, submission)?;
+        match capture.next(view, config.watchdog)? {
+            Some(paint) => pipeline.frame(index, &paint)?,
+            None => pipeline.repeat(index)?,
+        }
     }
-    drop(producer);
-    let (muxer, encode) = submit.join().expect("submit thread panicked")?;
+    stats.repeats = pipeline.repeats;
+    stats.convert = std::mem::take(&mut pipeline.convert);
+    let (muxer, encode) = pipeline.finish()?;
     stats.elapsed = started.elapsed();
     stats.encode = encode;
     view.check_project()?;
+    let step = Instant::now();
     muxer.finish()?;
+    stats.finish = step.elapsed();
+    stats.retries = capture.retries;
+    stats.begin_to_paint = capture.begin_to_paint;
     Ok(stats)
 }

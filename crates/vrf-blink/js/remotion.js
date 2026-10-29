@@ -4,6 +4,7 @@
     envVariables: null,
     initialFrame: 0,
     proxyPort: 0,
+    serveUrl: null,
     audioEnabled: true,
     videoEnabled: true,
     timeoutInMilliseconds: 30000,
@@ -14,6 +15,25 @@
 
   const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
   const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
+  const nativeSetInterval = globalThis.setInterval.bind(globalThis);
+  const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
+  const nativeNow = performance.now.bind(performance);
+  const PUMP_MS = 4;
+
+  if (config.serveUrl) {
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    const proxy = `http://localhost:${config.proxyPort}/proxy?`;
+    globalThis.fetch = (input, init) => {
+      if (typeof input === 'string' && input.startsWith(proxy)) {
+        const url = new URL(input);
+        const src = url.searchParams.get('src');
+        if (src?.startsWith(`${location.origin}/`)) url.searchParams.set('src', config.serveUrl + src.slice(location.origin.length));
+        url.searchParams.set('time', String(Math.max(0, Number(url.searchParams.get('time')))));
+        input = url.toString();
+      }
+      return nativeFetch(input, init);
+    };
+  }
 
   let renderReady = false;
   let cancelledError;
@@ -79,11 +99,26 @@
       .map(({ label }, i) => (label === null ? `${i + 1}. (no label)` : `"${i + 1}. ${label}"`))
       .join(', ');
 
+  const clock = () => globalThis.__vrf?.clock;
+  const flushClock = () => clock()?.setMs(clock().timeMs());
+  const advanceClock = (ms) => clock()?.setMs(Math.max(clock().timeMs(), ms));
+
+  const startPump = () => {
+    let last = nativeNow();
+    return nativeSetInterval(() => {
+      const now = nativeNow();
+      advanceClock(clock().timeMs() + now - last);
+      last = now;
+    }, PUMP_MS);
+  };
+
   const waitReady = (frame) =>
     new Promise((resolve, reject) => {
       let settling = false;
+      const pump = clock() ? startPump() : null;
       const done = (fn, value) => {
         nativeClearTimeout(timer);
+        nativeClearInterval(pump);
         watchers.delete(check);
         fn(value);
       };
@@ -136,6 +171,8 @@
     }
   };
 
+  let compositionFps = null;
+
   const init = async ({ compositionId: id }) => {
     if (compositionId !== null) throw new Error('init() runs once per page: the bundle keeps the first composition, load a new page for another one');
     window.remotion_setBundleMode({ type: 'evaluation' });
@@ -154,6 +191,7 @@
     });
     await waitReady(null);
     compositionId = id;
+    compositionFps = resolved.fps;
     const { width, height, fps, durationInFrames, defaultCodec } = resolved;
     return { id, width, height, fps, durationInFrames, defaultCodec, serializedProps: resolved.serializedResolvedPropsWithCustomSchema };
   };
@@ -162,8 +200,14 @@
 
   const barrier = async (frame, attempt) => {
     await waitReady(null);
+    advanceClock((frame * 1000) / compositionFps);
     window.remotion_setFrame(frame, compositionId, attempt);
-    await waitReady(frame);
+    const ready = waitReady(frame);
+    if (clock()) {
+      await macrotask();
+      flushClock();
+    }
+    await ready;
     await document.fonts.ready;
     await Promise.all(pendingImages().map((img) => img.decode().catch(() => {})));
     document.body.style.background = config.captureMode === 'png' ? 'transparent' : 'black';

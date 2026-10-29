@@ -20,6 +20,7 @@ export const VERSIONS = Object.keys(PROJECTS);
 
 export const corpusDir = (name) => join(BENCH, 'corpus/external', name);
 export const adapterSource = () => readFileSync(join(JS, 'remotion.js'), 'utf8');
+export const clockSource = () => readFileSync(join(JS, 'clock.js'), 'utf8');
 
 const bundled = new Map();
 
@@ -57,8 +58,8 @@ export function bundleCorpus(name, entry) {
   return bundled.get(key);
 }
 
-export async function launch(bundleDir, { config = {}, width = 320, height = 180, onRequest, init } = {}) {
-  const source = adapterSource();
+export async function launch(bundleDir, { config = {}, width = 320, height = 180, onRequest, init, clock = false } = {}) {
+  const source = clock ? `${adapterSource()}\n${clockSource()}` : adapterSource();
   const server = await serve(bundleDir, { onRequest });
   const browser = await Browser.launch();
   const run = {

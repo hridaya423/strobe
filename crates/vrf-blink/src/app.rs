@@ -8,7 +8,8 @@ use cef::{args::Args, rc::Rc as _, *};
 
 use crate::{bundle, mac, scheme};
 
-const FLAGS: [&str; 13] = [
+const FLAGS: [&str; 14] = [
+    "disable-features=LocalNetworkAccessChecks",
     "run-all-compositor-stages-before-draw",
     "disable-threaded-animation",
     "disable-checker-imaging",
@@ -26,6 +27,15 @@ const FLAGS: [&str; 13] = [
 
 const MAX_IDLE: Duration = Duration::from_millis(10);
 
+static CPU_RASTER: AtomicBool = AtomicBool::new(false);
+
+/// Rasterises in software, as `chrome-headless-shell` does, before [`run`] starts CEF. Frames are
+/// then bit-identical to its output; GPU raster differs from it by a few levels on glyph and
+/// shape edges. Has no effect once CEF is running.
+pub fn set_cpu_raster(on: bool) {
+    CPU_RASTER.store(on, Ordering::Relaxed);
+}
+
 fn apply_flags(command_line: &mut CommandLine) {
     for flag in FLAGS {
         match flag.split_once('=') {
@@ -34,6 +44,9 @@ fn apply_flags(command_line: &mut CommandLine) {
             }
             None => command_line.append_switch(Some(&flag.into())),
         }
+    }
+    if CPU_RASTER.load(Ordering::Relaxed) {
+        command_line.append_switch(Some(&"disable-gpu-rasterization".into()));
     }
 }
 

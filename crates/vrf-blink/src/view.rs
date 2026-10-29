@@ -1,4 +1,5 @@
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,10 @@ const SETTLE_DELIVERY: Duration = Duration::from_millis(250);
 const SETTLE_QUIET: Duration = Duration::from_millis(50);
 const SETTLE_ROUNDS: usize = 10;
 const SETTLE_CLEAN: usize = 2;
+
+const GENERIC_FONTS: [&str; 4] = ["Times New Roman", "Arial", "Script", "Impact"];
+
+static SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// One `OnAcceleratedPaint`. The surface is retained, so it outlives the callback, and CEF
 /// draws nothing new into it until the next begin frame.
@@ -206,21 +211,24 @@ pub struct View {
     closed: Receiver<()>,
     project: Option<Project>,
     next_id: i32,
+    serial: u64,
 }
 
 impl View {
     pub fn open(ui: &Ui, url: &str, width: i32, height: i32) -> Result<View> {
-        View::launch(ui, url, width, height, None)
+        View::launch(ui, url, width, height, None, None)
     }
 
-    /// Opens `entry` from `project` at `vrf://project/`. Fails if the page asked for anything
-    /// the project refused, such as an unpinned URL in offline mode.
+    /// Opens `entry` from `project` at `vrf://project/`. `init_script` runs in every document
+    /// before any of the page's own scripts. Fails if the page asked for anything the project
+    /// refused, such as an unpinned URL in offline mode.
     pub fn open_project(
         ui: &Ui,
         project: &Project,
         entry: &str,
         width: i32,
         height: i32,
+        init_script: Option<&str>,
     ) -> Result<View> {
         let view = View::launch(
             ui,
@@ -228,6 +236,7 @@ impl View {
             width,
             height,
             Some(project.clone()),
+            init_script,
         )?;
         if let Err(error) = view.check_project() {
             let _ = view.close();
@@ -253,6 +262,7 @@ impl View {
         width: i32,
         height: i32,
         project: Option<Project>,
+        init_script: Option<&str>,
     ) -> Result<View> {
         let (paints_tx, paints) = mpsc::channel();
         let (methods_tx, methods) = mpsc::channel();
@@ -264,7 +274,12 @@ impl View {
             loaded: loaded_tx,
             closed: closed_tx,
         };
-        let url = url.to_owned();
+        let target = url.to_owned();
+        let url = if init_script.is_some() {
+            "about:blank".to_owned()
+        } else {
+            target.clone()
+        };
         let bound = project.clone();
         let (host, observer) = ui.call(move || -> Result<_> {
             let (mut context, request_handler) =
@@ -278,6 +293,11 @@ impl View {
             let browser_settings = BrowserSettings {
                 windowless_frame_rate: 1000,
                 background_color: 0xFFFFFFFF,
+                standard_font_family: GENERIC_FONTS[0].into(),
+                serif_font_family: GENERIC_FONTS[0].into(),
+                sans_serif_font_family: GENERIC_FONTS[1].into(),
+                cursive_font_family: GENERIC_FONTS[2].into(),
+                fantasy_font_family: GENERIC_FONTS[3].into(),
                 ..Default::default()
             };
             let mut client = BlinkClient::new(
@@ -303,7 +323,7 @@ impl View {
         loaded
             .recv_timeout(LOAD_TIMEOUT)
             .context("the page did not finish loading")?;
-        let view = View {
+        let mut view = View {
             ui: ui.clone(),
             host,
             observer,
@@ -312,7 +332,21 @@ impl View {
             closed,
             project,
             next_id: 1,
+            serial: SERIAL.fetch_add(1, Ordering::Relaxed),
         };
+        if let Some(source) = init_script {
+            view.execute("Page.enable", serde_json::json!({}))?;
+            view.execute(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({"source": source}),
+            )?;
+            view.execute("Page.navigate", serde_json::json!({"url": target}))?;
+            while view.evaluate("location.href")? != target.as_str() {
+                loaded
+                    .recv_timeout(LOAD_TIMEOUT)
+                    .context("the page did not finish loading")?;
+            }
+        }
         view.settle()?;
         Ok(view)
     }
@@ -333,6 +367,11 @@ impl View {
             }
         }
         bail!("begin frames never settled after {SETTLE_ROUNDS} rounds")
+    }
+
+    /// Distinguishes views, so a driver can tell that the page it was capturing was replaced.
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
 
     pub fn begin_frame(&self) -> Instant {

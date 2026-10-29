@@ -3,11 +3,11 @@ mod support;
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, ensure};
 use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url};
-use vrf_blink::driver::{Config, Stats, Summary, render};
+use vrf_blink::driver::{Capture, Config, Pipeline, Stats, Summary, render};
 use vrf_blink::{Ui, View};
 use vrf_encode::{Codec, Rational};
 
@@ -69,6 +69,40 @@ fn check_output(path: &Path, frames: u64, expected: impl Fn(u64) -> u64) -> Resu
     Ok(worst)
 }
 
+fn render_delayed(
+    view: &mut View,
+    config: &Config,
+    seek_index: &impl Fn(u64) -> u64,
+    delay: Duration,
+    out: &Path,
+) -> Result<Stats> {
+    let mut pipeline = Pipeline::new(config, out)?;
+    let mut capture = Capture::default();
+    let started = Instant::now();
+    for index in 0..config.frames {
+        view.evaluate(&format!("seek({})", seek_index(index)))?;
+        match capture.next(view, config.watchdog)? {
+            Some(paint) => {
+                std::thread::sleep(delay);
+                pipeline.frame(index, &paint)?;
+            }
+            None => pipeline.repeat(index)?,
+        }
+    }
+    let mut stats = Stats {
+        repeats: pipeline.repeats,
+        retries: capture.retries,
+        begin_to_paint: capture.begin_to_paint,
+        convert: std::mem::take(&mut pipeline.convert),
+        ..Stats::default()
+    };
+    let (muxer, encode) = pipeline.finish()?;
+    stats.elapsed = started.elapsed();
+    stats.encode = encode;
+    muxer.finish()?;
+    Ok(stats)
+}
+
 fn run_case(
     ui: &Ui,
     name: &str,
@@ -78,14 +112,18 @@ fn run_case(
 ) -> Result<(Config, Stats)> {
     let mut view = View::open(ui, &page_url(), WIDTH as i32, HEIGHT as i32)?;
     let mut config = Config::new(WIDTH, HEIGHT, FRAME_RATE, Codec::H264, frames);
-    config.import_delay = import_delay;
+    config.watchdog = Duration::from_millis(100);
     let out = std::env::temp_dir().join(format!("vrf-blink-{name}.mp4"));
-    let stats = render(
-        &mut view,
-        &config,
-        |i| format!("seek({})", seek_index(i)),
-        &out,
-    )?;
+    let stats = if import_delay.is_zero() {
+        render(
+            &mut view,
+            &config,
+            |view, i| view.evaluate(&format!("seek({})", seek_index(i))).map(drop),
+            &out,
+        )?
+    } else {
+        render_delayed(&mut view, &config, &seek_index, import_delay, &out)?
+    };
     view.close()?;
     let worst = check_output(&out, frames, &seek_index)?;
     println!("{name}: {frames} frames match, worst channel error {worst} (tolerance {TOLERANCE})");
