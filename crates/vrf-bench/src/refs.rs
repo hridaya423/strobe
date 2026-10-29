@@ -27,7 +27,7 @@ pub fn build(c: &Corpus, keep: Sampling, out: &Path) -> Result<Report> {
 }
 
 fn render(c: &Corpus, keep: Sampling, dest: &Path) -> Result<()> {
-    let raw = dest.with_extension("raw");
+    let raw = dest.with_file_name(format!("{}-raw", dest.file_name().unwrap().to_string_lossy()));
     for d in [dest, raw.as_path()] {
         if d.exists() {
             std::fs::remove_dir_all(d)?;
