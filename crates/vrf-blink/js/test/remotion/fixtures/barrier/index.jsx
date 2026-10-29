@@ -54,10 +54,22 @@ const Never = () => {
   return <div />;
 };
 
-const Retry = () => {
+const Hang = () => {
+  const frame = useCurrentFrame();
   useLayoutEffect(() => {
-    delayRender('flaky', { retries: 2 });
-  }, []);
+    if (frame === 3) delayRender('hang', { retries: 2 });
+  }, [frame]);
+  return <div />;
+};
+
+const Silent = () => {
+  const frame = useCurrentFrame();
+  useLayoutEffect(() => {
+    if (frame === 3) {
+      const handle = delayRender('silent');
+      clearTimeout(window.remotion_delayRenderTimeouts[handle].timeout);
+    }
+  }, [frame]);
   return <div />;
 };
 
@@ -78,7 +90,8 @@ const Root = () => (
     <Composition id="Fonts" component={Fonts} width={200} height={60} fps={30} durationInFrames={20} />
     <Composition id="Images" component={Images} width={64} height={64} fps={30} durationInFrames={20} />
     <Composition id="Never" component={Never} width={64} height={64} fps={30} durationInFrames={20} />
-    <Composition id="Retry" component={Retry} width={64} height={64} fps={30} durationInFrames={20} />
+    <Composition id="Hang" component={Hang} width={64} height={64} fps={30} durationInFrames={20} />
+    <Composition id="Silent" component={Silent} width={64} height={64} fps={30} durationInFrames={20} />
     <Composition id="Cancel" component={Cancel} width={64} height={64} fps={30} durationInFrames={20} />
   </>
 );
