@@ -31,7 +31,7 @@ pub(crate) fn register_scheme(registrar: &mut SchemeRegistrar) {
 }
 
 /// How a project treats `http(s)` dependencies that are not in `vrf.lock.json`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
     /// Fetch an unpinned URL once, pin it, and serve it from the cache from then on.
     Online,
@@ -123,6 +123,11 @@ impl Project {
     /// asked for an unpinned URL offline shows up here.
     pub fn failures(&self) -> Vec<String> {
         self.0.failures.lock().unwrap().clone()
+    }
+
+    /// Forgets the refusals so far, so a view that outlives one render does not fail the next.
+    pub fn clear_failures(&self) {
+        self.0.failures.lock().unwrap().clear();
     }
 
     fn fail(&self, message: String) {

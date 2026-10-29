@@ -2,60 +2,34 @@
 mod support;
 
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, ensure};
+use support::{fixture_project, options, work_dir};
 use vrf::gpu::Gpu;
-use vrf_bench::corpus::bench_dir;
 use vrf_bench::engines::{headless_shell, node_bin};
 use vrf_bench::score::{self, Sampling};
-use vrf_blink::adapters::remotion::{self, Options, Page};
+use vrf_blink::adapters::remotion::{self, Options, Page, RenderJob, Renderer, Report};
 use vrf_blink::driver::Plan;
 use vrf_blink::{Mode, Project, Ui};
 use vrf_encode::Codec;
 
-const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/js/test/remotion/fixtures");
-
-fn work_dir() -> PathBuf {
-    std::env::temp_dir().join("vrf-remotion-tests")
-}
-
-fn fixture_project(name: &str) -> Result<PathBuf> {
-    let project = work_dir().join(name);
-    let modules = project.join("node_modules");
-    if !modules.exists() {
-        fs::create_dir_all(&project)?;
-        fs::write(
-            project.join("package.json"),
-            format!(r#"{{"name":"vrf-{name}","private":true}}"#),
-        )?;
-        let reference = std::env::var_os("VRF_BENCH_DIR")
-            .map_or_else(bench_dir, PathBuf::from)
-            .join("corpus/external/github-unwrapped/node_modules");
-        symlink(reference, &modules)?;
-    }
-    let src = project.join("src");
-    fs::create_dir_all(&src)?;
-    fs::copy(
-        Path::new(FIXTURES).join(name).join("index.jsx"),
-        src.join("index.jsx"),
-    )?;
-    Ok(project)
-}
-
-fn options(project: &Path, composition: &str) -> Options {
-    Options {
-        project: project.to_owned(),
-        entry: Some("src/index.jsx".into()),
-        composition: composition.into(),
-        props: None,
-        mode: Mode::Offline,
-        timeout: Duration::from_millis(2500),
-        plan: Plan::single(),
-    }
+fn render(
+    ui: &Ui,
+    options: &Options,
+    frames: Option<std::ops::RangeInclusive<u64>>,
+    codec: Codec,
+    out: &Path,
+) -> Result<Report> {
+    let job = RenderJob {
+        options: options.clone(),
+        frames,
+        codec,
+        output: out.to_owned(),
+    };
+    Renderer::new(1).render(ui, &job, SystemTime::now(), &mut |_, _| Ok(()))
 }
 
 fn still(project: &Path, composition: &str, frame: u64, out: &Path) -> Result<()> {
@@ -159,7 +133,7 @@ fn reference_mode_pixels_equal_remotion_still(ui: &Ui) -> Result<()> {
 fn h264_render_stays_near_the_codec_floor(ui: &Ui) -> Result<()> {
     let project = fixture_project("gray")?;
     let out = work_dir().join("gray.mp4");
-    let report = remotion::render(ui, &options(&project, "Gray"), None, Codec::H264, &out)?;
+    let report = render(ui, &options(&project, "Gray"), None, Codec::H264, &out)?;
     println!("{}", serde_json::to_string(&report)?);
     ensure!(report.frames == 60 && report.repeats == 0 && report.seek_retries == 0);
     ensure!(
@@ -200,7 +174,7 @@ fn h264_render_stays_near_the_codec_floor(ui: &Ui) -> Result<()> {
 fn frame_range_renders_the_slice(ui: &Ui) -> Result<()> {
     let project = fixture_project("basic")?;
     let out = work_dir().join("basic-range.mp4");
-    let report = remotion::render(
+    let report = render(
         ui,
         &options(&project, "Basic"),
         Some(30..=39),
@@ -218,7 +192,7 @@ fn frame_range_renders_the_slice(ui: &Ui) -> Result<()> {
 fn failed_frame_is_retried_on_a_fresh_page(ui: &Ui) -> Result<()> {
     let project = fixture_project("retry")?;
     let out = work_dir().join("retry.mp4");
-    let report = remotion::render(ui, &options(&project, "Flaky"), None, Codec::H264, &out)?;
+    let report = render(ui, &options(&project, "Flaky"), None, Codec::H264, &out)?;
     ensure!(
         report.frames == 10 && report.seek_retries == 1,
         "{} retries",
@@ -237,7 +211,7 @@ fn failed_frame_is_retried_on_a_fresh_page(ui: &Ui) -> Result<()> {
 fn assets_are_collected_and_resolved(ui: &Ui) -> Result<()> {
     let project = fixture_project("assets")?;
     let out = work_dir().join("assets.mp4");
-    let report = remotion::render(
+    let report = render(
         ui,
         &options(&project, "Offset"),
         Some(0..=35),
@@ -275,7 +249,7 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
         let out = work_dir().join(format!("basic-views-{views}.mov"));
         let mut options = options(&project, "Basic");
         options.plan = Plan::new(views, 11);
-        let report = remotion::render(ui, &options, None, Codec::ProRes422, &out)?;
+        let report = render(ui, &options, None, Codec::ProRes422, &out)?;
         ensure!(report.frames == 90 && report.views == views && report.repeats == 0);
         files.push((views, fs::read(&out)?));
     }
@@ -311,8 +285,7 @@ fn bundle_is_cached_by_input(_: &Ui) -> Result<()> {
 fn unknown_composition_fails_with_its_name(ui: &Ui) -> Result<()> {
     let project = fixture_project("basic")?;
     let out = work_dir().join("unknown.mp4");
-    let Err(error) = remotion::render(ui, &options(&project, "Missing"), None, Codec::H264, &out)
-    else {
+    let Err(error) = render(ui, &options(&project, "Missing"), None, Codec::H264, &out) else {
         anyhow::bail!("an unknown composition rendered");
     };
     let text = format!("{error:#}");

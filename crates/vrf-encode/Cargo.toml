@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+serde = { version = "1.0.229", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter", "objc2-core-audio-types"] }

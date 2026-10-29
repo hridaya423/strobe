@@ -1955,6 +1955,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cef",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -1976,6 +1977,7 @@ dependencies = [
  "anyhow",
  "clap",
  "serde_json",
+ "vrf-bench",
  "vrf-blink",
  "vrf-encode",
 ]
@@ -1995,6 +1997,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-io-surface",
  "objc2-video-toolbox",
+ "serde",
  "windows",
 ]
 

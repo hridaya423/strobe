@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use vrf_blink::adapters::remotion::{self, Offthread, Options, Page};
-use vrf_blink::driver::{Capture, Config, Pipeline, Plan};
+use vrf_blink::driver::{Capture, Config, Pipeline, Plan, Warm};
 use vrf_blink::{Mode, Project, Ui};
 use vrf_encode::Codec;
 
@@ -200,7 +200,8 @@ fn run(ui: Ui) -> Result<()> {
         count,
     );
     let out = std::env::temp_dir().join("vrf-profile.mp4");
-    let mut pipeline = Pipeline::new(&config, &out)?;
+    let mut warm = Warm::new()?;
+    let mut pipeline = Pipeline::new(&config, &out, &mut warm)?;
     let mut capture = Capture::default();
     let mut rows = String::from(
         "hash,frame,ga_calls,seek_rt,page_total,set_frame_sync,ready_after_set,tail,collect,fetch_hdr_max,fetch_body_max,fetches,bytes,watchdog,b2p,pipeline,total\n",

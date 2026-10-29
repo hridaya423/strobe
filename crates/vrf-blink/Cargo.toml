@@ -8,6 +8,7 @@ license.workspace = true
 vrf = { path = "../vrf" }
 vrf-encode = { path = "../vrf-encode" }
 anyhow = "1.0.104"
+libc = "0.2"
 cef = { version = "156.2.0", default-features = false }
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSResponder"] }
@@ -40,4 +41,8 @@ harness = false
 
 [[test]]
 name = "corpus_raw"
+harness = false
+
+[[test]]
+name = "daemon"
 harness = false

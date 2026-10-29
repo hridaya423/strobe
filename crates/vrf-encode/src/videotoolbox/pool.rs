@@ -23,7 +23,7 @@ pub const POOL_SIZE: usize = 48;
 
 const RETRY_INTERVAL: Duration = Duration::from_micros(200);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PixelFormat {
     Nv12,
     P010,

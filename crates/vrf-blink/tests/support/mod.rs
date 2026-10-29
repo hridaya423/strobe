@@ -1,7 +1,55 @@
+use std::fs;
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Result;
-use vrf_blink::Ui;
+use vrf_bench::corpus::bench_dir;
+use vrf_blink::adapters::remotion::Options;
+use vrf_blink::driver::Plan;
+use vrf_blink::{Mode, Ui};
+
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/js/test/remotion/fixtures");
+
+pub fn work_dir() -> PathBuf {
+    std::env::temp_dir().join("vrf-remotion-tests")
+}
+
+pub fn fixture_project(name: &str) -> Result<PathBuf> {
+    let project = work_dir().join(name);
+    let modules = project.join("node_modules");
+    if !modules.exists() {
+        fs::create_dir_all(&project)?;
+        fs::write(
+            project.join("package.json"),
+            format!(r#"{{"name":"vrf-{name}","private":true}}"#),
+        )?;
+        let reference = std::env::var_os("VRF_BENCH_DIR")
+            .map_or_else(bench_dir, PathBuf::from)
+            .join("corpus/external/github-unwrapped/node_modules");
+        symlink(reference, &modules)?;
+    }
+    let src = project.join("src");
+    fs::create_dir_all(&src)?;
+    fs::copy(
+        Path::new(FIXTURES).join(name).join("index.jsx"),
+        src.join("index.jsx"),
+    )?;
+    Ok(project)
+}
+
+pub fn options(project: &Path, composition: &str) -> Options {
+    Options {
+        project: project.to_owned(),
+        entry: Some("src/index.jsx".into()),
+        composition: composition.into(),
+        props: None,
+        mode: Mode::Offline,
+        timeout: Duration::from_millis(2500),
+        plan: Plan::single(),
+    }
+}
 
 pub type Case = (&'static str, fn(&Ui) -> Result<()>);
 

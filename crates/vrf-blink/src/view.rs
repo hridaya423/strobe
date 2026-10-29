@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,7 +18,12 @@ use crate::scheme::Project;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const EVALUATE_TIMEOUT: Duration = Duration::from_secs(60);
-const SETTLE_DELIVERY: Duration = Duration::from_millis(60);
+const SETTLE_DELIVERY: [Duration; 3] = [
+    Duration::from_millis(60),
+    Duration::from_millis(120),
+    Duration::from_millis(250),
+];
+const ALIVE_TIMEOUT: Duration = Duration::from_secs(1);
 const SETTLE_QUIET: Duration = Duration::from_millis(20);
 const BEGIN_FRAME_GAP: Duration = Duration::from_millis(1);
 const SETTLE_ROUNDS: usize = 10;
@@ -41,6 +47,12 @@ pub struct Paint {
 
 unsafe impl Send for Paint {}
 
+#[derive(Default)]
+struct Size {
+    width: AtomicI32,
+    height: AtomicI32,
+}
+
 struct MethodResult {
     id: i32,
     success: bool,
@@ -57,8 +69,7 @@ struct Channels {
 
 wrap_render_handler! {
     struct BlinkRenderHandler {
-        width: i32,
-        height: i32,
+        size: Arc<Size>,
         paints: Sender<Paint>,
     }
 
@@ -67,8 +78,8 @@ wrap_render_handler! {
             if let Some(rect) = rect {
                 rect.x = 0;
                 rect.y = 0;
-                rect.width = self.width;
-                rect.height = self.height;
+                rect.width = self.size.width.load(Ordering::Relaxed);
+                rect.height = self.size.height.load(Ordering::Relaxed);
             }
         }
 
@@ -215,15 +226,19 @@ pub struct View {
     methods: Receiver<MethodResult>,
     closed: Receiver<()>,
     project: Option<Project>,
+    size: Arc<Size>,
     next_id: i32,
     serial: u64,
     ticking: bool,
     last_begin: Cell<Option<Instant>>,
+    closing: bool,
 }
 
 impl View {
     pub fn open(ui: &Ui, url: &str, width: i32, height: i32) -> Result<View> {
-        View::launch(ui, url, width, height, None, None)
+        let view = View::launch(ui, url, width, height, None, None)?;
+        view.settle()?;
+        Ok(view)
     }
 
     /// Opens `entry` from `project` at `vrf://project/`. `init_script` runs in every document
@@ -231,6 +246,21 @@ impl View {
     /// every begin frame, so each begin frame delivers even when the page did not change. Fails if
     /// the page asked for anything the project refused, such as an unpinned URL in offline mode.
     pub fn open_project(
+        ui: &Ui,
+        project: &Project,
+        entry: &str,
+        width: i32,
+        height: i32,
+        init_script: Option<&str>,
+    ) -> Result<View> {
+        let view = View::launch_project(ui, project, entry, width, height, init_script)?;
+        view.settle()?;
+        Ok(view)
+    }
+
+    /// Like [`View::open_project`], but returns before begin frames are settled, so the caller
+    /// can [`View::resize`] first. Call [`View::settle`] before the first capture.
+    pub fn launch_project(
         ui: &Ui,
         project: &Project,
         entry: &str,
@@ -246,10 +276,7 @@ impl View {
             Some(project.clone()),
             init_script,
         )?;
-        if let Err(error) = view.check_project() {
-            let _ = view.close();
-            return Err(error);
-        }
+        view.check_project()?;
         Ok(view)
     }
 
@@ -289,7 +316,12 @@ impl View {
         } else {
             target.clone()
         };
+        let size = Arc::new(Size {
+            width: AtomicI32::new(width),
+            height: AtomicI32::new(height),
+        });
         let bound = project.clone();
+        let render_size = size.clone();
         let (host, observer) = ui.call(move || -> Result<_> {
             let (mut context, request_handler) =
                 bound.map(|project| project.bind()).transpose()?.unzip();
@@ -310,7 +342,7 @@ impl View {
                 ..Default::default()
             };
             let mut client = BlinkClient::new(
-                BlinkRenderHandler::new(width, height, channels.paints),
+                BlinkRenderHandler::new(render_size, channels.paints),
                 BlinkLoadHandler::new(channels.loaded),
                 BlinkLifeSpanHandler::new(channels.closed),
                 request_handler,
@@ -340,10 +372,12 @@ impl View {
             methods,
             closed,
             project,
+            size,
             next_id: 1,
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             ticking: init_script.is_some(),
             last_begin: Cell::new(None),
+            closing: false,
         };
         if let Some(source) = init_script.as_deref() {
             view.execute("Page.enable", serde_json::json!({}))?;
@@ -357,22 +391,32 @@ impl View {
                     .recv_timeout(LOAD_TIMEOUT)
                     .context("the page did not finish loading")?;
             }
+            view.evaluate(
+                "document.readyState === 'complete' || new Promise((resolve) => addEventListener('load', () => resolve(true), { once: true }))",
+            )?;
         }
-        view.settle()?;
         Ok(view)
     }
 
-    /// The first begin frames after a load are unreliable. The first can be lost, and a late
-    /// delivery can follow one that came on time. This sends begin frames until
-    /// `SETTLE_CLEAN` in a row give exactly one delivery.
-    fn settle(&self) -> Result<()> {
+    /// The first begin frames after a load are unreliable. The first is usually lost, and a late
+    /// delivery can follow one that came on time. This sends begin frames until `SETTLE_CLEAN`
+    /// in a row give exactly one delivery at the view's size. The wait for a delivery starts
+    /// short and doubles, so a lost frame costs tens of milliseconds, not a fixed quarter second.
+    pub fn settle(&self) -> Result<()> {
+        let (width, height) = (
+            self.size.width.load(Ordering::Relaxed) as u32,
+            self.size.height.load(Ordering::Relaxed) as u32,
+        );
         let mut clean = 0;
-        for _ in 0..SETTLE_ROUNDS {
+        for round in 0..SETTLE_ROUNDS {
             if !self.ticking {
                 self.invalidate();
             }
             self.begin_frame();
-            let delivered = self.recv_paint(SETTLE_DELIVERY).is_some();
+            let wait = SETTLE_DELIVERY[round.min(SETTLE_DELIVERY.len() - 1)];
+            let delivered = self.recv_paint(wait).is_some_and(|paint| {
+                (paint.visible.width, paint.visible.height) == (width, height)
+            });
             let extra = self.recv_paint(SETTLE_QUIET).is_some();
             clean = if delivered && !extra { clean + 1 } else { 0 };
             if clean == SETTLE_CLEAN {
@@ -380,6 +424,21 @@ impl View {
             }
         }
         bail!("begin frames never settled after {SETTLE_ROUNDS} rounds")
+    }
+
+    /// Changes the size of the view. Call it before the page has painted anything that matters,
+    /// then [`View::settle`], which waits for a delivery at the new size: CEF shows the old
+    /// size until the first frame at the new one. A resize without the screen info notice leaves
+    /// every later delivery one begin frame behind the page.
+    pub fn resize(&self, width: i32, height: i32) {
+        self.size.width.store(width, Ordering::Relaxed);
+        self.size.height.store(height, Ordering::Relaxed);
+        let host = self.host.clone();
+        self.ui.post(move || {
+            host.0.was_resized();
+            host.0.notify_screen_info_changed();
+            host.0.was_resized();
+        });
     }
 
     /// Distinguishes views, so a driver can tell that the page it was capturing was replaced.
@@ -423,6 +482,15 @@ impl View {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        self.execute_within(EVALUATE_TIMEOUT, method, params)
+    }
+
+    fn execute_within(
+        &mut self,
+        timeout: Duration,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let id = self.next_id;
         self.next_id += 1;
         let host = self.host.clone();
@@ -442,7 +510,7 @@ impl View {
         let result = loop {
             let result = self
                 .methods
-                .recv_timeout(EVALUATE_TIMEOUT)
+                .recv_timeout(timeout)
                 .with_context(|| format!("no DevTools response to {method}"))?;
             if result.id == id {
                 break result;
@@ -466,20 +534,39 @@ impl View {
         Ok(body["result"]["value"].clone())
     }
 
-    pub fn close(self) -> Result<()> {
-        let View {
-            ui,
-            host,
-            observer,
-            closed,
-            ..
-        } = self;
-        ui.post(move || {
+    /// Whether the page's process still answers, which a view that sat idle may not.
+    pub fn is_alive(&mut self) -> bool {
+        self.execute_within(
+            ALIVE_TIMEOUT,
+            "Runtime.evaluate",
+            serde_json::json!({"expression": "1"}),
+        )
+        .is_ok()
+    }
+
+    fn shutdown(&mut self) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        let host = self.host.clone();
+        let observer = OnUi(self.observer.0.take());
+        self.ui.post(move || {
             drop(observer);
             host.0.close_browser(true as _);
         });
-        closed
+    }
+
+    pub fn close(mut self) -> Result<()> {
+        self.shutdown();
+        self.closed
             .recv_timeout(CLOSE_TIMEOUT)
             .context("the browser did not close")
+    }
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
