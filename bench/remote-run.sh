@@ -13,6 +13,10 @@ ssh "$host" "mkdir -p \$HOME/$root/target/release/bundle"
 rsync -a target/release/vrf "$host:$root/target/release/"
 rsync -a --delete target/release/bundle/vrf.app "$host:$root/target/release/bundle/"
 
+case $corpus in
+  all | synth | synth-*) rsync -a --exclude external "$here/corpus/" "$host:$root/bench/corpus/" ;;
+esac
+
 status=0
 for engine in "$@"; do
   ssh "$host" "R=\$HOME/$root; export VRF_BENCH_DIR=\$R/bench PATH=\$R/tools:\$R/tools/node-v26.7.0-darwin-arm64/bin:\$R/bin:\$PATH; cd \$R && vrf-bench run --engine $engine --corpus $corpus --runs $runs --out-dir \$R/out/$engine" || status=1

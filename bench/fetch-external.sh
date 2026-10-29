@@ -6,6 +6,7 @@ ext=corpus/external
 mkdir -p "$ext"
 
 (cd engines && npm ci --no-fund --no-audit --loglevel=error)
+(cd corpus/synth-remotion && npm ci --no-fund --no-audit --loglevel=error --legacy-peer-deps)
 
 HF_COMMIT=d7ac35069d74a3a437780579b3b7fe2f3eeace5f
 HF_DIRS=(hyperframes-launch HF-heygen-stripe spacex-launch figma-launch)
