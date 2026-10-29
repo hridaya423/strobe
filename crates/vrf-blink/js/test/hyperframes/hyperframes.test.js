@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { composition, openHf, project, withBrowser } from './host.js';
+import { compileProject, composition, openHf, project } from './host.js';
 import { launch } from './cdp.js';
 
 let browser;
@@ -262,6 +262,120 @@ describe('item 19: seek semantics', () => {
     await hf.seek(0);
     await hf.seek(7);
     assert.equal(await boxX(hf), sequential);
+    await hf.close();
+  });
+});
+
+const clipDiv = (id, attrs) => `<div id="${id}" class="clip" ${attrs} style="position:absolute;width:10px;height:10px;background:#fff"></div>`;
+const idleTimeline = (end) => `const tl = gsap.timeline({paused:true}); tl.set({}, {}, ${end}); window.__timelines = {main: tl};`;
+
+describe('item 20: clip windows', () => {
+  test('item_20_overlapping_clips', async () => {
+    const dir = project({
+      'index.html': composition({
+        body: clipDiv('a', 'data-start="0" data-duration="0.5" data-track-index="1"') + clipDiv('b', 'data-start="0.3" data-duration="0.5" data-track-index="1"'),
+        script: idleTimeline(1),
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    const state = async (frame) => {
+      await hf.seek(frame);
+      return [await shown(hf, '#a'), await shown(hf, '#b')];
+    };
+    assert.deepEqual(await state(0), [true, false]);
+    assert.deepEqual(await state(2), [true, false]);
+    assert.deepEqual(await state(4), [true, true]);
+    assert.deepEqual(await state(6), [false, true]);
+    assert.deepEqual(await state(9), [false, false]);
+    await hf.close();
+  });
+
+  test('item_20_relative_start_references_with_offsets', async () => {
+    const dir = project({
+      'index.html': composition({
+        duration: 2,
+        body:
+          clipDiv('a', 'data-start="0.5" data-duration="0.4"') +
+          clipDiv('after', 'data-start="a + 0.2" data-duration="0.3"') +
+          clipDiv('before', 'data-start="a - 0.2" data-duration="0.2"'),
+        script: idleTimeline(2),
+      }),
+    });
+    const hf = await openHf(browser, dir);
+    const state = async (frame) => {
+      await hf.seek(frame);
+      return [await shown(hf, '#a'), await shown(hf, '#after'), await shown(hf, '#before')];
+    };
+    assert.deepEqual(await state(2), [false, false, false]);
+    assert.deepEqual(await state(5), [true, false, false]);
+    assert.deepEqual(await state(7), [true, false, true], 'a - 0.2 starts 0.2 s before a ends, at 0.7 s');
+    assert.deepEqual(await state(9), [false, false, false]);
+    assert.deepEqual(await state(10), [false, false, false]);
+    assert.deepEqual(await state(11), [false, true, false], 'a + 0.2 starts 0.2 s after a ends, at 1.1 s');
+    assert.deepEqual(await state(14), [false, false, false]);
+    await hf.close();
+  });
+
+  test('item_20_track_index_does_not_affect_visibility', async () => {
+    const make = (trackA, trackB) =>
+      project({
+        'index.html': composition({
+          body: clipDiv('a', `data-start="0" data-duration="0.6" data-track-index="${trackA}"`) + clipDiv('b', `data-start="0.2" data-duration="0.6" data-track-index="${trackB}"`),
+          script: idleTimeline(1),
+        }),
+      });
+    const states = [];
+    for (const dir of [make(1, 1), make(1, 9), make(7, 2)]) {
+      const hf = await openHf(browser, dir);
+      const row = [];
+      for (const frame of [1, 3, 7, 9]) {
+        await hf.seek(frame);
+        row.push([await shown(hf, '#a'), await shown(hf, '#b')]);
+      }
+      states.push(row);
+      await hf.close();
+    }
+    assert.deepEqual(states[1], states[0]);
+    assert.deepEqual(states[2], states[0]);
+  });
+
+  const nested = (innerDuration) => {
+    const dir = project({
+      'index.html': composition({
+        duration: 2,
+        body: '<div id="host" data-composition-id="inner" data-composition-src="compositions/inner.html" data-start="0.2" data-duration="0.6" style="position:absolute;inset:0"></div>',
+        script: idleTimeline(2),
+      }),
+      'compositions/inner.html': `<template id="inner-template"><div id="inner-root" data-composition-id="inner" data-width="320" data-height="180" data-duration="${innerDuration}">
+        <div id="ib" style="position:absolute;left:0;top:60px;width:20px;height:20px;background:#0f0"></div>
+        <script>window.__timelines = window.__timelines || {}; const t = gsap.timeline({paused:true}); t.to("#ib", {x: 100, duration: ${innerDuration}, ease:"none"}); window.__timelines["inner"] = t;</script>
+      </div></template>`,
+    });
+    return dir;
+  };
+
+  test('item_20_nested_shorter_inner_timeline_holds_last_state', async () => {
+    const { compiledDir } = await compileProject(nested(0.3), 10);
+    const hf = await openHf(browser, compiledDir);
+    await hf.seek(1);
+    assert.equal(await shown(hf, '#host'), false);
+    await hf.seek(2);
+    assert.equal(await shown(hf, '#host'), true);
+    await hf.seek(6);
+    assert.equal(await hf.page.evaluate('new DOMMatrix(getComputedStyle(document.querySelector("#ib")).transform).m41'), 100);
+    await hf.seek(8);
+    assert.equal(await shown(hf, '#host'), false, 'host window of 0.6 s ends at 0.8 s');
+    await hf.close();
+  });
+
+  test('item_20_nested_longer_inner_timeline_is_cut_at_the_host_window', async () => {
+    const { compiledDir } = await compileProject(nested(1.5), 10);
+    const hf = await openHf(browser, compiledDir);
+    await hf.seek(5);
+    const mid = await hf.page.evaluate('new DOMMatrix(getComputedStyle(document.querySelector("#ib")).transform).m41');
+    assert.ok(Math.abs(mid - (100 * 0.3) / 1.5) < 0.5, `inner local time is host-relative (0.3 s of 1.5 s), got ${mid}`);
+    await hf.seek(8);
+    assert.equal(await shown(hf, '#host'), false);
     await hf.close();
   });
 });
