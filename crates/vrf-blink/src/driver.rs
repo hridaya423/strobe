@@ -418,6 +418,7 @@ impl<'w> Pipeline<'w> {
             width: config.width,
             height: config.height,
             repeats: 0,
+            skipped: 0,
             convert: Vec::new(),
         };
         let frame_rate = config.frame_rate;

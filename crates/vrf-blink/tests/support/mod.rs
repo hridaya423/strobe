@@ -48,6 +48,7 @@ pub fn options(project: &Path, composition: &str) -> Options {
         mode: Mode::Offline,
         timeout: Duration::from_millis(2500),
         plan: Plan::single(),
+        skip: false,
     }
 }
 

@@ -318,7 +318,8 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
 
 fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<()> {
     let project = pages()?;
-    let render = |page: &str, skip: Option<Skip>, views: usize| -> Result<(Vec<u8>, u64)> {
+    let mut warm = Warm::new()?;
+    let mut render = |page: &str, skip: Option<Skip>, views: usize| -> Result<(Vec<u8>, u64)> {
         let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
         config.skip = skip;
         let out = std::env::temp_dir().join(format!("vrf-blink-skip-{views}.mov"));
@@ -327,8 +328,10 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
             Plan::new(views, 7),
             0,
             &out,
+            &mut warm,
             || View::open_project(ui, &project, page, 640, 360, Some(TRACK_JS)),
             |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |_| Ok(()),
         )?;
         runs.muxer.finish()?;
         let bytes = std::fs::read(&out)?;
