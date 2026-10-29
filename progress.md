@@ -44,6 +44,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | A | Phase 1 spikes 1.1, 1.2, 1.3, 1.5, 1.7, 1.10 on macOS (`spikes/01-cef-harness`) | merged |
 | B, C, D | Tasks 2.1 to 2.6 | merged |
 | E | win-pc build, spikes 6.6 (R6) and 6.7 (R7) | merged |
+| F | Tasks 3.1 and 3.2: `crates/vrf-blink` CEF bootstrap and the lock-step driver into the spine | running (Sonnet 5.5, worktree from `10a47cf`) |
 
 Kept for the orchestrator: Task 0.6, the spine_bench HEVC re-run, and spikes 1.4, 1.8 and 1.9, which need an idle machine (load average under 2).
 - Noise floors so far: hf-figma-launch FLIP mean 0.00002 and max delta 4; hf-heygen-stripe FLIP mean 0.00018 and max delta 7. HyperFrames is not bit-identical run to run.
