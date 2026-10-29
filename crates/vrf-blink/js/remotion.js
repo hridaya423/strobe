@@ -8,6 +8,7 @@
     videoEnabled: true,
     timeoutInMilliseconds: 30000,
     sampleRate: 48000,
+    captureMode: 'raw',
     ...globalThis.__vrf_rm_config,
   };
 
@@ -105,6 +106,12 @@
       check();
     });
 
+  const CAPTURE = {
+    raw: { format: 'raw', backgroundOverride: null },
+    jpeg: { format: 'jpeg', quality: 80, optimizeForSpeed: true, backgroundOverride: null },
+    png: { format: 'png', backgroundOverride: { r: 0, g: 0, b: 0, a: 0 } },
+  };
+
   let compositionId = null;
   let queue = Promise.resolve();
 
@@ -137,6 +144,7 @@
     await waitReady(frame);
     await document.fonts.ready;
     await Promise.all(pendingImages().map((img) => img.decode().catch(() => {})));
+    document.body.style.background = config.captureMode === 'png' ? 'transparent' : 'black';
     return { frame };
   };
 
@@ -152,5 +160,6 @@
     ready: () => waitReady(null),
     init,
     seek,
+    captureParams: () => CAPTURE[config.captureMode],
   };
 })();

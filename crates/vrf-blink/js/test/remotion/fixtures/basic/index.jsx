@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useLayoutEffect } from 'react';
 import { Composition, registerRoot, useCurrentFrame, getInputProps } from 'remotion';
 
 const Basic = () => {
@@ -19,6 +19,9 @@ const Props = (props) => {
 
 const Transparent = () => {
   const frame = useCurrentFrame();
+  useLayoutEffect(() => {
+    document.body.style.background = 'rgb(9, 9, 9)';
+  }, [frame]);
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <div style={{ position: 'absolute', left: 0, top: 0, width: 80, height: 90, background: `rgba(255, 0, 0, 0.5)` }} data-frame={frame} />

@@ -16,6 +16,11 @@ export function headlessShell() {
   );
 }
 
+const live = new Set();
+process.on('exit', () => {
+  for (const proc of live) proc.kill('SIGKILL');
+});
+
 const FLAGS = [
   '--force-color-profile=srgb',
   '--font-render-hinting=none',
@@ -33,6 +38,8 @@ export class Browser {
   static async launch() {
     const dir = mkdtempSync(join(tmpdir(), 'vrf-rm-'));
     const proc = spawn(headlessShell(), [...FLAGS, `--user-data-dir=${dir}`], { stdio: ['ignore', 'ignore', 'pipe'] });
+    live.add(proc);
+    proc.once('exit', () => live.delete(proc));
     const url = await new Promise((resolve, reject) => {
       let buf = '';
       proc.stderr.on('data', (d) => {

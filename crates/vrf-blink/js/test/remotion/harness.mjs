@@ -84,9 +84,31 @@ export async function launch(bundleDir, { config = {}, width = 320, height = 180
 
 export const seek = (page, frame, opts = {}) => page.eval(`__vrf.rm.seek(${frame}, ${JSON.stringify(opts)})`);
 
-export async function decodePng(page, buffer) {
+export const decodePng = (page, bytes) => decodeImage(page, { format: 'png', bytes });
+
+export async function capture(page, { width, height }) {
+  const spec = await page.eval('__vrf.rm.captureParams()');
+  const png = spec.format === 'raw';
+  const params = {
+    format: png ? 'png' : spec.format,
+    captureBeyondViewport: true,
+    fromSurface: true,
+    clip: { x: 0, y: 0, width, height, scale: 1 },
+  };
+  if (spec.quality !== undefined) params.quality = spec.quality;
+  if (spec.optimizeForSpeed) params.optimizeForSpeed = true;
+  if (spec.backgroundOverride) await page.send('Emulation.setDefaultBackgroundColorOverride', { color: spec.backgroundOverride });
+  try {
+    const { data } = await page.send('Page.captureScreenshot', params);
+    return { format: params.format, bytes: Buffer.from(data, 'base64') };
+  } finally {
+    if (spec.backgroundOverride) await page.send('Emulation.setDefaultBackgroundColorOverride');
+  }
+}
+
+export async function decodeImage(page, { format, bytes }) {
   const rgba = await page.eval(`(async () => {
-    const blob = await (await fetch('data:image/png;base64,${buffer.toString('base64')}')).blob();
+    const blob = await (await fetch('data:image/${format};base64,${bytes.toString('base64')}')).blob();
     const bmp = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
     const canvas = new OffscreenCanvas(bmp.width, bmp.height);
     const ctx = canvas.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
