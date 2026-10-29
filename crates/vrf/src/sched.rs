@@ -23,6 +23,7 @@ struct State<F> {
     last: Option<F>,
     producers: usize,
     consumer_gone: bool,
+    aborted: bool,
     stats: Stats,
 }
 
@@ -51,6 +52,7 @@ pub fn ordered<F: Clone>(capacity: usize) -> (Producer<F>, Consumer<F>) {
             last: None,
             producers: 1,
             consumer_gone: false,
+            aborted: false,
             stats: Stats {
                 buffered: 0,
                 high_water: 0,
@@ -88,7 +90,7 @@ impl<F> Producer<F> {
         );
         if index >= state.next + capacity {
             state.stats.blocked += 1;
-            while index >= state.next + capacity && !state.consumer_gone {
+            while index >= state.next + capacity && !state.consumer_gone && !state.aborted {
                 state = self
                     .shared
                     .space
@@ -100,6 +102,7 @@ impl<F> Producer<F> {
         if state.consumer_gone {
             bail!("the consumer is gone");
         }
+        ensure!(!state.aborted, "another producer failed");
         ensure!(
             index >= state.next,
             "frame {index} was already released (next is {})",
@@ -117,6 +120,15 @@ impl<F> Producer<F> {
             self.shared.ready.notify_one();
         }
         Ok(())
+    }
+
+    /// Fails every producer's next [`Producer::submit`] and the consumer's next
+    /// [`Consumer::recv`], waking any that are blocked. For a producer that cannot deliver its
+    /// frames, so the others do not wait for a gap that never fills.
+    pub fn abort(&self) {
+        self.shared.lock().aborted = true;
+        self.shared.space.notify_all();
+        self.shared.ready.notify_all();
     }
 }
 
@@ -149,6 +161,7 @@ impl<F: Clone> Consumer<F> {
     pub fn recv(&mut self) -> Result<Option<(u64, F)>> {
         let mut state = self.shared.lock();
         loop {
+            ensure!(!state.aborted, "a producer failed");
             let capacity = state.slots.len() as u64;
             let index = state.next;
             if let Some(submission) = state.slots[(index % capacity) as usize].take() {

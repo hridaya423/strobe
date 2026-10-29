@@ -5,10 +5,11 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
+use objc2_io_surface::IOSurfaceLockOptions;
 use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url};
 use vrf_blink::driver::{Capture, Config, Pipeline, Stats, Summary, render};
-use vrf_blink::{Ui, View};
+use vrf_blink::{Mode, Paint, Project, Ui, View};
 use vrf_encode::{Codec, Rational};
 
 const FRAME_RATE: Rational = Rational::new(30, 1);
@@ -185,11 +186,107 @@ fn no_damage_repeats(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn pages() -> Result<Project> {
+    Project::open(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages"),
+        Mode::Offline,
+    )
+}
+
+fn pixel(paint: &Paint, x: usize, y: usize) -> [u8; 3] {
+    let surface = &paint.surface;
+    let options = IOSurfaceLockOptions::ReadOnly;
+    unsafe { surface.lock(options, std::ptr::null_mut()) };
+    let base = surface.base_address().as_ptr() as *const u8;
+    let bgra =
+        unsafe { std::slice::from_raw_parts(base.add(y * surface.bytes_per_row() + x * 4), 4) };
+    let rgb = [bgra[2], bgra[1], bgra[0]];
+    unsafe { surface.unlock(options, std::ptr::null_mut()) };
+    rgb
+}
+
+fn ticking_view_delivers_every_begin_frame(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let mut view = View::open_project(
+        ui,
+        &project,
+        "colour.html",
+        WIDTH as i32,
+        HEIGHT as i32,
+        Some(""),
+    )?;
+    ensure!(
+        view.ticking(),
+        "a project view with an init script is not ticking"
+    );
+    let mut capture = Capture::default();
+    let watchdog = Duration::from_millis(100);
+    for index in 0..60 {
+        view.evaluate(&format!("seek({})", index / 10))?;
+        let paint = capture.next(&view, watchdog)?;
+        ensure!(paint.is_some(), "frame {index} did not deliver");
+    }
+    ensure!(capture.retries == 0, "{} retries", capture.retries);
+    let layout = view.evaluate(
+        "[innerWidth, innerHeight, document.documentElement.scrollWidth, document.documentElement.scrollHeight, document.body.children.length, document.elementFromPoint(0, 0).tagName].join()",
+    )?;
+    ensure!(
+        layout == format!("{WIDTH},{HEIGHT},{WIDTH},{HEIGHT},1,BODY"),
+        "layout changed: {layout}"
+    );
+    view.close()
+}
+
+fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let mut view = View::open_project(
+        ui,
+        &project,
+        "colour.html",
+        WIDTH as i32,
+        HEIGHT as i32,
+        Some(""),
+    )?;
+    let mut capture = Capture::default();
+    let watchdog = Duration::from_millis(100);
+    for level in [0u8, 1, 2, 63, 127, 128, 129, 191, 253, 254, 255, 0, 255] {
+        let want = [level, 255 - level, level.wrapping_mul(7)];
+        view.evaluate(&format!(
+            "document.documentElement.style.background = 'rgb({}, {}, {})'",
+            want[0], want[1], want[2]
+        ))?;
+        for _ in 0..3 {
+            let paint = capture.next(&view, watchdog)?.context("no delivery")?;
+            for (x, y) in [
+                (0, 0),
+                (1, 1),
+                (WIDTH as usize - 1, 0),
+                (WIDTH as usize / 2, HEIGHT as usize / 2),
+            ] {
+                let got = pixel(&paint, x, y);
+                ensure!(
+                    got == want,
+                    "level {level}: pixel ({x}, {y}) is {got:?}, expected {want:?}"
+                );
+            }
+        }
+    }
+    view.close()
+}
+
 fn main() -> ExitCode {
     support::run(&[
         ("driver_colour_per_frame_300", colour_per_frame_300),
         ("driver_import_delay_1ms_2000", import_delay_1ms_2000),
         ("driver_import_delay_50ms_300", import_delay_50ms_300),
         ("driver_no_damage_repeats", no_damage_repeats),
+        (
+            "driver_ticking_view_delivers_every_begin_frame",
+            ticking_view_delivers_every_begin_frame,
+        ),
+        (
+            "driver_ticking_view_leaves_every_level_untouched",
+            ticking_view_leaves_every_level_untouched,
+        ),
     ])
 }
