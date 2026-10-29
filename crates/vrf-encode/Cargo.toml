@@ -1,0 +1,15 @@
+[package]
+name = "vrf-encode"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = "0.3.2"
+objc2-core-media = "0.3.2"
+objc2-core-video = { version = "0.3.2", features = ["objc2-io-surface"] }
+objc2-io-surface = "0.3.2"
+objc2-video-toolbox = "0.3.2"
