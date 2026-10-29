@@ -12,7 +12,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | 4. Throughput, Gate C | not started | |
 | 5. Media | not started | |
 | 6. Windows and Linux | in progress | Windows spikes 6.6 and 6.7 done (`docs/spikes/6.6-win-begin-frame-delivery.md`, `6.7-win-d3d-import-nvenc.md`). Linux deferred |
-| 7. CEF patch set | not started | |
+| 7. CEF patch set | deferred, gated on the Phase 4 profile (user) | |
 | 8. Native fast path (gated) | not opened | |
 
 ## Baselines measured during research (M4 Pro, 1080p, 300 frames, `bench-gsap-1080p.html`)
@@ -30,7 +30,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 - Run Phases 0 to 7. Phase 8 stays gated.
 - Windows work runs on `win-pc` (ssh alias): RTX 4070 Ti, driver 617.42, Git present, no Rust yet.
 - Linux testing is deferred. The user will decide it later.
-- Phase 7: the user decides how to do the Chromium build (about 100 GB, more than this Mac's free disk) when the phase begins. Do not skip the phase.
+- User, 2026-10-29 22:20: Phase 7 is deferred and gated. Stock CEF plus `clock.js` and `tick.js` covers every patch's correctness job (spikes 1.1, 1.3, 1.7, 6.6). Reopen it only if the Phase 4 profile shows Chromium's own per-frame work is the bottleneck; the user picks the build box then.
 
 ## Notes
 
