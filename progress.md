@@ -50,6 +50,7 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | L | Task 6.2: NVENC backend with D3D12 input in `crates/vrf-encode/src/nvenc/`, HEVC anomaly cause (win-pc, `C:/Users/mukes/vrf-l`) | running (Sonnet 5.5, from `4fe2a37`) |
 | M | Task 5.1 spike: fastest correct way to put a decoded video frame into the page (`spikes/5.1-video-into-page/`) | running (Sonnet 5.5, from `4fe2a37`) |
 | N | Task 5.2: audio track in the muxer, AudioToolbox AAC, mixer, asset-list struct for the adapters | running (Sonnet 5.5, from `4fe2a37`) |
+| O | Task 3.5 Rust side and the first slice of 3.7: `adapters/remotion.rs`, `vrf render`, `vrf` engine in `vrf-bench`; full renders of `rm-transitions-video` and `rm-github-unwrapped` scored against REF | running (Sonnet 5.5, from `a26609f`) |
 | G | Task 3.6 page side: `crates/vrf-blink/js/clock.js`, tested in headless shell 156 | merged |
 | H | Task 3.4 page side: `crates/vrf-blink/js/hyperframes.js`, contract items 1 to 8 and 17 to 24, fidelity against REF | running (Sonnet 5.5, from `39343f0`) |
 | I | Task 3.5 page side: `crates/vrf-blink/js/remotion.js`, contract items 9 to 16, fidelity against REF | merged |
