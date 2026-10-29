@@ -78,6 +78,55 @@ pub struct Sample {
     pub keyframe: bool,
 }
 
+impl TryFrom<&vrf_encode::StreamInfo> for StreamConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(info: &vrf_encode::StreamInfo) -> Result<Self> {
+        Ok(StreamConfig {
+            codec: match info.codec {
+                vrf_encode::Codec::H264 => Codec::H264,
+                vrf_encode::Codec::Hevc => Codec::Hevc,
+                vrf_encode::Codec::ProRes422 => Codec::ProRes422,
+            },
+            width: u16::try_from(info.width).context("width does not fit 16 bits")?,
+            height: u16::try_from(info.height).context("height does not fit 16 bits")?,
+            colour: Colour::BT709,
+            config: info.config.clone(),
+        })
+    }
+}
+
+impl Sample {
+    /// Converts an encoder packet, whose times are in seconds, to ticks of `timebase`. Fails if
+    /// a time is not a whole number of ticks.
+    pub fn from_packet(
+        packet: vrf_encode::Packet,
+        timebase: vrf_encode::Rational,
+        duration: u32,
+    ) -> Result<Sample> {
+        let ticks = |time: vrf_encode::Rational| -> Result<i64> {
+            let scaled = i128::from(time.num) * i128::from(timebase.den);
+            let whole = scaled % i128::from(time.den * timebase.num) == 0;
+            ensure!(
+                whole,
+                "{}/{} s is not a whole tick of {}/{}",
+                time.num,
+                time.den,
+                timebase.num,
+                timebase.den
+            );
+            i64::try_from(scaled / i128::from(time.den * timebase.num)).context("time out of range")
+        };
+        Ok(Sample {
+            pts: ticks(packet.pts)?,
+            dts: ticks(packet.dts)?,
+            data: packet.data,
+            duration,
+            keyframe: packet.keyframe,
+        })
+    }
+}
+
 struct Chunk {
     entry: u32,
     samples: u32,

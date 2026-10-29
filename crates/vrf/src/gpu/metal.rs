@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use anyhow::{Context, Result, bail};
 use objc2_io_surface::IOSurfaceRef;
@@ -111,17 +112,17 @@ impl PoolTargets {
         converter: &Converter,
         buffer: &PoolBuffer,
     ) -> Result<&Target> {
-        let id = buffer.surface_id();
-        if !self.targets.contains_key(&id) {
-            let (y_format, cbcr_format) = Converter::plane_formats(converter.format());
-            let y = gpu.import_iosurface(buffer.surface(), 0, y_format)?;
-            let cbcr = gpu.import_iosurface(buffer.surface(), 1, cbcr_format)?;
-            let target = converter.target(
-                &y.create_view(&Default::default()),
-                &cbcr.create_view(&Default::default()),
-            );
-            self.targets.insert(id, target);
+        match self.targets.entry(buffer.surface_id()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let (y_format, cbcr_format) = Converter::plane_formats(converter.format());
+                let y = gpu.import_iosurface(buffer.surface(), 0, y_format)?;
+                let cbcr = gpu.import_iosurface(buffer.surface(), 1, cbcr_format)?;
+                Ok(entry.insert(converter.target(
+                    &y.create_view(&Default::default()),
+                    &cbcr.create_view(&Default::default()),
+                )))
+            }
         }
-        Ok(&self.targets[&id])
     }
 }

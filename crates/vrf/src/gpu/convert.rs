@@ -156,8 +156,8 @@ impl Converter {
             self.format.bits(),
         ];
         let mut bytes = [0u8; IMMEDIATE_BYTES];
-        for (chunk, value) in bytes.chunks_exact_mut(4).zip(params) {
-            chunk.copy_from_slice(&value.to_ne_bytes());
+        for (chunk, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(params) {
+            *chunk = value.to_ne_bytes();
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &src.0, &[]);

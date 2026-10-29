@@ -768,3 +768,52 @@ fn writing_before_a_chunk_starts_is_rejected() {
     };
     assert!(muxer.write(&sample).is_err());
 }
+
+fn packet(pts: vrf_encode::Rational) -> vrf_encode::Packet {
+    vrf_encode::Packet {
+        data: vec![1],
+        pts,
+        dts: pts,
+        keyframe: true,
+    }
+}
+
+#[test]
+fn encoder_packets_become_whole_ticks_of_the_timebase() {
+    let timebase = vrf_encode::Rational::new(1, 24000);
+    let sample = Sample::from_packet(
+        packet(vrf_encode::Rational::new(5 * 1001, 24000)),
+        timebase,
+        1001,
+    )
+    .unwrap();
+    assert_eq!(
+        (sample.pts, sample.dts, sample.duration),
+        (5005, 5005, 1001)
+    );
+
+    let half_tick = packet(vrf_encode::Rational::new(1, 48000));
+    assert!(Sample::from_packet(half_tick, timebase, 1001).is_err());
+}
+
+#[test]
+fn stream_info_becomes_a_bt709_stream_config() {
+    let info = vrf_encode::StreamInfo {
+        codec: vrf_encode::Codec::Hevc,
+        width: 1920,
+        height: 1080,
+        timebase: vrf_encode::Rational::new(1, 30),
+        config: vec![1, 2, 3],
+    };
+    let config = StreamConfig::try_from(&info).unwrap();
+    assert_eq!(
+        config,
+        StreamConfig {
+            codec: Codec::Hevc,
+            width: 1920,
+            height: 1080,
+            colour: Colour::BT709,
+            config: vec![1, 2, 3],
+        }
+    );
+}

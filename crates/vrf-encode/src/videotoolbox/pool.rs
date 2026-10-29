@@ -40,15 +40,24 @@ impl PixelFormat {
 
 type Dict = CFDictionary<CFString, CFType>;
 
+#[derive(Clone)]
 pub struct PixelPool {
     pool: CFRetained<CVPixelBufferPool>,
     threshold: CFRetained<Dict>,
 }
 
+/// A clone is another reference to the same buffer. The buffer returns to its pool when the
+/// last reference drops.
+#[derive(Clone)]
 pub struct PoolBuffer {
     buffer: CFRetained<CVPixelBuffer>,
     surface: CFRetained<IOSurfaceRef>,
 }
+
+// CoreVideo documents pixel buffer pools and pixel buffers as safe to use from any thread.
+unsafe impl Send for PixelPool {}
+unsafe impl Sync for PixelPool {}
+unsafe impl Send for PoolBuffer {}
 
 fn number(value: usize) -> CFRetained<CFNumber> {
     CFNumber::new_i64(value as i64)
