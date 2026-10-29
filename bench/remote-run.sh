@@ -14,7 +14,7 @@ rsync -a target/release/vrf "$host:$root/target/release/"
 rsync -a --delete target/release/bundle/vrf.app "$host:$root/target/release/bundle/"
 
 case $corpus in
-  all | synth | synth-*) rsync -a --exclude external "$here/corpus/" "$host:$root/bench/corpus/" ;;
+  all | synth | synth-*) rsync -a --exclude external --exclude .cache "$here/corpus/" "$host:$root/bench/corpus/" ;;
 esac
 
 status=0
