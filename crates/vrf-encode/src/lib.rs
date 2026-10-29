@@ -5,6 +5,29 @@ pub mod audiotoolbox;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
 
+pub const AAC_FRAME_SAMPLES: u32 = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AacConfig {
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub bit_rate: u32,
+}
+
+/// An AAC-LC elementary stream. `packets` hold `AAC_FRAME_SAMPLES` samples each. The decoder
+/// outputs `priming_frames` samples of encoder delay first, then `frames` samples of the input,
+/// then padding up to the packet boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AacStream {
+    pub config: AacConfig,
+    /// The two-byte `AudioSpecificConfig` that goes inside the `esds` box.
+    pub audio_specific_config: Vec<u8>,
+    pub packets: Vec<Vec<u8>>,
+    pub priming_frames: u32,
+    pub frames: u64,
+    pub max_packet_bytes: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rational {
     pub num: i64,

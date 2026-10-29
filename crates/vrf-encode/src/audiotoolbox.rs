@@ -14,7 +14,7 @@ use objc2_core_audio_types::{
     kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM, kAudioFormatMPEG4AAC,
 };
 
-pub const AAC_FRAME_SAMPLES: u32 = 1024;
+pub use crate::{AAC_FRAME_SAMPLES, AacConfig, AacStream};
 
 const AAC_LC: u32 = 2;
 const BIT_RATE_CONTROL_MODE: u32 = u32::from_be_bytes(*b"acbf");
@@ -23,27 +23,6 @@ const SAMPLE_RATES: [u32; 13] = [
     96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
     7_350,
 ];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AacConfig {
-    pub sample_rate: u32,
-    pub channels: u32,
-    pub bit_rate: u32,
-}
-
-/// An AAC-LC elementary stream. `packets` hold `AAC_FRAME_SAMPLES` samples each. The decoder
-/// outputs `priming_frames` samples of encoder delay first, then `frames` samples of the input,
-/// then padding up to the packet boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AacStream {
-    pub config: AacConfig,
-    /// The two-byte `AudioSpecificConfig` that goes inside the `esds` box.
-    pub audio_specific_config: Vec<u8>,
-    pub packets: Vec<Vec<u8>>,
-    pub priming_frames: u32,
-    pub frames: u64,
-    pub max_packet_bytes: u32,
-}
 
 struct Input<'a> {
     samples: &'a [f32],
