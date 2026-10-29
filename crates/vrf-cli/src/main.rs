@@ -7,7 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use vrf_blink::adapters::remotion::{Options, RenderJob, Renderer, Report};
-use vrf_blink::driver;
+use vrf_blink::daemon::{self, Job, Reply, Request};
+use vrf_blink::driver::{self, Plan};
 use vrf_blink::{Mode, Ui, calibration};
 use vrf_encode::Codec;
 
@@ -24,6 +25,9 @@ struct Cli {
 enum Command {
     /// Render a Remotion project to a video file.
     Render(RenderArgs),
+    /// Keep the renderer warm between renders. `vrf render` uses a running daemon and falls
+    /// back to rendering in its own process when there is none.
+    Daemon(DaemonArgs),
 }
 
 #[derive(Args, Clone)]
@@ -67,6 +71,26 @@ struct RenderArgs {
     /// Print a JSON report on stdout instead of the summary line.
     #[arg(long)]
     json: bool,
+    /// Render in this process even if a daemon is running.
+    #[arg(long)]
+    no_daemon: bool,
+}
+
+#[derive(Args)]
+struct DaemonArgs {
+    /// Seconds with nothing to do before the daemon exits.
+    #[arg(long, default_value_t = 600)]
+    idle_timeout: u64,
+    /// The rasterisation the daemon renders with. A request for the other mode renders in its
+    /// own process.
+    #[arg(long, value_enum, default_value = "fast")]
+    mode: ModeArg,
+    /// Projects whose bundle, frame server and views stay loaded.
+    #[arg(long, default_value_t = 2)]
+    projects: usize,
+    /// Stop the running daemon after its current renders.
+    #[arg(long)]
+    stop: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
@@ -110,7 +134,7 @@ fn props(argument: Option<String>) -> Result<Option<String>> {
 }
 
 impl RenderArgs {
-    fn job(&self, ui: &Ui) -> Result<RenderJob> {
+    fn job(&self, plan: Plan) -> Result<RenderJob> {
         let project = self.project.canonicalize().with_context(|| {
             format!(
                 "project directory {} does not exist",
@@ -128,7 +152,7 @@ impl RenderArgs {
                 Mode::Online
             },
             timeout: Duration::from_millis(self.timeout),
-            plan: calibration::plan(ui, self.views, self.run, self.lead_in)?,
+            plan,
         };
         Ok(RenderJob {
             options,
@@ -169,8 +193,38 @@ fn command_start() -> SystemTime {
     now
 }
 
+fn render_remote(
+    args: &RenderArgs,
+    cpu_raster: bool,
+    command_start: SystemTime,
+) -> Result<Option<Report>> {
+    let Some(stream) = daemon::connect(&daemon::socket_path()) else {
+        return Ok(None);
+    };
+    let Some(plan) = calibration::cached_plan(args.views, args.run, args.lead_in)? else {
+        return Ok(None);
+    };
+    let request = Request::new(cpu_raster, command_start, Job::Render(args.job(plan)?))?;
+    let mut show = progress();
+    let reply = daemon::call(
+        stream,
+        &request,
+        &mut |ahead| eprintln!("vrf: waiting for {ahead} render(s) ahead in the daemon"),
+        &mut |frame, frames| show(frame, frames),
+    )?;
+    Ok(match reply {
+        Reply::Rendered(report, _) => Some(*report),
+        Reply::Refused(reason) => {
+            eprintln!("vrf: the daemon refused this render ({reason}); rendering in this process");
+            None
+        }
+        Reply::Gone | Reply::Pong => None,
+    })
+}
+
 fn render_local(ui: &Ui, args: &RenderArgs, command_start: SystemTime) -> Result<Report> {
-    let job = args.job(ui)?;
+    let plan = calibration::plan(ui, args.views, args.run, args.lead_in)?;
+    let job = args.job(plan)?;
     let mut show = progress();
     Renderer::new(1).render(ui, &job, command_start, &mut |frame, frames| {
         show(frame, frames);
@@ -198,11 +252,33 @@ fn print_report(report: &Report, args: &RenderArgs) {
     }
 }
 
-fn run_render(args: RenderArgs, command_start: SystemTime) -> Result<()> {
-    let report = vrf_blink::run({
-        let args = args.clone();
-        move |ui| render_local(&ui, &args, command_start)
-    })?;
+fn stop_daemon() -> Result<()> {
+    let Some(stream) = daemon::connect(&daemon::socket_path()) else {
+        println!("no daemon is running");
+        return Ok(());
+    };
+    let request = Request::new(false, SystemTime::now(), Job::Stop)?;
+    daemon::call(stream, &request, &mut |_| {}, &mut |_, _| {})?;
+    println!("daemon stopped");
+    Ok(())
+}
+
+fn run_render(args: RenderArgs, cpu_raster: bool, command_start: SystemTime) -> Result<()> {
+    let remote = if args.no_daemon || std::env::var_os("VRF_NO_DAEMON").is_some() {
+        None
+    } else {
+        render_remote(&args, cpu_raster, command_start)?
+    };
+    let report = match remote {
+        Some(report) => report,
+        None => {
+            unsafe { std::env::set_var("VRF_NO_DAEMON", "1") };
+            vrf_blink::run({
+                let args = args.clone();
+                move |ui| render_local(&ui, &args, command_start)
+            })?
+        }
+    };
     print_report(&report, &args);
     Ok(())
 }
@@ -215,8 +291,21 @@ fn main() -> ExitCode {
     let command_start = command_start();
     let outcome = match Cli::parse().command {
         Command::Render(args) => {
-            vrf_blink::set_cpu_raster(args.mode == ModeArg::Reference);
-            run_render(args, command_start)
+            let cpu_raster = args.mode == ModeArg::Reference;
+            vrf_blink::set_cpu_raster(cpu_raster);
+            run_render(args, cpu_raster, command_start)
+        }
+        Command::Daemon(args) if args.stop => stop_daemon(),
+        Command::Daemon(args) => {
+            let cpu_raster = args.mode == ModeArg::Reference;
+            vrf_blink::set_cpu_raster(cpu_raster);
+            let config = daemon::Config {
+                socket: daemon::socket_path(),
+                idle: Duration::from_secs(args.idle_timeout),
+                cpu_raster,
+                projects: args.projects,
+            };
+            vrf_blink::run(move |ui| daemon::serve(&ui, &config))
         }
     };
     match outcome {

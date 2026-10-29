@@ -126,27 +126,38 @@ pub fn measure(ui: &Ui) -> Result<Calibration> {
     })
 }
 
+fn read_entries(cache: &Path) -> BTreeMap<String, Calibration> {
+    fs::read(cache)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// The cached measurement for this machine and CEF build, if there is one.
+pub fn stored(cache: &Path) -> Option<Calibration> {
+    read_entries(cache).remove(&key())
+}
+
 /// The cached measurement for this machine and CEF build, made and stored first if there is
 /// none.
 pub fn calibrated(ui: &Ui, cache: &Path) -> Result<Calibration> {
-    let key = key();
-    let mut entries: BTreeMap<String, Calibration> = fs::read(cache)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    if let Some(found) = entries.get(&key) {
-        return Ok(found.clone());
+    if let Some(found) = stored(cache) {
+        return Ok(found);
     }
     let measured = measure(ui)?;
-    entries.insert(key, measured.clone());
+    let mut entries = read_entries(cache);
+    entries.insert(key(), measured.clone());
     fs::create_dir_all(cache.parent().context("cache path has no parent")?)?;
     fs::write(cache, serde_json::to_vec_pretty(&entries)?)?;
     Ok(measured)
 }
 
-/// The plan for a render: the flags' values where given, and the calibration's where not. Nothing
-/// is measured when both are given.
-pub fn plan(ui: &Ui, views: Option<usize>, run: Option<u64>, lead_in: u64) -> Result<Plan> {
+fn plan_from(
+    views: Option<usize>,
+    run: Option<u64>,
+    lead_in: u64,
+    calibration: impl FnOnce() -> Result<Option<Calibration>>,
+) -> Result<Option<Plan>> {
     ensure!(
         views != Some(0) && run != Some(0),
         "views and run must be at least 1"
@@ -154,15 +165,31 @@ pub fn plan(ui: &Ui, views: Option<usize>, run: Option<u64>, lead_in: u64) -> Re
     let (views, run) = match (views, run) {
         (Some(views), Some(run)) => (views, run),
         _ => {
-            let calibration = calibrated(ui, &cache_path())?;
+            let Some(calibration) = calibration()? else {
+                return Ok(None);
+            };
             (
                 views.unwrap_or(calibration.views),
                 run.unwrap_or(calibration.run),
             )
         }
     };
-    Ok(Plan {
+    Ok(Some(Plan {
         lead_in,
         ..Plan::new(views, run)
-    })
+    }))
+}
+
+/// The plan for a render: the flags' values where given, and the calibration's where not. Nothing
+/// is measured when both are given.
+pub fn plan(ui: &Ui, views: Option<usize>, run: Option<u64>, lead_in: u64) -> Result<Plan> {
+    plan_from(views, run, lead_in, || {
+        calibrated(ui, &cache_path()).map(Some)
+    })?
+    .context("no calibration")
+}
+
+/// Like [`plan`], but `None` where it would have to measure, which needs a running CEF.
+pub fn cached_plan(views: Option<usize>, run: Option<u64>, lead_in: u64) -> Result<Option<Plan>> {
+    plan_from(views, run, lead_in, || Ok(stored(&cache_path())))
 }
