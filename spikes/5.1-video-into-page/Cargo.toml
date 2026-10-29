@@ -1,0 +1,32 @@
+[workspace]
+
+[package]
+name = "video-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "video-spike"
+path = "src/main.rs"
+
+[dependencies]
+vrf = { path = "../../crates/vrf" }
+anyhow = "1.0.104"
+cef = { version = "156.2.0", default-features = false }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSResponder"] }
+objc2-core-foundation = "0.3.2"
+objc2-io-surface = "0.3.2"
+serde_json = "1.0.154"
+wgpu = { version = "30.0.1", default-features = false, features = ["metal", "wgsl", "std", "parking_lot"] }
+bytemuck = "1"
+pollster = "0.4.0"
+libc = "0.2"
+
+[build-dependencies]
+cc = "1.10"
+
+[profile.release]
+debug = 1
