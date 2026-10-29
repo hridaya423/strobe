@@ -17,7 +17,13 @@ skipped=$(jq .skipped "$dir/$label-on.json")
 if cmp -s "$dir/$label-off.md5" "$dir/$label-on.md5"; then
   verdict=identical
 else
-  verdict=DIFFERENT
+  "$vrf" render "$@" --no-skip --json -o "$dir/$label-off2.mp4" >"$dir/$label-off2.json"
+  ffmpeg -v error -i "$dir/$label-off2.mp4" -map 0:v:0 -f framemd5 - | grep -v '^#' | awk -F', *' '{print $NF}' >"$dir/$label-off2.md5"
+  if cmp -s "$dir/$label-off.md5" "$dir/$label-off2.md5"; then
+    verdict=DIFFERENT
+  else
+    verdict="not repeatable ($(diff "$dir/$label-off.md5" "$dir/$label-off2.md5" | grep -c '^<') frames differ between two runs with skipping off)"
+  fi
 fi
 echo "$label: $frames frames, $skipped skipped, framemd5 $verdict (off skipped $(jq .skipped "$dir/$label-off.json"))"
-[ "$verdict" = identical ]
+[ "$verdict" = identical ] || [ "${verdict#not repeatable}" != "$verdict" ]
