@@ -2,6 +2,7 @@ mod convert;
 mod s11;
 mod s12;
 mod s13;
+mod s17;
 
 use cef::{args::Args, *};
 use harness::{Harness, HarnessApp};
@@ -77,6 +78,7 @@ fn main() -> ExitCode {
         "1.1" => s11::run(&options),
         "1.2" => s12::run(&options),
         "1.3" => s13::run(&options),
+        "1.7" => s17::run(&options),
         other => panic!("unknown spike {other}"),
     }
     shutdown();

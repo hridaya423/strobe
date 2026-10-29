@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #fff; overflow: hidden; font: 700 48px/1 monospace; }
+.bar { position: absolute; left: 0; height: 60px; background: #036; }
+#now { top: 0; }
+#raf { top: 80px; }
+#css { top: 160px; width: 60px; background: #c30; animation: slide 2000ms linear infinite; }
+@keyframes slide { from { transform: translateX(0); } to { transform: translateX(1200px); } }
+#t { position: absolute; top: 260px; left: 10px; }
+</style>
+<div class="bar" id="now"></div>
+<div class="bar" id="raf"></div>
+<div class="bar" id="css"></div>
+<div id="t"></div>
+<script>
+const only = location.search.slice(1) || 'all';
+for (const [name, id] of [['now', 'now'], ['raf', 'raf'], ['css', 'css']]) {
+  if (only !== 'all' && only !== name) document.getElementById(id).style.display = 'none';
+}
+if (only !== 'all') document.getElementById('t').style.display = 'none';
+window.log = [];
+const nowBar = document.getElementById('now');
+const rafBar = document.getElementById('raf');
+const t = document.getElementById('t');
+function frame(ts) {
+  const n = performance.now();
+  if (only === 'all' || only === 'now') nowBar.style.width = (n % 1000) * 1.2 + 'px';
+  if (only === 'all' || only === 'raf') rafBar.style.width = (ts % 1000) * 1.2 + 'px';
+  if (only === 'all') t.textContent = `now ${n.toFixed(1)} raf ${ts.toFixed(1)}`;
+  log.push([ts, n, document.timeline.currentTime, Date.now()]);
+  requestAnimationFrame(frame);
+}
+if (only !== 'css') requestAnimationFrame(frame);
+</script>
