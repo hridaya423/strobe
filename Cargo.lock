@@ -1873,8 +1873,20 @@ dependencies = [
  "serde",
  "serde_json",
  "vrf",
+ "vrf-bench",
  "vrf-encode",
  "wgpu",
+]
+
+[[package]]
+name = "vrf-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "vrf-blink",
+ "vrf-encode",
 ]
 
 [[package]]
