@@ -43,3 +43,55 @@ pub fn run(cases: &[Case]) -> ExitCode {
         ExitCode::FAILURE
     }
 }
+
+pub const WIDTH: u32 = 1920;
+pub const HEIGHT: u32 = 1080;
+pub const TOLERANCE: i32 = 3;
+
+pub fn page_url() -> String {
+    format!(
+        "file://{}/tests/pages/colour.html",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+pub fn expected_colour(index: u64) -> [i32; 3] {
+    let digit = |d: u64| 16 + 10 * d as i32;
+    [
+        digit(index % 24),
+        digit(index / 24 % 24),
+        digit(index / 576),
+    ]
+}
+
+pub fn centre_colours(path: &std::path::Path) -> Result<Vec<[i32; 3]>> {
+    let crop = format!("crop=2:2:{}:{}", WIDTH / 2, HEIGHT / 2);
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-vf", &format!("{crop},scale=in_color_matrix=bt709:in_range=limited:out_range=full:flags=accurate_rnd+full_chroma_int,format=rgb24")])
+        .args(["-f", "rawvideo", "-"])
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "ffmpeg: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output
+        .stdout
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|frame| [frame[0] as i32, frame[1] as i32, frame[2] as i32])
+        .collect())
+}
+
+pub fn load_average() -> String {
+    let output = std::process::Command::new("uptime").output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.split("load averages:")
+        .nth(1)
+        .unwrap_or("?")
+        .trim()
+        .to_owned()
+}

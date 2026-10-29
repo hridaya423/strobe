@@ -19,3 +19,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["metal", "wgs
 [[test]]
 name = "bootstrap"
 harness = false
+
+[[test]]
+name = "driver"
+harness = false

@@ -1,5 +1,6 @@
 mod app;
 mod bundle;
+pub mod driver;
 mod mac;
 mod view;
 

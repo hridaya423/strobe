@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>html, body { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<script>
+function seek(i) {
+  const d0 = i % 24;
+  const d1 = Math.floor(i / 24) % 24;
+  const d2 = Math.floor(i / 576);
+  document.documentElement.style.background =
+    `rgb(${16 + 10 * d0}, ${16 + 10 * d1}, ${16 + 10 * d2})`;
+  document.documentElement.offsetHeight;
+  return Promise.resolve(i);
+}
+</script>
+</body>
+</html>
