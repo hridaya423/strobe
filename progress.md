@@ -46,6 +46,10 @@ Plan: `docs/plans/2026-10-29-render-engine.md`. Research: `docs/research/2026-10
 | E | win-pc build, spikes 6.6 (R6) and 6.7 (R7) | merged |
 | F | Tasks 3.1 and 3.2: `crates/vrf-blink` CEF bootstrap and the lock-step driver into the spine | merged |
 | J | Task 3.3: `vrf://project/` scheme handler, pinned remote deps, `--offline` | running (Sonnet 5.5, from `eb8f59c`) |
+| K | Task 6.1: `crates/vrf` builds on Windows, D3D12 import of CEF's handle, deferred import, LUID adapter match (win-pc, `C:/Users/mukes/vrf-k`) | running (Sonnet 5.5, from `4fe2a37`) |
+| L | Task 6.2: NVENC backend with D3D12 input in `crates/vrf-encode/src/nvenc/`, HEVC anomaly cause (win-pc, `C:/Users/mukes/vrf-l`) | running (Sonnet 5.5, from `4fe2a37`) |
+| M | Task 5.1 spike: fastest correct way to put a decoded video frame into the page (`spikes/5.1-video-into-page/`) | running (Sonnet 5.5, from `4fe2a37`) |
+| N | Task 5.2: audio track in the muxer, AudioToolbox AAC, mixer, asset-list struct for the adapters | running (Sonnet 5.5, from `4fe2a37`) |
 | G | Task 3.6 page side: `crates/vrf-blink/js/clock.js`, tested in headless shell 156 | merged |
 | H | Task 3.4 page side: `crates/vrf-blink/js/hyperframes.js`, contract items 1 to 8 and 17 to 24, fidelity against REF | running (Sonnet 5.5, from `39343f0`) |
 | I | Task 3.5 page side: `crates/vrf-blink/js/remotion.js`, contract items 9 to 16, fidelity against REF | running (Sonnet 5.5, from `39343f0`) |
