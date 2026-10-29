@@ -102,8 +102,22 @@ pub fn machine() -> Result<String> {
     ))
 }
 
+#[cfg(windows)]
+fn load_one() -> Result<f64> {
+    let mut sys = System::new()?;
+    sys.refresh_cpu_all();
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    sys.refresh_cpu_all();
+    Ok(f64::from(sys.global_cpu_usage()) / 100.0 * sys.cpus().len() as f64)
+}
+
+#[cfg(not(windows))]
+fn load_one() -> Result<f64> {
+    Ok(System::load_average()?.one)
+}
+
 pub fn ensure_idle() -> Result<f64> {
-    let load = System::load_average()?.one;
+    let load = load_one()?;
     if load < MAX_LOAD {
         return Ok(load);
     }
@@ -124,8 +138,23 @@ pub fn ensure_idle() -> Result<f64> {
     )
 }
 
+#[cfg(windows)]
+fn shell_quote(s: &str) -> String {
+    format!("\"{s}\"")
+}
+
+#[cfg(not(windows))]
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+fn remove_file_command(path: &Path) -> String {
+    let path = shell_quote(&path.display().to_string());
+    if cfg!(windows) {
+        format!("if exist {path} del /f /q {path}")
+    } else {
+        format!("rm -f {path}")
+    }
 }
 
 pub fn results_dir() -> PathBuf {
@@ -163,10 +192,7 @@ pub fn run(engine: Engine, corpus: &Corpus, runs: usize, out_dir: &Path) -> Resu
             "--style",
             "basic",
         ])
-        .args([
-            "--prepare",
-            &format!("rm -f {}", shell_quote(&out.display().to_string())),
-        ])
+        .args(["--prepare", &remove_file_command(&out)])
         .args([
             "--command-name",
             &format!("{} {}", engine.name(), corpus.id),
