@@ -88,6 +88,11 @@ fn decode_only(options: &Options) -> Result<()> {
     println!("uptime: {}", uptime());
     for round in 0..3 {
         let decoded = decoder::decode(&clip, decoder::NV12_VIDEO_RANGE)?;
+        if round == 0 {
+            let ids: Vec<u64> = decoded.frames.iter().map(|f| luma_id(&f.surface(), probed.width)).collect();
+            let sequential = ids.iter().skip(ids.len() - probed.pts.len()).enumerate().all(|(k, id)| *id == k as u64);
+            println!("decoder frames {} (ffprobe {}), first ids {:?}, ids match frame order: {sequential}", ids.len(), probed.pts.len(), &ids[..4.min(ids.len())]);
+        }
         println!(
             "round {round}: {} frames {}x{} in {:.3} s = {:.1} fps",
             decoded.frames.len(),
@@ -105,6 +110,11 @@ fn decode_only(options: &Options) -> Result<()> {
                     (*value as f64 / f64::from(*scale) - probed.seconds(*pts)).abs() < 1e-6
                 });
             println!("pts in presentation order: {sorted}; identical to ffprobe: {same}");
+            if !same {
+                let head: Vec<f64> = values.iter().take(4).map(|(v, s)| *v as f64 / f64::from(*s)).collect();
+                let tail: Vec<f64> = values.iter().rev().take(2).map(|(v, s)| *v as f64 / f64::from(*s)).collect();
+                println!("decoder pts head {head:?} tail {tail:?}; ffprobe head {:?} tail {:?}", probed.pts.iter().take(4).map(|p| probed.seconds(*p)).collect::<Vec<_>>(), probed.pts.iter().rev().take(2).map(|p| probed.seconds(*p)).collect::<Vec<_>>());
+            }
         }
     }
     Ok(())
@@ -123,6 +133,21 @@ impl Drop for Locked<'_> {
     fn drop(&mut self) {
         unsafe { self.0.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()) };
     }
+}
+
+fn luma_id(surface: &IOSurfaceRef, width: usize) -> u64 {
+    let _lock = Locked::new(surface);
+    let base = surface.base_address_of_plane(0).as_ptr() as *const u8;
+    let stride = surface.bytes_per_row_of_plane(0);
+    let cell = width / 48;
+    let mut id = 0u64;
+    for bit in 0..verify::BITS {
+        let luma = unsafe { *base.add((cell / 2) * stride + bit * cell + cell / 2) };
+        if luma > 125 {
+            id |= 1 << bit;
+        }
+    }
+    id
 }
 
 fn read_bgra(surface: &IOSurfaceRef, layout: &Layout) -> Reading {
@@ -161,6 +186,24 @@ fn cpu_seconds() -> f64 {
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
     let seconds = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 * 1e-6;
     seconds(usage.ru_utime) + seconds(usage.ru_stime)
+}
+
+fn children_cpu() -> f64 {
+    let output = std::process::Command::new("ps").args(["-ax", "-o", "ppid=,time="]).output().unwrap();
+    let me = std::process::id().to_string();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (parent, time) = (fields.next()?, fields.next()?);
+            if parent != me {
+                return None;
+            }
+            let (minutes, seconds) = time.rsplit_once(':')?;
+            let (hours, minutes) = minutes.rsplit_once(':').unwrap_or(("0", minutes));
+            Some(hours.parse::<f64>().ok()? * 3600.0 + minutes.parse::<f64>().ok()? * 60.0 + seconds.parse::<f64>().ok()?)
+        })
+        .sum()
 }
 
 fn ms(duration: Duration) -> f64 {
@@ -210,7 +253,16 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
     }
 
     let uses_decoder = mode != "video";
-    let decoded = if uses_decoder { Some(decoder::decode(&clip, decoder::NV12_VIDEO_RANGE)?) } else { None };
+    let pixel_format = if range == "full" { decoder::NV12_FULL_RANGE } else { decoder::NV12_VIDEO_RANGE };
+    let mut decoded = if uses_decoder { Some(decoder::decode(&clip, pixel_format)?) } else { None };
+    if let Some(decoded) = decoded.as_mut() {
+        let first = probed.seconds(probed.pts[0]);
+        let before = decoded.frames.len();
+        decoded.frames.retain(|f| f.seconds() >= first - 1e-6);
+        if before != decoded.frames.len() {
+            println!("dropped {} decoder frame(s) before the first container pts {first}", before - decoded.frames.len());
+        }
+    }
     if let Some(decoded) = &decoded {
         println!("decode: {} frames in {:.3} s = {:.1} fps", decoded.frames.len(), decoded.seconds, decoded.frames.len() as f64 / decoded.seconds);
         ensure!(decoded.frames.len() == probed.pts.len(), "decoder returned {} frames, ffprobe {}", decoded.frames.len(), probed.pts.len());
@@ -226,6 +278,7 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
 
     let transparent = mode == "composite";
     let (page_name, kind, init_extra) = match mode.as_str() {
+        "fetch" | "shared" if draw == "webgl" => ("lab.html", "webgl", serde_json::json!({})),
         "fetch" | "shared" => ("lab.html", "canvas", serde_json::json!({})),
         "image-bmp" | "image-jpeg" => ("lab.html", "img", serde_json::json!({})),
         "composite" => ("lab.html", "overlay", serde_json::json!({})),
@@ -268,7 +321,13 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
     let mut patch_worst = [[0.0f64; 3]; verify::PATCHES];
     let mut chosen_log = Vec::new();
 
+    let mut children_start = 0.0;
+    let mut children_start_frame = 0;
     for i in 0..total_frames {
+        if i == WARMUP {
+            children_start = children_cpu();
+            children_start_frame = i;
+        }
         let target_probe = verify::target_ticks(i, FPS, probed.tick_den / probed.tick_num);
         let want = verify::choose(&probed.pts, target_probe);
         let chosen = if uses_decoder {
@@ -303,6 +362,9 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
                     request["fmt"] = "NV12".into();
                     request["layout"] = serde_json::json!([{"offset": 0, "stride": stride0}, {"offset": stride0 * h, "stride": stride1}]);
                     request["cs"] = cs.clone();
+                    request["kr"] = kr.into();
+                    request["kb"] = kb.into();
+                    request["limited"] = u32::from(range == "limited").into();
                     (vec![(p0, stride0 * h), (p1, stride1 * (h / 2))], stride0 * h + stride1 * (h / 2), Box::new(SendSurface(surface.clone())))
                 } else {
                     let conv = converter.as_mut().unwrap();
@@ -377,7 +439,8 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
             "video" => {
                 request["src"] = "video".into();
                 let offset: f64 = options.get("offset", "0").parse()?;
-                request["t"] = (i as f64 / FPS as f64 - offset).into();
+                let epsilon: f64 = options.get("epsilon", "0").parse()?;
+                request["t"] = (i as f64 / FPS as f64 - offset + epsilon).into();
             }
             "composite" => {
                 request["src"] = "none".into();
@@ -476,6 +539,7 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
             colour_error,
         });
     }
+    let children = (children_cpu() - children_start) * 1000.0 / (total_frames - children_start_frame).max(1) as f64;
     view.close()?;
 
     let measured = &rows[WARMUP.min(rows.len() - 1)..];
@@ -495,6 +559,7 @@ fn run(ui: &host::Ui, options: &Options) -> Result<()> {
     ] {
         println!("{}", summary(label, &column(f)));
     }
+    println!("  child cpu      {children:8.3} ms/frame (renderer, GPU and utility processes, ps cputime, coarse)");
     let dir = format!("{}/../../docs/spikes/raw/5.1", env!("CARGO_MANIFEST_DIR"));
     let mut csv = String::from("frame,chosen,expected_chosen,read_id,expected_id,prep_ms,seek_ms,paint_ms,post_ms,total_ms,host_cpu_ms,patch_error\n");
     for (index, row) in rows.iter().enumerate() {

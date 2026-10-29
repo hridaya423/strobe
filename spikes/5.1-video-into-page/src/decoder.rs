@@ -7,6 +7,7 @@ use objc2_core_foundation::CFRetained;
 use objc2_io_surface::IOSurfaceRef;
 
 pub const NV12_VIDEO_RANGE: u32 = 0x3432_3076;
+pub const NV12_FULL_RANGE: u32 = 0x3432_3066;
 
 type FrameCallback = extern "C" fn(*mut c_void, *mut c_void, i64, i32);
 

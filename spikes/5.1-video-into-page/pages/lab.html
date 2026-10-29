@@ -11,7 +11,7 @@ canvas, img, video { position: fixed; left: 0; top: 0; display: block; }
 <body>
 <div id="marker"></div>
 <script>
-let canvas, ctx, img, video, w = 0, h = 0;
+let canvas, ctx, img, video, gl, program, texY, texUV, uniforms = {}, w = 0, h = 0;
 const queue = [];
 let waiter = null;
 
@@ -42,6 +42,68 @@ window.init = (o) => {
     canvas.height = h;
     document.body.append(canvas);
     ctx = canvas.getContext('2d', { alpha: false });
+  } else if (o.kind === 'webgl') {
+    canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    document.body.append(canvas);
+    gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: false });
+    const compile = (type, source) => {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+      return shader;
+    };
+    program = gl.createProgram();
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, `#version 300 es
+      void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`));
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, `#version 300 es
+      precision highp float;
+      precision highp int;
+      uniform highp sampler2D uY;
+      uniform highp sampler2D uUV;
+      uniform vec2 uK;
+      uniform float uLimited;
+      uniform int uHeight;
+      out vec4 outColor;
+      void main() {
+        ivec2 p = ivec2(int(gl_FragCoord.x), uHeight - 1 - int(gl_FragCoord.y));
+        float y = texelFetch(uY, p, 0).r * 255.0;
+        vec2 c = texelFetch(uUV, p / 2, 0).rg * 255.0;
+        float yf, cb, cr;
+        if (uLimited > 0.5) {
+          yf = (y - 16.0) * (255.0 / 219.0);
+          cb = (c.x - 128.0) * (255.0 / 224.0);
+          cr = (c.y - 128.0) * (255.0 / 224.0);
+        } else {
+          yf = y; cb = c.x - 128.0; cr = c.y - 128.0;
+        }
+        float r = yf + 2.0 * (1.0 - uK.x) * cr;
+        float b = yf + 2.0 * (1.0 - uK.y) * cb;
+        float g = (yf - uK.x * r - uK.y * b) / (1.0 - uK.x - uK.y);
+        outColor = vec4(clamp(vec3(r, g, b) / 255.0, 0.0, 1.0), 1.0);
+      }`));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+    gl.useProgram(program);
+    const texture = (unit, internal, width, height) => {
+      const t = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, internal, width, height);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      return t;
+    };
+    texY = texture(0, gl.R8, w, h);
+    texUV = texture(1, gl.RG8, w / 2, h / 2);
+    gl.uniform1i(gl.getUniformLocation(program, 'uY'), 0);
+    gl.uniform1i(gl.getUniformLocation(program, 'uUV'), 1);
+    gl.uniform1i(gl.getUniformLocation(program, 'uHeight'), h);
+    uniforms.k = gl.getUniformLocation(program, 'uK');
+    uniforms.limited = gl.getUniformLocation(program, 'uLimited');
+    gl.viewport(0, 0, w, h);
   } else if (o.kind === 'img') {
     img = document.createElement('img');
     document.body.append(img);
@@ -89,6 +151,18 @@ window.show = async (p) => {
     buffer = await response.arrayBuffer();
   } else {
     buffer = await nextShared();
+  }
+  if (p.draw === 'webgl') {
+    gl.uniform2f(uniforms.k, p.kr, p.kb);
+    gl.uniform1f(uniforms.limited, p.limited);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, p.layout[0].stride);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(buffer, 0, p.layout[0].stride * h));
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, p.layout[1].stride / 2);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w / 2, h / 2, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(buffer, p.layout[1].offset, p.layout[1].stride * (h / 2)));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    return 1;
   }
   if (p.draw === 'imagedata') {
     ctx.putImageData(new ImageData(new Uint8ClampedArray(buffer), w, h), 0, 0);
