@@ -206,63 +206,36 @@ wrap_scheme_handler_factory! {
 
 type Region = Arc<Mutex<Option<SharedMemoryRegion>>>;
 
-wrap_v8_handler! {
-    struct TakeHandler {
-        region: Region,
-    }
-
-    impl V8Handler {
-        fn execute(
-            &self,
-            _name: Option<&CefString>,
-            _object: Option<&mut V8Value>,
-            _arguments: Option<&[Option<V8Value>]>,
-            retval: Option<&mut Option<V8Value>>,
-            _exception: Option<&mut CefString>,
-        ) -> ::std::os::raw::c_int {
-            let region = self.region.lock().unwrap().take();
-            if let (Some(region), Some(retval)) = (region, retval) {
-                *retval = v8_value_create_array_buffer_with_copy(region.memory().cast(), region.size());
-            }
-            1
-        }
-    }
-}
-
 wrap_render_process_handler! {
     struct SpikeRenderHandler {
         region: Region,
     }
 
     impl RenderProcessHandler {
-        fn on_context_created(
-            &self,
-            _browser: Option<&mut Browser>,
-            _frame: Option<&mut Frame>,
-            context: Option<&mut V8Context>,
-        ) {
-            let Some(global) = context.and_then(|context| context.global()) else {
-                return;
-            };
-            let mut handler = TakeHandler::new(self.region.clone());
-            let Some(mut function) = v8_value_create_function(Some(&"take".into()), Some(&mut handler)) else {
-                return;
-            };
-            global.set_value_bykey(Some(&"__take".into()), Some(&mut function), V8Propertyattribute::default());
-        }
-
         fn on_process_message_received(
             &self,
             _browser: Option<&mut Browser>,
-            _frame: Option<&mut Frame>,
+            frame: Option<&mut Frame>,
             _source_process: ProcessId,
             message: Option<&mut ProcessMessage>,
         ) -> ::std::os::raw::c_int {
-            let Some(message) = message else { return 0 };
+            let (Some(frame), Some(message)) = (frame, message) else { return 0 };
             if CefString::from(&message.name()).to_string() != SHARED_MESSAGE {
                 return 0;
             }
-            *self.region.lock().unwrap() = message.shared_memory_region();
+            let Some(region) = message.shared_memory_region() else { return 0 };
+            let Some(context) = frame.v8_context() else { return 0 };
+            if context.enter() == 0 {
+                return 0;
+            }
+            let buffer = v8_value_create_array_buffer_with_copy(region.memory().cast(), region.size());
+            if let Some(global) = context.global() {
+                if let Some(callback) = global.value_bykey(Some(&"__onFrame".into())) {
+                    let _ = callback.execute_function(Some(&mut global.clone()), Some(&[buffer]));
+                }
+            }
+            context.exit();
+            *self.region.lock().unwrap() = None;
             1
         }
     }

@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html, body { margin: 0; background: transparent; overflow: hidden; }
+canvas, img, video { position: fixed; left: 0; top: 0; display: block; }
+#marker { position: fixed; right: 0; bottom: 0; width: 16px; height: 16px; }
+.over { position: fixed; }
+</style>
+</head>
+<body>
+<div id="marker"></div>
+<script>
+let canvas, ctx, img, video, w = 0, h = 0;
+const queue = [];
+let waiter = null;
+
+window.__onFrame = (buffer) => {
+  queue.push(buffer);
+  if (waiter) {
+    const resolve = waiter;
+    waiter = null;
+    resolve();
+  }
+};
+
+async function nextShared() {
+  if (!queue.length) await new Promise((resolve) => { waiter = resolve; });
+  return queue.shift();
+}
+
+function mark(i) {
+  document.getElementById('marker').style.background = `rgb(${(i * 37) & 255},${(i * 91) & 255},${(i * 53) & 255})`;
+}
+
+window.init = (o) => {
+  w = o.w;
+  h = o.h;
+  if (o.kind === 'canvas') {
+    canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    document.body.append(canvas);
+    ctx = canvas.getContext('2d', { alpha: false });
+  } else if (o.kind === 'img') {
+    img = document.createElement('img');
+    document.body.append(img);
+  } else if (o.kind === 'video') {
+    video = document.createElement('video');
+    video.muted = true;
+    video.preload = 'auto';
+    video.src = o.src;
+    document.body.append(video);
+    return new Promise((resolve, reject) => {
+      video.onloadeddata = () => resolve({ duration: video.duration, w: video.videoWidth, h: video.videoHeight });
+      video.onerror = () => reject(new Error('video error ' + (video.error && video.error.message)));
+    });
+  } else if (o.kind === 'overlay') {
+    const add = (x, y, color) => {
+      const div = document.createElement('div');
+      div.className = 'over';
+      Object.assign(div.style, { left: x + 'px', top: y + 'px', width: w / 8 + 'px', height: h / 6 + 'px', background: color });
+      document.body.append(div);
+    };
+    add(w / 8, h / 3, 'rgba(0,0,0,0.5)');
+    add((2 * w) / 8, h / 3, 'rgb(255,0,255)');
+  }
+  return true;
+};
+
+window.tick = (i) => { mark(i); return i; };
+
+window.show = async (p) => {
+  mark(p.i);
+  if (p.src === 'video') {
+    const seeked = new Promise((resolve) => video.addEventListener('seeked', resolve, { once: true }));
+    video.currentTime = p.t;
+    await seeked;
+    return video.currentTime;
+  }
+  if (p.src === 'img') {
+    img.src = p.url;
+    await img.decode();
+    return 1;
+  }
+  let buffer;
+  if (p.src === 'fetch') {
+    const response = await fetch(p.url, { cache: 'no-store' });
+    buffer = await response.arrayBuffer();
+  } else {
+    buffer = await nextShared();
+  }
+  if (p.draw === 'imagedata') {
+    ctx.putImageData(new ImageData(new Uint8ClampedArray(buffer), w, h), 0, 0);
+    return 1;
+  }
+  const init = { format: p.fmt, codedWidth: w, codedHeight: h, timestamp: p.ts };
+  if (p.layout) init.layout = p.layout;
+  if (p.cs) init.colorSpace = p.cs;
+  const frame = new VideoFrame(buffer, init);
+  if (p.draw === 'bitmap') {
+    const bitmap = await createImageBitmap(frame);
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+  } else {
+    ctx.drawImage(frame, 0, 0);
+  }
+  frame.close();
+  return 1;
+};
+</script>
+</body>
+</html>

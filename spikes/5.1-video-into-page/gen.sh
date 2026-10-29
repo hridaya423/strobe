@@ -1,12 +1,14 @@
 #!/bin/sh
 set -eu
 OUT="${1:?output directory}"
+ONLY="${2:-}"
 mkdir -p "$OUT"
 
 # usage: clip <name> <width> <height> <frames> <pre-filter> <matrix> <range> <tags> <extra output args...>
 # <tags> is "full" (bt709 matrix, primaries, transfer) or "matrix" (matrix only)
 clip() {
   name=$1; w=$2; h=$3; frames=$4; pre=$5; matrix=$6; range=$7; tags=$8; shift 8
+  if [ -n "$ONLY" ]; then case " $ONLY " in *" $name "*) ;; *) return 0 ;; esac; fi
   cell=$((w / 48))
   bits=""
   i=0
@@ -48,14 +50,14 @@ OFF="setpts=PTS+1.5/TB"
 CFR="setpts=PTS"
 
 clip cfr1080.mp4 1920 1080 120 "$CFR" bt709 tv full $H264
-clip vfr1080.mp4 1920 1080 120 "$VFR" bt709 tv full $H264 -video_track_timescale 1000
+clip vfr1080.mp4 1920 1080 120 "$VFR" bt709 tv full $H264 -enc_time_base 1/1000 -video_track_timescale 1000
 clip off1080.mp4 1920 1080 120 "$OFF" bt709 tv full $H264
 clip cfr2160.mp4 3840 2160 90 "$CFR" bt709 tv full $H264
 clip cfr1080-601.mp4 1920 1080 30 "$CFR" bt470bg tv matrix $H264
 clip cfr1080-full.mp4 1920 1080 30 "$CFR" bt470bg pc matrix $H264
 clip cfr1080-hevc.mp4 1920 1080 60 "$CFR" bt709 tv full $HEVC
 clip cfr1080-vp9.webm 1920 1080 120 "$CFR" bt709 tv full $VP9
-clip vfr1080-vp9.webm 1920 1080 120 "$VFR" bt709 tv full $VP9
+clip vfr1080-vp9.webm 1920 1080 120 "$VFR" bt709 tv full $VP9 -enc_time_base 1/1000
 clip off1080-vp9.webm 1920 1080 120 "$OFF" bt709 tv full $VP9
 clip cfr2160-vp9.webm 3840 2160 90 "$CFR" bt709 tv full $VP9
 ls -l "$OUT"
