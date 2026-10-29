@@ -186,3 +186,17 @@ fn dropping_the_consumer_unblocks_producers() {
     drop(consumer);
     assert!(blocked.join().unwrap().is_err());
 }
+
+#[test]
+fn aborting_unblocks_producers_and_fails_the_consumer() {
+    let (producer, mut consumer) = ordered::<u8>(2);
+    let blocked = {
+        let producer = producer.clone();
+        thread::spawn(move || producer.submit(2, Submission::Frame(2)))
+    };
+    wait_until("the producer to block", || consumer.stats().blocked == 1);
+    producer.abort();
+    assert!(blocked.join().unwrap().is_err());
+    assert!(producer.submit(0, Submission::Frame(0)).is_err());
+    assert!(consumer.recv().is_err());
+}

@@ -6,7 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use vrf_blink::adapters::remotion::{self, Options, Report};
-use vrf_blink::{Mode, Ui};
+use vrf_blink::driver;
+use vrf_blink::{Mode, Ui, calibration};
 use vrf_encode::Codec;
 
 #[derive(Parser)]
@@ -47,6 +48,15 @@ enum Command {
         /// Milliseconds before a `delayRender` that is never cleared fails the frame.
         #[arg(long, default_value_t = 30_000)]
         timeout: u64,
+        /// Views rendering in parallel. Measured on this machine if absent.
+        #[arg(long)]
+        views: Option<usize>,
+        /// Frames each view renders in a row. Measured on this machine if absent.
+        #[arg(long)]
+        run: Option<u64>,
+        /// Frames a view seeks and paints before its run, and discards.
+        #[arg(long, default_value_t = driver::LEAD_IN)]
+        lead_in: u64,
         /// Print a JSON report on stdout instead of the summary line.
         #[arg(long)]
         json: bool,
@@ -111,6 +121,9 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
         entry,
         props: props_argument,
         timeout,
+        views,
+        run,
+        lead_in,
         json,
     } = cli.command;
     let options = Options {
@@ -120,6 +133,7 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
         props: props(props_argument)?,
         mode: if offline { Mode::Offline } else { Mode::Online },
         timeout: Duration::from_millis(timeout),
+        plan: calibration::plan(&ui, views, run, lead_in)?,
     };
     let report = remotion::render(&ui, &options, frames, codec.into(), &output)?;
     Ok(Rendered {

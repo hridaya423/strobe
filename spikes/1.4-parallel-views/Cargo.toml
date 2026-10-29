@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "parallel-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+vrf = { path = "../../crates/vrf" }
+vrf-blink = { path = "../../crates/vrf-blink" }
+vrf-encode = { path = "../../crates/vrf-encode" }
+anyhow = "1.0.104"
+objc2-io-surface = "0.3.2"
+serde_json = "1.0.154"
+wgpu = { version = "30.0.1", default-features = false, features = ["metal"] }

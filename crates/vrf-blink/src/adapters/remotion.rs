@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use vrf_encode::{Codec, Rational};
 
-use crate::driver::{Capture, Config, Pipeline, Summary};
+use crate::driver::{Config, Plan, Runs, Summary, render_runs};
 use crate::{Mode, Project, Ui, View};
 
 const REMOTION_JS: &str = include_str!("../../js/remotion.js");
@@ -22,7 +23,6 @@ const BUNDLE_JS: &str = include_str!("../../js/remotion-bundle.mjs");
 const SERVE_JS: &str = include_str!("../../js/remotion-serve.mjs");
 
 const PROBE_SIZE: (i32, i32) = (640, 360);
-const LEAD_IN: u64 = 10;
 const NOT_HASHED: [&str; 5] = ["node_modules", ".git", ".vrf", ".cache", "out"];
 const ENTRY_CANDIDATES: [&str; 8] = [
     "src/index.ts",
@@ -53,6 +53,7 @@ pub struct Options {
     pub props: Option<String>,
     pub mode: Mode,
     pub timeout: Duration,
+    pub plan: Plan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -110,7 +111,6 @@ pub struct Stages {
     pub bundle_cached: bool,
     pub frame_server_s: f64,
     pub probe_s: f64,
-    pub open_s: f64,
     pub render_s: f64,
     pub finish_s: f64,
 }
@@ -130,6 +130,10 @@ pub struct Report {
     pub frames: u64,
     pub elapsed_s: f64,
     pub fps: f64,
+    pub views: usize,
+    pub run: u64,
+    pub lead_in: u64,
+    pub lead_in_frames: u64,
     pub stages: Stages,
     pub per_frame: PerFrame,
     pub repeats: u64,
@@ -426,10 +430,10 @@ fn resolve_references(frames: &mut [FrameAssets]) {
 /// the composition's size, rate and length from the page, then drive each frame through the
 /// page's barrier, one begin frame, the GPU convert, the encoder and the muxer.
 ///
-/// `frames` is an inclusive range of composition frames; `None` renders all of them. Frames
-/// before the range run in order without being captured, because Remotion's output depends on
-/// the frames before it. A frame that fails with `delayRender` retries left is retried on a fresh
-/// page with the next attempt number.
+/// `frames` is an inclusive range of composition frames; `None` renders all of them. Each view
+/// seeks `options.plan.lead_in` frames before its run without capturing them, because Remotion's
+/// output depends on the frames before it. A frame that fails with `delayRender` retries left is
+/// retried on a fresh page with the next attempt number.
 pub fn render(
     ui: &Ui,
     options: &Options,
@@ -468,10 +472,6 @@ pub fn render(
     );
     let count = last - first + 1;
 
-    let step = Instant::now();
-    let (mut view, _) = page.open(ui, composition.width as i32, composition.height as i32)?;
-    let open_s = step.elapsed();
-
     let config = Config::new(
         composition.width,
         composition.height,
@@ -479,58 +479,44 @@ pub fn render(
         codec,
         count,
     );
-    let mut pipeline = Pipeline::new(&config, out)?;
-    let mut capture = Capture::default();
-    let mut seek_times = Vec::with_capacity(count as usize);
-    let mut collected = Vec::with_capacity(count as usize);
-    let mut seek_retries = 0;
-
+    let (width, height) = (composition.width as i32, composition.height as i32);
+    let seek_retries = AtomicU64::new(0);
     let render_started = Instant::now();
-    for index in 0..count {
-        let frame = first + index;
-        let step = Instant::now();
-        if index == 0 {
-            for before in first.saturating_sub(LEAD_IN)..first {
-                Page::seek(&mut view, before, 1)?;
-            }
-        }
-        let mut attempt = 1;
-        let assets = loop {
-            match Page::seek(&mut view, frame, attempt) {
-                Ok(assets) => break assets,
-                Err(error) if error.to_string().contains(RETRY_MARK) => {
-                    let (fresh, _) =
-                        page.open(ui, composition.width as i32, composition.height as i32)?;
-                    std::mem::replace(&mut view, fresh).close()?;
-                    attempt += 1;
-                    seek_retries += 1;
-                }
-                Err(error) => {
-                    let error = match view.check_project() {
-                        Err(refused) => error.context(refused.to_string()),
-                        Ok(()) => error,
-                    };
-                    return Err(error.context(format!("seek to frame {frame}")));
+    let runs = render_runs(
+        &config,
+        options.plan,
+        first,
+        out,
+        || Ok(page.open(ui, width, height)?.0),
+        |view, frame| {
+            let mut attempt = 1;
+            loop {
+                match Page::seek(view, frame, attempt) {
+                    Ok(assets) => return Ok(FrameAssets { frame, assets }),
+                    Err(error) if error.to_string().contains(RETRY_MARK) => {
+                        let (fresh, _) = page.open(ui, width, height)?;
+                        std::mem::replace(view, fresh).close()?;
+                        attempt += 1;
+                        seek_retries.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(error) => {
+                        return Err(match view.check_project() {
+                            Err(refused) => error.context(refused.to_string()),
+                            Ok(()) => error,
+                        });
+                    }
                 }
             }
-        };
-        collected.push(FrameAssets { frame, assets });
-        seek_times.push(step.elapsed());
-
-        match capture
-            .next(&view, config.watchdog)
-            .with_context(|| format!("capture frame {frame}"))?
-        {
-            Some(paint) => pipeline.frame(index, &paint)?,
-            None => pipeline.repeat(index)?,
-        }
-    }
-    let repeats = pipeline.repeats;
-    let convert = std::mem::take(&mut pipeline.convert);
-    let (muxer, encode) = pipeline.finish()?;
+        },
+    )?;
     let render_s = render_started.elapsed();
-    view.check_project()?;
-    view.close()?;
+    let Runs {
+        plan,
+        muxer,
+        frames: mut collected,
+        stats,
+        lead_in_frames,
+    } = runs;
     let step = Instant::now();
     muxer.finish()?;
     let finish_s = step.elapsed();
@@ -543,24 +529,27 @@ pub fn render(
         frames: count,
         elapsed_s: elapsed.as_secs_f64(),
         fps: count as f64 / elapsed.as_secs_f64(),
+        views: plan.views,
+        run: plan.run.min(count),
+        lead_in: plan.lead_in,
+        lead_in_frames,
         stages: Stages {
             bundle_s: bundle_s.as_secs_f64(),
             bundle_cached: bundle.cached,
             frame_server_s: offthread_s.as_secs_f64(),
             probe_s: probe_s.as_secs_f64(),
-            open_s: open_s.as_secs_f64(),
             render_s: render_s.as_secs_f64(),
             finish_s: finish_s.as_secs_f64(),
         },
         per_frame: PerFrame {
-            seek: StageStats::of(&seek_times),
-            begin_to_paint: StageStats::of(&capture.begin_to_paint),
-            convert: StageStats::of(&convert),
-            encode: StageStats::of(&encode),
+            seek: StageStats::of(&stats.seek),
+            begin_to_paint: StageStats::of(&stats.begin_to_paint),
+            convert: StageStats::of(&stats.convert),
+            encode: StageStats::of(&stats.encode),
         },
-        repeats,
-        capture_retries: capture.retries,
-        seek_retries,
+        repeats: stats.repeats,
+        capture_retries: stats.retries,
+        seek_retries: seek_retries.into_inner(),
         assets: collected,
     })
 }

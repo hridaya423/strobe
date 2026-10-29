@@ -20,6 +20,8 @@ const SETTLE_QUIET: Duration = Duration::from_millis(50);
 const SETTLE_ROUNDS: usize = 10;
 const SETTLE_CLEAN: usize = 2;
 
+const TICK_JS: &str = include_str!("../js/tick.js");
+
 const GENERIC_FONTS: [&str; 4] = ["Times New Roman", "Arial", "Script", "Impact"];
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
@@ -212,6 +214,7 @@ pub struct View {
     project: Option<Project>,
     next_id: i32,
     serial: u64,
+    ticking: bool,
 }
 
 impl View {
@@ -220,8 +223,9 @@ impl View {
     }
 
     /// Opens `entry` from `project` at `vrf://project/`. `init_script` runs in every document
-    /// before any of the page's own scripts. Fails if the page asked for anything the project
-    /// refused, such as an unpinned URL in offline mode.
+    /// before any of the page's own scripts, and with it the view repaints a one-pixel layer on
+    /// every begin frame, so each begin frame delivers even when the page did not change. Fails if
+    /// the page asked for anything the project refused, such as an unpinned URL in offline mode.
     pub fn open_project(
         ui: &Ui,
         project: &Project,
@@ -275,6 +279,7 @@ impl View {
             closed: closed_tx,
         };
         let target = url.to_owned();
+        let init_script = init_script.map(|script| format!("{TICK_JS}\n{script}"));
         let url = if init_script.is_some() {
             "about:blank".to_owned()
         } else {
@@ -333,8 +338,9 @@ impl View {
             project,
             next_id: 1,
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
+            ticking: init_script.is_some(),
         };
-        if let Some(source) = init_script {
+        if let Some(source) = init_script.as_deref() {
             view.execute("Page.enable", serde_json::json!({}))?;
             view.execute(
                 "Page.addScriptToEvaluateOnNewDocument",
@@ -357,7 +363,9 @@ impl View {
     fn settle(&self) -> Result<()> {
         let mut clean = 0;
         for _ in 0..SETTLE_ROUNDS {
-            self.invalidate();
+            if !self.ticking {
+                self.invalidate();
+            }
             self.begin_frame();
             let delivered = self.recv_paint(SETTLE_DELIVERY).is_some();
             let extra = self.recv_paint(SETTLE_QUIET).is_some();
@@ -372,6 +380,12 @@ impl View {
     /// Distinguishes views, so a driver can tell that the page it was capturing was replaced.
     pub fn serial(&self) -> u64 {
         self.serial
+    }
+
+    /// Whether every begin frame is guaranteed a delivery, because the view repaints a one-pixel
+    /// layer each time. A missing delivery on such a view is a failure, not an unchanged page.
+    pub fn ticking(&self) -> bool {
+        self.ticking
     }
 
     pub fn begin_frame(&self) -> Instant {
