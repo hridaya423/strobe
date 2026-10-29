@@ -494,7 +494,12 @@ fn check_mp4(codec: Codec, ten_bit: bool, b_frames: u32, name: &str, expected: &
     let mut config = config(codec, frame_rate);
     config.ten_bit = ten_bit;
     let (packets, info) = encode(config, options(b_frames), FRAMES).unwrap();
-    check_packets(&packets, &info, frame_rate, b_frames > 0 && codec != Codec::Av1);
+    check_packets(
+        &packets,
+        &info,
+        frame_rate,
+        b_frames > 0 && codec != Codec::Av1,
+    );
     assert_eq!(info.codec, codec);
     assert!(!info.config.is_empty());
 
