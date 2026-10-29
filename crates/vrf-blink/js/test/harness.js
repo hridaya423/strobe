@@ -119,7 +119,7 @@ export class Page {
   }
 }
 
-export async function launch() {
+export async function launch({ args = [] } = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'vrf-clock-'));
   const child = spawn(
     findChrome(),
@@ -131,6 +131,7 @@ export async function launch() {
       '--force-device-scale-factor=1',
       '--force-color-profile=srgb',
       '--disable-gpu',
+      ...args,
       'about:blank',
     ],
     { stdio: ['ignore', 'ignore', 'pipe'] },
