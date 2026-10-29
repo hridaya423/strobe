@@ -1,0 +1,233 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use cef::{args::Args, rc::Rc as _, *};
+
+use crate::{bundle, mac};
+
+const FLAGS: [&str; 13] = [
+    "run-all-compositor-stages-before-draw",
+    "disable-threaded-animation",
+    "disable-checker-imaging",
+    "disable-image-animation-resync",
+    "disable-new-content-rendering-timeout",
+    "disable-lcd-text",
+    "force-device-scale-factor=1",
+    "force-color-profile=srgb",
+    "disable-background-timer-throttling",
+    "disable-renderer-backgrounding",
+    "disable-backgrounding-occluded-windows",
+    "use-mock-keychain",
+    "autoplay-policy=no-user-gesture-required",
+];
+
+const MAX_IDLE: Duration = Duration::from_millis(10);
+
+fn apply_flags(command_line: &mut CommandLine) {
+    for flag in FLAGS {
+        match flag.split_once('=') {
+            Some((key, value)) => {
+                command_line.append_switch_with_value(Some(&key.into()), Some(&value.into()))
+            }
+            None => command_line.append_switch(Some(&flag.into())),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Wake {
+    next: Mutex<Option<Instant>>,
+    ready: Condvar,
+}
+
+impl Wake {
+    fn schedule(&self, delay_ms: i64) {
+        let at = Instant::now() + Duration::from_millis(delay_ms.max(0) as u64);
+        let mut next = self.next.lock().unwrap();
+        *next = Some(next.map_or(at, |current| current.min(at)));
+        self.ready.notify_one();
+    }
+
+    fn wait(&self) {
+        let mut next = self.next.lock().unwrap();
+        let timeout = next.map_or(MAX_IDLE, |at| at.saturating_duration_since(Instant::now()));
+        if !timeout.is_zero() {
+            next = self.ready.wait_timeout(next, timeout).unwrap().0;
+        }
+        *next = None;
+    }
+}
+
+wrap_app! {
+    struct BlinkApp {
+        wake: Arc<Wake>,
+    }
+
+    impl App {
+        fn on_before_command_line_processing(
+            &self,
+            _process_type: Option<&CefString>,
+            command_line: Option<&mut CommandLine>,
+        ) {
+            if let Some(command_line) = command_line {
+                apply_flags(command_line);
+            }
+        }
+
+        fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
+            Some(BlinkBrowserProcessHandler::new(self.wake.clone()))
+        }
+    }
+}
+
+wrap_browser_process_handler! {
+    struct BlinkBrowserProcessHandler {
+        wake: Arc<Wake>,
+    }
+
+    impl BrowserProcessHandler {
+        fn on_before_child_process_launch(&self, command_line: Option<&mut CommandLine>) {
+            if let Some(command_line) = command_line {
+                apply_flags(command_line);
+            }
+        }
+
+        fn on_schedule_message_pump_work(&self, delay_ms: i64) {
+            self.wake.schedule(delay_ms);
+        }
+    }
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+wrap_task! {
+    struct UiTask {
+        job: Arc<Mutex<Option<Job>>>,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            if let Some(job) = self.job.lock().unwrap().take() {
+                job();
+            }
+        }
+    }
+}
+
+/// Proof that CEF is initialised, and the way to reach its UI thread, which is the process main
+/// thread on macOS. CEF objects may only be touched from jobs run through it.
+#[derive(Clone)]
+pub struct Ui(());
+
+impl Ui {
+    pub fn post(&self, job: impl FnOnce() + Send + 'static) {
+        let mut task = UiTask::new(Arc::new(Mutex::new(Some(Box::new(job)))));
+        assert_eq!(
+            post_task(ThreadId::UI, Some(&mut task)),
+            1,
+            "CefPostTask failed"
+        );
+    }
+
+    pub fn call<R: Send + 'static>(&self, job: impl FnOnce() -> R + Send + 'static) -> R {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.post(move || {
+            let _ = sender.send(job());
+        });
+        receiver.recv().expect("the UI thread dropped a job")
+    }
+}
+
+/// Holds a CEF object that may only be used on the UI thread. It is `Send` so that handles to
+/// views can live on a worker thread, and it is only dereferenced inside [`Ui`] jobs.
+pub struct OnUi<T>(pub T);
+
+unsafe impl<T> Send for OnUi<T> {}
+unsafe impl<T> Sync for OnUi<T> {}
+
+impl<T: Clone> Clone for OnUi<T> {
+    fn clone(&self) -> Self {
+        OnUi(self.0.clone())
+    }
+}
+
+/// Runs `work` on a worker thread while the calling thread, which must be the process main
+/// thread, serves CEF as its UI thread. Helper processes never return from this call.
+pub fn run<R: Send + 'static>(work: impl FnOnce(Ui) -> R + Send + 'static) -> R {
+    let exe = std::env::current_exe().expect("no executable path");
+    if !bundle::is_bundled(&exe) {
+        let bundled = bundle::build(&exe).expect("cannot build the CEF app bundle");
+        let status = std::process::Command::new(bundled)
+            .args(std::env::args_os().skip(1))
+            .status()
+            .expect("cannot launch the bundled executable");
+        exit(status.code().unwrap_or(1));
+    }
+
+    let is_helper = std::env::args().any(|arg| arg.starts_with("--type="));
+    let loader = library_loader::LibraryLoader::new(&exe, is_helper);
+    assert!(loader.load(), "cannot load the CEF framework");
+    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+    if !is_helper {
+        mac::setup_application();
+    }
+
+    let wake = Arc::new(Wake::default());
+    let args = Args::new();
+    let mut app = BlinkApp::new(wake.clone());
+    let code = execute_process(
+        Some(args.as_main_args()),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    );
+    if is_helper {
+        exit(code.max(0));
+    }
+    assert_eq!(code, -1, "browser process expected");
+
+    let cache = std::env::temp_dir().join(format!("vrf-blink-{}", std::process::id()));
+    let settings = Settings {
+        no_sandbox: true as _,
+        windowless_rendering_enabled: true as _,
+        external_message_pump: true as _,
+        root_cache_path: cache.to_str().unwrap().into(),
+        log_severity: LogSeverity::from(sys::cef_log_severity_t::LOGSEVERITY_WARNING),
+        log_file: cache.join("cef.log").to_str().unwrap().into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        initialize(
+            Some(args.as_main_args()),
+            Some(&settings),
+            Some(&mut app),
+            std::ptr::null_mut()
+        ),
+        1,
+        "CEF initialisation failed"
+    );
+
+    let done = Arc::new(AtomicBool::new(false));
+    let worker = {
+        let (done, wake) = (done.clone(), wake.clone());
+        std::thread::spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| work(Ui(()))));
+            done.store(true, Ordering::Release);
+            wake.schedule(0);
+            result
+        })
+    };
+    while !done.load(Ordering::Acquire) {
+        do_message_loop_work();
+        wake.wait();
+    }
+    let result = worker.join().expect("worker thread cannot be joined");
+    let Ok(result) = result else {
+        exit(101);
+    };
+    shutdown();
+    let _ = std::fs::remove_dir_all(&cache);
+    result
+}

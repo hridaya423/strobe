@@ -1,0 +1,21 @@
+[package]
+name = "vrf-blink"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+vrf = { path = "../vrf" }
+vrf-encode = { path = "../vrf-encode" }
+anyhow = "1.0.104"
+cef = { version = "156.2.0", default-features = false }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSResponder"] }
+objc2-core-foundation = "0.3.2"
+objc2-io-surface = "0.3.2"
+serde_json = "1.0.154"
+wgpu = { version = "30.0.1", default-features = false, features = ["metal", "wgsl", "std", "parking_lot"] }
+
+[[test]]
+name = "bootstrap"
+harness = false
