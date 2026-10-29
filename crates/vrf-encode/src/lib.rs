@@ -81,13 +81,15 @@ impl Quality {
         }
     }
 
-    /// The libx264 CRF whose VMAF matches this preset's VideoToolbox quality, so that both lanes
-    /// of a turbo encode look alike.
+    /// The libx264 `veryfast` CRF that scores within one VMAF point of this preset's
+    /// VideoToolbox encode, so the two lanes of a turbo encode look alike. VideoToolbox scores
+    /// higher than CRF 18 at the same quality setting (`02` §4); the values come from VMAF
+    /// sweeps of `crates/vrf/tests/turbo.rs` content and the two clips of `02`.
     pub fn x264_crf(self) -> u32 {
         match self {
-            Quality::Draft => 23,
-            Quality::Balanced => 18,
-            Quality::High => 14,
+            Quality::Draft => 25,
+            Quality::Balanced => 16,
+            Quality::High => 13,
         }
     }
 }

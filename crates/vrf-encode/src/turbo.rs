@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -16,6 +17,11 @@ use crate::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Rational, Strea
 /// waiting, the renderer is outrunning the media engine.
 const VT_HEADROOM: usize = 32;
 
+/// Starting guesses for lane speed, replaced by measurements after a quarter second of work:
+/// VideoToolbox H.264 runs about 480 Mpixel/s (`02` §2.1) and libx264 `veryfast` about half that.
+const VT_PRIOR_PIXELS_PER_SECOND: f64 = 480e6;
+const X264_PRIOR_SHARE: f64 = 0.5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurboOptions {
     /// Frames per closed GOP. Each chunk starts with an IDR frame and goes whole to one lane.
@@ -28,6 +34,18 @@ pub struct TurboOptions {
     pub vt_sessions: Option<usize>,
     /// Frames the VideoToolbox lane must have waiting before the CPU lane gets a chunk.
     pub vt_headroom: usize,
+}
+
+impl TurboOptions {
+    /// Chunks of 60 frames up to 1080p and 30 above, which keeps the buffers a chunk holds under
+    /// a gigabyte at 4K.
+    pub fn for_frame(width: u32, height: u32) -> TurboOptions {
+        let large = u64::from(width) * u64::from(height) > 1920 * 1088;
+        TurboOptions {
+            chunk_frames: if large { 30 } else { 60 },
+            ..TurboOptions::default()
+        }
+    }
 }
 
 impl Default for TurboOptions {
@@ -140,11 +158,16 @@ impl Shared {
     }
 }
 
+struct Counters {
+    backlog: AtomicUsize,
+    done: AtomicU64,
+}
+
 fn run_lane(
     mut encoder: LaneEncoder,
     jobs: Receiver<Job>,
     shared: Arc<Shared>,
-    backlog: Arc<AtomicUsize>,
+    counters: Arc<Counters>,
 ) {
     let output = |encoder: &LaneEncoder, packets: Vec<Packet>| {
         if packets.is_empty() {
@@ -153,7 +176,10 @@ fn run_lane(
         if let (LaneEncoder::VideoToolbox(_), Ok(info)) = (encoder, encoder.stream_info()) {
             let _ = shared.video_toolbox_config.set(info.config);
         }
-        backlog.fetch_sub(packets.len(), Ordering::SeqCst);
+        counters.backlog.fetch_sub(packets.len(), Ordering::SeqCst);
+        counters
+            .done
+            .fetch_add(packets.len() as u64, Ordering::SeqCst);
         shared.push(packets);
     };
     let fail = |error: anyhow::Error| {
@@ -185,10 +211,60 @@ fn run_lane(
     }
 }
 
+const RATE_WINDOW: Duration = Duration::from_millis(250);
+
+/// A lane's throughput in frames per second while it has work, from windows of at least
+/// `RATE_WINDOW` of busy time.
+struct Meter {
+    rate: f64,
+    measured: bool,
+    sampled_at: Instant,
+    backlog: usize,
+    done: u64,
+    window_done: u64,
+    window_busy: Duration,
+}
+
+impl Meter {
+    fn new(prior: f64) -> Meter {
+        Meter {
+            rate: prior,
+            measured: false,
+            sampled_at: Instant::now(),
+            backlog: 0,
+            done: 0,
+            window_done: 0,
+            window_busy: Duration::ZERO,
+        }
+    }
+
+    fn sample(&mut self, counters: &Counters) {
+        let now = Instant::now();
+        let backlog = counters.backlog.load(Ordering::SeqCst);
+        let done = counters.done.load(Ordering::SeqCst);
+        if self.backlog > 0 || backlog > 0 {
+            self.window_busy += now - self.sampled_at;
+        }
+        self.window_done += done - self.done;
+        (self.sampled_at, self.backlog, self.done) = (now, backlog, done);
+        if self.window_busy >= RATE_WINDOW {
+            let window = self.window_done as f64 / self.window_busy.as_secs_f64();
+            self.rate = if self.measured {
+                (self.rate + window) / 2.0
+            } else {
+                window
+            };
+            self.measured = true;
+            (self.window_done, self.window_busy) = (0, Duration::ZERO);
+        }
+    }
+}
+
 struct Lane {
     kind: LaneKind,
     jobs: Option<Sender<Job>>,
-    backlog: Arc<AtomicUsize>,
+    counters: Arc<Counters>,
+    meter: Meter,
     thread: Option<JoinHandle<()>>,
     chunks: u64,
     frames: u64,
@@ -200,9 +276,10 @@ struct Lane {
 ///
 /// Frames come in order, as for any [`Encoder`]. The first frame of every chunk is an IDR frame
 /// and the chunk goes whole to one lane, picked when it starts: the CPU lane gets it only when
-/// VideoToolbox has more than a pipeline's worth of frames waiting and the CPU lane has fewer
-/// waiting, so a renderer that is slower than the media engine never touches the CPU lane. Each
-/// lane buffers a chunk of frames, so [`TurboEncoder::pool`] is larger than a single encoder's.
+/// VideoToolbox has more than a pipeline's worth of frames waiting and the CPU lane would finish
+/// the chunk sooner, by the rates the lanes have shown. A renderer that is slower than the media
+/// engine therefore never touches the CPU lane. Lanes buffer whole chunks, so
+/// [`TurboEncoder::pool`] is larger than a single encoder's.
 ///
 /// Packets leave in presentation order with `dts` equal to `pts`, and the stream parameters are
 /// one `avcC` that holds the SPS and PPS of every lane, so the file has one sample entry and the
@@ -218,22 +295,27 @@ pub struct TurboEncoder {
     submitted: u64,
     current: usize,
     x264_record: Option<AvcRecord>,
+    merged_config: OnceLock<Vec<u8>>,
 }
 
-fn spawn(kind: LaneKind, encoder: LaneEncoder, shared: &Arc<Shared>) -> Lane {
+fn spawn(kind: LaneKind, encoder: LaneEncoder, shared: &Arc<Shared>, prior: f64) -> Lane {
     let (jobs, receiver) = channel();
-    let backlog = Arc::new(AtomicUsize::new(0));
+    let counters = Arc::new(Counters {
+        backlog: AtomicUsize::new(0),
+        done: AtomicU64::new(0),
+    });
     let thread = thread::Builder::new()
         .name(format!("turbo-{kind:?}"))
         .spawn({
-            let (shared, backlog) = (shared.clone(), backlog.clone());
-            move || run_lane(encoder, receiver, shared, backlog)
+            let (shared, counters) = (shared.clone(), counters.clone());
+            move || run_lane(encoder, receiver, shared, counters)
         })
         .expect("spawning a lane thread");
     Lane {
         kind,
         jobs: Some(jobs),
-        backlog,
+        counters,
+        meter: Meter::new(prior),
         thread: Some(thread),
         chunks: 0,
         frames: 0,
@@ -242,7 +324,8 @@ fn spawn(kind: LaneKind, encoder: LaneEncoder, shared: &Arc<Shared>) -> Lane {
 
 impl TurboEncoder {
     pub fn new(config: EncoderConfig) -> Result<TurboEncoder> {
-        TurboEncoder::with_options(config, TurboOptions::default())
+        let options = TurboOptions::for_frame(config.width, config.height);
+        TurboEncoder::with_options(config, options)
     }
 
     pub fn with_options(config: EncoderConfig, options: TurboOptions) -> Result<TurboEncoder> {
@@ -259,7 +342,7 @@ impl TurboEncoder {
         };
         ensure!(sessions > 0, "turbo mode needs a VideoToolbox session");
         let chunk = options.chunk_frames as usize;
-        let size = POOL_SIZE + if cpu_lane { chunk } else { 0 } + chunk * (sessions - 1);
+        let size = POOL_SIZE + chunk * (sessions - 1 + if cpu_lane { 2 } else { 0 });
         let format = if config.ten_bit {
             PixelFormat::P010
         } else {
@@ -277,6 +360,8 @@ impl TurboEncoder {
             video_toolbox_config: OnceLock::new(),
             error: OnceLock::new(),
         });
+        let pixels = f64::from(config.width) * f64::from(config.height);
+        let video_toolbox_prior = VT_PRIOR_PIXELS_PER_SECOND / pixels;
         let mut lanes = Vec::new();
         for _ in 0..sessions {
             let mut lane_config = config.clone();
@@ -287,6 +372,7 @@ impl TurboEncoder {
                 LaneKind::VideoToolbox,
                 LaneEncoder::VideoToolbox(Box::new(encoder)),
                 &shared,
+                video_toolbox_prior,
             ));
         }
         let mut x264_record = None;
@@ -299,6 +385,7 @@ impl TurboEncoder {
                 LaneKind::X264,
                 LaneEncoder::X264(Box::new(encoder)),
                 &shared,
+                video_toolbox_prior * X264_PRIOR_SHARE,
             ));
         }
         Ok(TurboEncoder {
@@ -311,6 +398,7 @@ impl TurboEncoder {
             submitted: 0,
             current: 0,
             x264_record,
+            merged_config: OnceLock::new(),
         })
     }
 
@@ -339,15 +427,17 @@ impl TurboEncoder {
     }
 
     fn pick(&self) -> usize {
-        let backlog = |i: usize| self.lanes[i].backlog.load(Ordering::SeqCst);
+        let chunk = f64::from(self.options.chunk_frames);
+        let backlog = |i: usize| self.lanes[i].counters.backlog.load(Ordering::SeqCst);
+        let finish = |i: usize| (backlog(i) as f64 + chunk) / self.lanes[i].meter.rate;
         let video_toolbox = (0..self.lanes.len())
             .filter(|&i| self.lanes[i].kind == LaneKind::VideoToolbox)
-            .min_by_key(|&i| backlog(i))
+            .min_by(|&a, &b| finish(a).total_cmp(&finish(b)))
             .expect("a VideoToolbox lane exists");
         match self.lanes.iter().position(|l| l.kind == LaneKind::X264) {
             Some(cpu)
                 if backlog(video_toolbox) > self.options.vt_headroom
-                    && backlog(cpu) < backlog(video_toolbox) =>
+                    && finish(cpu) < finish(video_toolbox) =>
             {
                 cpu
             }
@@ -376,6 +466,9 @@ impl Encoder for TurboEncoder {
         self.check()?;
         let EncoderFrame::PixelBuffer(buffer) = frame;
         let index = self.index_of(pts)?;
+        for lane in &mut self.lanes {
+            lane.meter.sample(&lane.counters);
+        }
         let first = *self.first.get_or_insert_with(|| {
             self.shared.lock().next = index;
             index
@@ -393,7 +486,7 @@ impl Encoder for TurboEncoder {
         self.submitted += 1;
         let lane = &mut self.lanes[self.current];
         lane.frames += 1;
-        lane.backlog.fetch_add(1, Ordering::SeqCst);
+        lane.counters.backlog.fetch_add(1, Ordering::SeqCst);
         lane.jobs
             .as_ref()
             .expect("lanes run until the encoder drops")
@@ -438,13 +531,14 @@ impl Encoder for TurboEncoder {
             .video_toolbox_config
             .get()
             .context("no frame was encoded")?;
-        let config = match &self.x264_record {
-            Some(x264) => {
+        let config = match (&self.x264_record, self.merged_config.get()) {
+            (_, Some(merged)) => merged.clone(),
+            (Some(x264), None) => {
                 let mut record = AvcRecord::parse(video_toolbox)?;
                 record.merge(x264)?;
-                record.to_bytes()
+                self.merged_config.get_or_init(|| record.to_bytes()).clone()
             }
-            None => video_toolbox.clone(),
+            (None, None) => video_toolbox.clone(),
         };
         Ok(StreamInfo {
             codec: self.config.codec,

@@ -8,9 +8,10 @@ use anyhow::Result;
 use objc2_io_surface::IOSurfaceLockOptions;
 use vrf::mux::{Container, Muxer};
 use vrf::sink::Sink;
-use vrf_encode::turbo::{TurboEncoder, TurboOptions};
-use vrf_encode::videotoolbox::pool::PoolBuffer;
-use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
+use vrf_encode::turbo::{LaneStats, TurboEncoder, TurboOptions};
+use vrf_encode::videotoolbox::VideoToolboxEncoder;
+use vrf_encode::videotoolbox::pool::{PixelPool, PoolBuffer};
+use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Quality, Rational};
 
 pub const WIDTH: usize = 640;
 pub const HEIGHT: usize = 360;
@@ -71,22 +72,45 @@ pub fn hash(v: u32) -> u32 {
     x ^ (x >> 16)
 }
 
+const BLOCKS: usize = 9;
+
 pub fn nv12_frame(index: usize, width: usize, height: usize) -> (Vec<u8>, Vec<u8>) {
     let mut luma = vec![0u8; width * height];
+    let mut chroma = vec![128u8; width * height / 2];
+    let phase = index as f32;
     for (y, line) in luma.chunks_mut(width).enumerate() {
+        let row = (y + index * 3 / 2) % 8 == 0;
         for (x, byte) in line.iter_mut().enumerate() {
-            let noise = (hash((x + y * width + index * 7919) as u32) & 7) as usize;
-            let inside =
-                x.abs_diff(40 + index * 5 % (width - 100)) < 60 && y.abs_diff(height / 2) < 50;
-            let ramp = 40 + (x * 150 / width + y * 40 / height + index * 2) % 150;
-            *byte = (if inside { 220 } else { ramp } + noise) as u8;
+            let (fx, fy) = (x as f32, y as f32);
+            let wave = 40.0 * (fx * 0.21).sin() * (fy * 0.17).cos()
+                + 25.0 * ((fx + fy) * 0.45 + phase * 0.02).sin();
+            let noise = (hash((x + y * width) as u32) & 15) as f32;
+            let grid = if row { 50.0 } else { 0.0 };
+            *byte = (110.0 + wave + noise + grid) as u8;
         }
     }
-    let mut chroma = vec![0u8; width * height / 2];
-    for (y, line) in chroma.chunks_mut(width).enumerate() {
-        for (x, byte) in line.iter_mut().enumerate() {
-            let noise = (hash((x + y * width + index * 104729) as u32) & 7) as usize;
-            *byte = (110 + (x / 2 + index) % 40 + noise) as u8;
+    for k in 0..BLOCKS {
+        let (w, h) = (width / 6 + k * 9, height / 7 + k * 5);
+        let x0 = (k * 131 + index * (k + 2) / 4) % (width - w);
+        let y0 = (k * 89 + index * (k % 3 + 1) / 3) % (height - h);
+        for y in y0..y0 + h {
+            luma[y * width + x0..y * width + x0 + w].fill(40 + 24 * k as u8);
+        }
+        for y in y0 / 2..(y0 + h) / 2 {
+            for pair in chroma[y * width + x0 / 2 * 2..y * width + (x0 + w) / 2 * 2].chunks_mut(2) {
+                pair.copy_from_slice(&[90 + 18 * k as u8, 200 - 15 * k as u8]);
+            }
+        }
+    }
+    let (x0, x1, y0) = (width / 4, 3 * width / 4, height / 2);
+    for y in y0..height - 8 {
+        for x in x0..x1 {
+            let cell = hash((x / 3 + ((y + index / 2) / 3) * width) as u32);
+            luma[y * width + x] = if cell & 3 == 0 {
+                235
+            } else {
+                20 + (cell >> 8 & 31) as u8
+            };
         }
     }
     (luma, chroma)
@@ -143,10 +167,18 @@ pub fn encode_turbo(
     options: TurboOptions,
     audio: Option<vrf::mux::AudioTrack>,
 ) -> Result<Vec<vrf_encode::turbo::LaneStats>> {
-    let config = EncoderConfig::new(Codec::H264, WIDTH as u32, HEIGHT as u32, RATE);
     let content = Content::new(WIDTH, HEIGHT, 120);
-    let mut encoder = TurboEncoder::with_options(config, options)?;
-    let pool = encoder.pool().clone();
+    encode_content(out, &content, frames, options, audio, Quality::default())
+}
+
+fn pump(
+    encoder: &mut impl Encoder,
+    pool: &PixelPool,
+    content: &Content,
+    frames: usize,
+    out: &Path,
+    audio: Option<vrf::mux::AudioTrack>,
+) -> Result<()> {
     let mut sink = Sink::new(
         Muxer::create(out, Container::Mp4, RATE.num as u32)?,
         RATE.den as u32,
@@ -157,15 +189,58 @@ pub fn encode_turbo(
         let pts = Rational::new(index as i64 * RATE.den, RATE.num);
         encoder.submit(EncoderFrame::PixelBuffer(buffer), pts)?;
         let packets = encoder.drain()?;
-        sink.write(&encoder, packets)?;
+        sink.write(encoder, packets)?;
     }
     let packets = encoder.flush()?;
-    sink.write(&encoder, packets)?;
-    let stats = encoder.lane_stats();
+    sink.write(encoder, packets)?;
     let mut muxer = sink.into_muxer();
     if let Some(audio) = audio {
         muxer.set_audio(audio)?;
     }
-    muxer.finish()?;
-    Ok(stats)
+    muxer.finish()
+}
+
+pub fn config_for(content: &Content, quality: Quality) -> EncoderConfig {
+    let mut config = EncoderConfig::new(
+        Codec::H264,
+        content.width as u32,
+        content.height as u32,
+        RATE,
+    );
+    config.quality = quality;
+    config
+}
+
+pub fn encode_content(
+    out: &Path,
+    content: &Content,
+    frames: usize,
+    options: TurboOptions,
+    audio: Option<vrf::mux::AudioTrack>,
+    quality: Quality,
+) -> Result<Vec<LaneStats>> {
+    let config = config_for(content, quality);
+    let mut encoder = TurboEncoder::with_options(config, options)?;
+    let pool = encoder.pool().clone();
+    pump(&mut encoder, &pool, content, frames, out, audio)?;
+    Ok(encoder.lane_stats())
+}
+
+pub fn encode_single(out: &Path, content: &Content, frames: usize, quality: Quality) -> Result<()> {
+    let config = config_for(content, quality);
+    let mut encoder = VideoToolboxEncoder::new(config)?;
+    let pool = encoder.pool().clone();
+    pump(&mut encoder, &pool, content, frames, out, None)
+}
+
+pub fn encode_x264(out: &Path, content: &Content, frames: usize, quality: Quality) -> Result<()> {
+    let config = config_for(content, quality);
+    let mut encoder = vrf_encode::x264::X264Encoder::new(config, 8)?;
+    let pool = PixelPool::with_size(
+        content.width,
+        content.height,
+        vrf_encode::videotoolbox::pool::PixelFormat::Nv12,
+        8,
+    )?;
+    pump(&mut encoder, &pool, content, frames, out, None)
 }
