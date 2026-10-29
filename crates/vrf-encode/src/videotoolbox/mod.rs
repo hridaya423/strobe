@@ -86,6 +86,9 @@ pub struct VideoToolboxEncoder {
     _slot: Option<Slot>,
 }
 
+// VideoToolbox sessions may be used from any thread; the encoder is only moved, never shared.
+unsafe impl Send for VideoToolboxEncoder {}
+
 fn codec_type(codec: Codec) -> u32 {
     match codec {
         Codec::H264 => kCMVideoCodecType_H264,
@@ -463,12 +466,7 @@ impl Encoder for VideoToolboxEncoder {
         Ok(out)
     }
 
-    fn finish(mut self) -> Result<StreamInfo> {
-        let undrained = self.flush()?.len();
-        ensure!(
-            undrained == 0,
-            "finish found {undrained} undrained packets; drain after flush"
-        );
+    fn stream_info(&self) -> Result<StreamInfo> {
         let config = self
             .shared
             .config
@@ -482,6 +480,15 @@ impl Encoder for VideoToolboxEncoder {
             timebase: Rational::new(1, self.config.frame_rate.num),
             config,
         })
+    }
+
+    fn finish(mut self) -> Result<StreamInfo> {
+        let undrained = self.flush()?.len();
+        ensure!(
+            undrained == 0,
+            "finish found {undrained} undrained packets; drain after flush"
+        );
+        self.stream_info()
     }
 }
 

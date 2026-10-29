@@ -220,9 +220,11 @@ fn run_converter(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         converter.encode(
             &mut pass,
-            src,
-            &y.create_view(&Default::default()),
-            &cbcr.create_view(&Default::default()),
+            &converter.source(src),
+            &converter.target(
+                &y.create_view(&Default::default()),
+                &cbcr.create_view(&Default::default()),
+            ),
             rect,
             chroma,
         );
@@ -526,6 +528,7 @@ fn gpu_time_per_convert() {
                     width,
                     height,
                 };
+                let (source, target) = (converter.source(&src), converter.target(&yv, &cv));
                 let mut encoder = gpu.device.create_command_encoder(&Default::default());
                 for i in 0..RUNS {
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -536,7 +539,7 @@ fn gpu_time_per_convert() {
                             end_of_pass_write_index: Some(i * 2 + 1),
                         }),
                     });
-                    converter.encode(&mut pass, &src, &yv, &cv, rect, chroma);
+                    converter.encode(&mut pass, &source, &target, rect, chroma);
                 }
                 encoder.resolve_query_set(&queries, 0..RUNS * 2, &resolve, 0);
                 encoder.copy_buffer_to_buffer(&resolve, 0, &read, 0, u64::from(RUNS * 16));

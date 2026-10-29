@@ -108,6 +108,9 @@ pub trait Encoder {
     /// Waits for every submitted frame and returns the packets not yet drained.
     fn flush(&mut self) -> Result<Vec<Packet>>;
 
+    /// The stream parameters, known once the first packet has been drained.
+    fn stream_info(&self) -> Result<StreamInfo>;
+
     /// Fails if packets are still undrained, so none are dropped silently.
     fn finish(self) -> Result<StreamInfo>;
 }

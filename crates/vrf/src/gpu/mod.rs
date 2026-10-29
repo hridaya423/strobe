@@ -1,5 +1,5 @@
 pub mod convert;
-mod metal;
+pub mod metal;
 
 use anyhow::{Context, Result};
 use objc2::rc::Retained;
@@ -25,7 +25,9 @@ impl Gpu {
         }))
         .context("no Metal adapter")?;
         let features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-            | (wgpu::Features::TIMESTAMP_QUERY & adapter.features());
+            | wgpu::Features::IMMEDIATES
+            | (wgpu::Features::TIMESTAMP_QUERY & adapter.features())
+            | (wgpu::Features::BGRA8UNORM_STORAGE & adapter.features());
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("vrf"),

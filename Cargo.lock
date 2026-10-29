@@ -1185,12 +1185,14 @@ name = "vrf"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-io-surface",
  "objc2-metal",
  "pollster",
+ "vrf-encode",
  "wgpu",
 ]
 
