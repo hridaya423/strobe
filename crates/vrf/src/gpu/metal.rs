@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, bail};
 use objc2_io_surface::IOSurfaceRef;
 use objc2_metal::{
@@ -5,7 +7,10 @@ use objc2_metal::{
     MTLTextureUsage,
 };
 
+use vrf_encode::videotoolbox::pool::PoolBuffer;
+
 use super::Gpu;
+use super::convert::{Converter, Target};
 
 fn metal_format(format: wgpu::TextureFormat) -> Result<MTLPixelFormat> {
     Ok(match format {
@@ -89,5 +94,34 @@ impl Gpu {
                     wgpu::TextureUses::RESOURCE,
                 )
         })
+    }
+}
+
+/// Convert targets for pool buffers, built on first use and kept by IOSurface ID. A pool
+/// hands out the same few IOSurfaces for the whole render, so each is imported once.
+#[derive(Default)]
+pub struct PoolTargets {
+    targets: HashMap<u32, Target>,
+}
+
+impl PoolTargets {
+    pub fn get(
+        &mut self,
+        gpu: &Gpu,
+        converter: &Converter,
+        buffer: &PoolBuffer,
+    ) -> Result<&Target> {
+        let id = buffer.surface_id();
+        if !self.targets.contains_key(&id) {
+            let (y_format, cbcr_format) = Converter::plane_formats(converter.format());
+            let y = gpu.import_iosurface(buffer.surface(), 0, y_format)?;
+            let cbcr = gpu.import_iosurface(buffer.surface(), 1, cbcr_format)?;
+            let target = converter.target(
+                &y.create_view(&Default::default()),
+                &cbcr.create_view(&Default::default()),
+            );
+            self.targets.insert(id, target);
+        }
+        Ok(&self.targets[&id])
     }
 }

@@ -5,15 +5,15 @@ struct Params {
     height: u32,
     spec: u32,
     bits: u32,
-    pad: vec2<u32>,
 }
 
-@group(0) @binding(0) var<uniform> p: Params;
-@group(0) @binding(1) var src: texture_2d<f32>;
-@group(0) @binding(2) var y8: texture_storage_2d<r8uint, write>;
-@group(0) @binding(3) var c8: texture_storage_2d<rg8uint, write>;
-@group(0) @binding(4) var y16: texture_storage_2d<r16uint, write>;
-@group(0) @binding(5) var c16: texture_storage_2d<rg16uint, write>;
+var<immediate> p: Params;
+
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(1) @binding(0) var y8: texture_storage_2d<r8uint, write>;
+@group(1) @binding(1) var c8: texture_storage_2d<rg8uint, write>;
+@group(1) @binding(2) var y16: texture_storage_2d<r16uint, write>;
+@group(1) @binding(3) var c16: texture_storage_2d<rg16uint, write>;
 
 fn load(x: u32, y: u32) -> vec3<u32> {
     let rgb = textureLoad(src, vec2<i32>(i32(p.x + x), i32(p.y + y)), 0).rgb;
