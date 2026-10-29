@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { compileProject, composition, openHf, project } from './host.js';
 import { launch } from './cdp.js';
@@ -466,4 +469,70 @@ describe('item 22: capture image path', () => {
     assert.equal(await styleOf(hf, 'body', 'backgroundColor'), 'rgb(0, 0, 0)');
     await hf.close();
   });
+});
+
+describe('item 23: video pre-extraction page side', () => {
+  const videoProject = () => {
+    const dir = project({
+      'index.html': composition({
+        body: '<video id="v" src="clip.mp4" muted data-start="0.2" data-duration="0.5" data-media-start="1" data-playback-rate="2" style="position:absolute;left:10px;top:20px;width:160px;height:90px;opacity:0.5;object-fit:cover;border-radius:8px;filter:blur(1px)"></video>',
+        script: idleTimeline(1),
+      }),
+    });
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=160x90:rate=10:duration=2', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', join(dir, 'clip.mp4')]);
+    mkdirSync(join(dir, 'frames'));
+    execFileSync('ffmpeg', ['-v', 'error', '-i', join(dir, 'clip.mp4'), '-q:v', '2', join(dir, 'frames/%05d.jpg')]);
+    return dir;
+  };
+  const sibling = (hf, prop) =>
+    hf.page.evaluate(`(() => { const img = document.querySelector('#v').nextElementSibling; return img && ${prop}; })()`);
+
+  test('item_23_injected_image_copies_the_listed_visual_styles', async () => {
+    const hf = await openHf(browser, videoProject(), { init: { skipVideoIds: ['v'] } });
+    await hf.seek(3, { videos: [{ id: 'v', src: '/frames/00004.jpg' }] });
+    assert.equal(await sibling(hf, 'img.classList.contains("__render_frame__")'), true);
+    assert.equal(await sibling(hf, 'img.id'), '__render_frame_v__');
+    assert.equal(await sibling(hf, 'img.complete && img.naturalWidth'), 160, 'frame is decoded when seek resolves');
+    const style = await hf.page.evaluate(`(() => {
+      const img = document.querySelector('#v').nextElementSibling; const s = getComputedStyle(img);
+      return {fit: s.objectFit, radius: s.borderRadius, filter: s.filter, opacity: s.opacity, visibility: s.visibility,
+        left: s.left, top: s.top, width: s.width, height: s.height, position: s.position,
+        videoVisibility: getComputedStyle(document.querySelector('#v')).visibility};
+    })()`);
+    assert.deepEqual(style, { fit: 'cover', radius: '8px', filter: 'blur(1px)', opacity: '0.5', visibility: 'visible', left: '10px', top: '20px', width: '160px', height: '90px', position: 'absolute', videoVisibility: 'hidden' });
+    await hf.close();
+  });
+
+  test('item_23_frame_swaps_only_when_the_source_changes', async () => {
+    const hf = await openHf(browser, videoProject(), { init: { skipVideoIds: ['v'] } });
+    await hf.seek(3, { videos: [{ id: 'v', src: '/frames/00004.jpg' }] });
+    await hf.page.evaluate('window.__img = document.querySelector("#v").nextElementSibling; window.__loads = 0; window.__img.addEventListener("load", () => window.__loads++)');
+    await hf.seek(4, { videos: [{ id: 'v', src: '/frames/00004.jpg' }] });
+    await hf.seek(5, { videos: [{ id: 'v' }] });
+    assert.equal(await hf.page.evaluate('window.__loads'), 0);
+    await hf.seek(6, { videos: [{ id: 'v', src: '/frames/00007.jpg' }] });
+    assert.match(await sibling(hf, 'img.getAttribute("src")'), /00007\.jpg$/);
+    await hf.close();
+  });
+
+  test('item_23_video_outside_its_window_shows_no_frame', async () => {
+    const hf = await openHf(browser, videoProject(), { init: { skipVideoIds: ['v'] } });
+    await hf.seek(3, { videos: [{ id: 'v', src: '/frames/00004.jpg' }] });
+    await hf.seek(8, { videos: [] });
+    assert.equal(await sibling(hf, 'getComputedStyle(img).visibility'), 'hidden');
+    assert.equal(await hf.page.evaluate('getComputedStyle(document.querySelector("#v")).visibility'), 'hidden');
+    await hf.close();
+  });
+
+  test('item_23_video_descriptors_for_host_side_frame_choice', async () => {
+    const hf = await openHf(browser, videoProject(), { init: { skipVideoIds: ['v'] } });
+    const [video] = await hf.page.evaluate('__vrf.hf.videos()');
+    assert.deepEqual(
+      { id: video.id, src: video.src, start: video.start, duration: video.duration, mediaStart: video.mediaStart, playbackRate: video.playbackRate, loop: video.loop },
+      { id: 'v', src: 'clip.mp4', start: '0.2', duration: '0.5', mediaStart: 1, playbackRate: 2, loop: false },
+    );
+    await hf.close();
+  });
+
+  test('item_23_vfr_sources_with_long_gaps', { skip: 'frame choice and ffmpeg extraction are host side (Task 5.1)' }, () => {});
 });

@@ -395,6 +395,19 @@
     return { frame, ...result };
   };
 
+  const videos = () =>
+    Array.from(document.querySelectorAll('video[data-start]')).map((video) => ({
+      id: video.id,
+      src: video.getAttribute('src'),
+      start: video.getAttribute('data-start'),
+      duration: video.getAttribute('data-duration'),
+      end: video.getAttribute('data-end'),
+      mediaStart: Number(video.getAttribute('data-media-start') ?? video.getAttribute('data-playback-start')) || 0,
+      playbackRate: Number(video.getAttribute('data-playback-rate')) || 1,
+      loop: video.loop,
+      hasAudio: video.getAttribute('data-has-audio') !== 'false',
+    }));
+
   const compositeFinish = async () => {
     if (typeof window.__hf_page_composite_resolve === 'function') window.__hf_page_composite_resolve();
   };
@@ -403,5 +416,5 @@
   };
 
   window.__vrf = window.__vrf || {};
-  window.__vrf.hf = { init, seek, seekTime, quantizeTime, compositePrepare, compositeFinish, real };
+  window.__vrf.hf = { init, seek, seekTime, quantizeTime, videos, compositePrepare, compositeFinish, real };
 })();
