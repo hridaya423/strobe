@@ -1,0 +1,364 @@
+use std::ptr::NonNull;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail, ensure};
+use cef::{rc::Rc as _, *};
+use objc2_core_foundation::CFRetained;
+use objc2_io_surface::IOSurfaceRef;
+use vrf::colour;
+
+use crate::app::{OnUi, Ui};
+
+const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
+const EVALUATE_TIMEOUT: Duration = Duration::from_secs(60);
+const SETTLE_DELIVERY: Duration = Duration::from_millis(250);
+const SETTLE_QUIET: Duration = Duration::from_millis(50);
+const SETTLE_ROUNDS: usize = 10;
+const SETTLE_CLEAN: usize = 2;
+
+/// One `OnAcceleratedPaint`. The surface is retained, so it outlives the callback, and CEF
+/// draws nothing new into it until the next begin frame.
+pub struct Paint {
+    pub surface: CFRetained<IOSurfaceRef>,
+    pub format: wgpu::TextureFormat,
+    pub visible: colour::Rect,
+    pub counter: u64,
+    pub at: Instant,
+}
+
+unsafe impl Send for Paint {}
+
+struct MethodResult {
+    id: i32,
+    success: bool,
+    result: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct Channels {
+    paints: Sender<Paint>,
+    methods: Sender<MethodResult>,
+    loaded: Sender<()>,
+    closed: Sender<()>,
+}
+
+wrap_render_handler! {
+    struct BlinkRenderHandler {
+        width: i32,
+        height: i32,
+        paints: Sender<Paint>,
+    }
+
+    impl RenderHandler {
+        fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
+            if let Some(rect) = rect {
+                rect.x = 0;
+                rect.y = 0;
+                rect.width = self.width;
+                rect.height = self.height;
+            }
+        }
+
+        fn screen_info(
+            &self,
+            _browser: Option<&mut Browser>,
+            screen_info: Option<&mut ScreenInfo>,
+        ) -> ::std::os::raw::c_int {
+            match screen_info {
+                Some(info) => {
+                    info.device_scale_factor = 1.0;
+                    true as _
+                }
+                None => false as _,
+            }
+        }
+
+        fn on_accelerated_paint(
+            &self,
+            _browser: Option<&mut Browser>,
+            type_: PaintElementType,
+            _dirty_rects: Option<&[Rect]>,
+            info: Option<&AcceleratedPaintInfo>,
+        ) {
+            let at = Instant::now();
+            let Some(info) = info else { return };
+            if type_ != PaintElementType::default() {
+                return;
+            }
+            let Some(surface) = NonNull::new(info.shared_texture_io_surface.cast::<IOSurfaceRef>()) else {
+                return;
+            };
+            let raw: sys::cef_color_type_t = *info.format.as_ref();
+            let format = match raw {
+                sys::cef_color_type_t::CEF_COLOR_TYPE_BGRA_8888 => wgpu::TextureFormat::Bgra8Unorm,
+                sys::cef_color_type_t::CEF_COLOR_TYPE_RGBA_8888 => wgpu::TextureFormat::Rgba8Unorm,
+                other => panic!("unsupported CEF colour type {other:?}"),
+            };
+            let visible = &info.extra.visible_rect;
+            let _ = self.paints.send(Paint {
+                surface: unsafe { CFRetained::retain(surface) },
+                format,
+                visible: colour::Rect {
+                    x: visible.x as u32,
+                    y: visible.y as u32,
+                    width: visible.width as u32,
+                    height: visible.height as u32,
+                },
+                counter: info.extra.capture_counter,
+                at,
+            });
+        }
+    }
+}
+
+wrap_load_handler! {
+    struct BlinkLoadHandler {
+        loaded: Sender<()>,
+    }
+
+    impl LoadHandler {
+        fn on_loading_state_change(
+            &self,
+            _browser: Option<&mut Browser>,
+            is_loading: ::std::os::raw::c_int,
+            _can_go_back: ::std::os::raw::c_int,
+            _can_go_forward: ::std::os::raw::c_int,
+        ) {
+            if is_loading == 0 {
+                let _ = self.loaded.send(());
+            }
+        }
+    }
+}
+
+wrap_life_span_handler! {
+    struct BlinkLifeSpanHandler {
+        closed: Sender<()>,
+    }
+
+    impl LifeSpanHandler {
+        fn on_before_close(&self, _browser: Option<&mut Browser>) {
+            let _ = self.closed.send(());
+        }
+    }
+}
+
+wrap_client! {
+    struct BlinkClient {
+        render_handler: RenderHandler,
+        load_handler: LoadHandler,
+        life_span_handler: LifeSpanHandler,
+    }
+
+    impl Client {
+        fn render_handler(&self) -> Option<RenderHandler> {
+            Some(self.render_handler.clone())
+        }
+
+        fn load_handler(&self) -> Option<LoadHandler> {
+            Some(self.load_handler.clone())
+        }
+
+        fn life_span_handler(&self) -> Option<LifeSpanHandler> {
+            Some(self.life_span_handler.clone())
+        }
+    }
+}
+
+wrap_dev_tools_message_observer! {
+    struct BlinkObserver {
+        methods: Sender<MethodResult>,
+    }
+
+    impl DevToolsMessageObserver {
+        fn on_dev_tools_method_result(
+            &self,
+            _browser: Option<&mut Browser>,
+            message_id: ::std::os::raw::c_int,
+            success: ::std::os::raw::c_int,
+            result: Option<&[u8]>,
+        ) {
+            let _ = self.methods.send(MethodResult {
+                id: message_id,
+                success: success != 0,
+                result: result.map(<[u8]>::to_vec).unwrap_or_default(),
+            });
+        }
+    }
+}
+
+/// An off-screen browser at a fixed size, driven by external begin frames. Every method may be
+/// called from any thread except the UI thread.
+pub struct View {
+    ui: Ui,
+    host: OnUi<BrowserHost>,
+    observer: OnUi<Option<Registration>>,
+    paints: Receiver<Paint>,
+    methods: Receiver<MethodResult>,
+    closed: Receiver<()>,
+    next_id: i32,
+}
+
+impl View {
+    pub fn open(ui: &Ui, url: &str, width: i32, height: i32) -> Result<View> {
+        let (paints_tx, paints) = mpsc::channel();
+        let (methods_tx, methods) = mpsc::channel();
+        let (loaded_tx, loaded) = mpsc::channel();
+        let (closed_tx, closed) = mpsc::channel();
+        let channels = Channels {
+            paints: paints_tx,
+            methods: methods_tx,
+            loaded: loaded_tx,
+            closed: closed_tx,
+        };
+        let url = url.to_owned();
+        let (host, observer) = ui.call(move || -> Result<_> {
+            let window_info = WindowInfo {
+                windowless_rendering_enabled: true as _,
+                shared_texture_enabled: true as _,
+                external_begin_frame_enabled: true as _,
+                ..Default::default()
+            };
+            let browser_settings = BrowserSettings {
+                windowless_frame_rate: 1000,
+                background_color: 0xFFFFFFFF,
+                ..Default::default()
+            };
+            let mut client = BlinkClient::new(
+                BlinkRenderHandler::new(width, height, channels.paints),
+                BlinkLoadHandler::new(channels.loaded),
+                BlinkLifeSpanHandler::new(channels.closed),
+            );
+            let browser = browser_host_create_browser_sync(
+                Some(&window_info),
+                Some(&mut client),
+                Some(&url.as_str().into()),
+                Some(&browser_settings),
+                None,
+                None,
+            )
+            .context("CEF did not create the browser")?;
+            let host = browser.host().context("browser has no host")?;
+            let observer = host
+                .add_dev_tools_message_observer(Some(&mut BlinkObserver::new(channels.methods)));
+            Ok((OnUi(host), OnUi(observer)))
+        })?;
+        loaded
+            .recv_timeout(LOAD_TIMEOUT)
+            .context("the page did not finish loading")?;
+        let view = View {
+            ui: ui.clone(),
+            host,
+            observer,
+            paints,
+            methods,
+            closed,
+            next_id: 1,
+        };
+        view.settle()?;
+        Ok(view)
+    }
+
+    /// The first begin frames after a load are unreliable. The first can be lost, and a late
+    /// delivery can follow one that came on time. This sends begin frames until
+    /// `SETTLE_CLEAN` in a row give exactly one delivery.
+    fn settle(&self) -> Result<()> {
+        let mut clean = 0;
+        for _ in 0..SETTLE_ROUNDS {
+            self.invalidate();
+            self.begin_frame();
+            let delivered = self.recv_paint(SETTLE_DELIVERY).is_some();
+            let extra = self.recv_paint(SETTLE_QUIET).is_some();
+            clean = if delivered && !extra { clean + 1 } else { 0 };
+            if clean == SETTLE_CLEAN {
+                return Ok(());
+            }
+        }
+        bail!("begin frames never settled after {SETTLE_ROUNDS} rounds")
+    }
+
+    pub fn begin_frame(&self) -> Instant {
+        let host = self.host.clone();
+        let sent = Instant::now();
+        self.ui.post(move || host.0.send_external_begin_frame());
+        sent
+    }
+
+    pub fn invalidate(&self) {
+        let host = self.host.clone();
+        self.ui
+            .post(move || host.0.invalidate(PaintElementType::default()));
+    }
+
+    pub fn recv_paint(&self, timeout: Duration) -> Option<Paint> {
+        self.paints.recv_timeout(timeout).ok()
+    }
+
+    /// Runs a DevTools method and returns its result object. Fails if the method fails.
+    pub fn execute(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let host = self.host.clone();
+        let (method_name, params) = (method.to_owned(), params.to_string());
+        let submitted = self.ui.call(move || {
+            let mut params =
+                parse_json(Some(&params.as_str().into()), JsonParserOptions::default())
+                    .and_then(|value| value.dictionary())
+                    .expect("DevTools params are not a JSON object");
+            host.0.execute_dev_tools_method(
+                id,
+                Some(&method_name.as_str().into()),
+                Some(&mut params),
+            )
+        });
+        ensure!(submitted == id, "DevTools rejected {method}");
+        let result = loop {
+            let result = self
+                .methods
+                .recv_timeout(EVALUATE_TIMEOUT)
+                .with_context(|| format!("no DevTools response to {method}"))?;
+            if result.id == id {
+                break result;
+            }
+        };
+        let body: serde_json::Value = serde_json::from_slice(&result.result)?;
+        ensure!(result.success, "{method} failed: {body}");
+        Ok(body)
+    }
+
+    /// Runs `expression` in the page, waits for its promise if it returns one, and returns its
+    /// value. Fails if the page throws.
+    pub fn evaluate(&mut self, expression: &str) -> Result<serde_json::Value> {
+        let body = self.execute(
+            "Runtime.evaluate",
+            serde_json::json!({"expression": expression, "awaitPromise": true, "returnByValue": true}),
+        )?;
+        if let Some(exception) = body.get("exceptionDetails") {
+            bail!("the page threw: {exception}");
+        }
+        Ok(body["result"]["value"].clone())
+    }
+
+    pub fn close(self) -> Result<()> {
+        let View {
+            ui,
+            host,
+            observer,
+            closed,
+            ..
+        } = self;
+        ui.post(move || {
+            drop(observer);
+            host.0.close_browser(true as _);
+        });
+        closed
+            .recv_timeout(CLOSE_TIMEOUT)
+            .context("the browser did not close")
+    }
+}
