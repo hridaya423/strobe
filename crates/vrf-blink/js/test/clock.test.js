@@ -78,10 +78,11 @@ describe('Date.now', () => {
 
   test('values captured before any page work keep following the virtual clock', async () => {
     await withPage('/early.html', async (page) => {
-      await page.evaluate('__vrf.clock.set(7, 30, 1)');
-      await sleep(80);
+      await page.evaluate('__vrf.clock.set(0, 30, 1)');
+      await page.evaluate('__vrf.clock.set(1, 30, 1)');
+      await sleep(150);
       const log = await page.evaluate('window.sample()');
-      assert.deepEqual(log.dateNow, [233]);
+      assert.deepEqual(log.dateNow, [0, 33]);
       assert.deepEqual(log.timeout, []);
       await page.evaluate('__vrf.clock.set(3000, 30, 1)');
       assert.deepEqual((await page.evaluate('window.sample()')).timeout, [100]);
@@ -303,9 +304,9 @@ describe('timers', () => {
     await withPage('/blank.html', async (page) => {
       await page.evaluate('window.n = 0; (function r() { n++; setTimeout(r, 0); })(); undefined');
       await page.evaluate('__vrf.clock.set(0, 30, 1)');
-      assert.equal(await page.evaluate('n'), 5);
+      assert.equal(await page.evaluate('n'), 6);
       await page.evaluate('__vrf.clock.set(1, 30, 1)');
-      assert.equal(await page.evaluate('n'), 13);
+      assert.equal(await page.evaluate('n'), 14);
     });
   });
 
@@ -388,15 +389,20 @@ describe('animations', () => {
       const near = (got, want) => got.forEach((v, i) => assert.ok(typeof v === 'string' || Math.abs(v - want[i]) < 1e-6, `${got} vs ${want}`));
 
       near(await at(0), [0, 0, 0, '']);
+      near(await at(14), [14000 / 30, 14 / 30, 1000 * (14 / 15), '']);
       near(await at(15), [500, 0.5, 1000, '']);
+      assert.equal(await page.evaluate('fast.playState'), 'finished');
       assert.equal(await page.evaluate('anim.pause(), 1'), 1);
-      near(await at(20), [500, 0.5, 1000 + (5000 / 30) * 2, '']);
+      near(await at(20), [500, 0.5, 1000, '']);
       assert.equal(await page.evaluate('anim.playState'), 'paused');
       await page.evaluate('anim.play()');
-      near(await at(25), [500 + 5000 / 30, 0.5 + 5 / 30, 1000 + (5000 / 30) * 2 + (5000 / 30) * 2, '']);
-      await at(60);
+      near(await at(25), [500 + 5000 / 30, 0.5 + 5 / 30, 1000, '']);
+      for (let f = 26; f < 35; f++) await at(f);
+      assert.equal(await page.evaluate('finishedAt'), null);
+      await at(35);
+      assert.equal(await page.evaluate('finishedAt'), 35000 / 30);
       assert.equal(await page.evaluate('anim.playState'), 'finished');
-      assert.equal(await page.evaluate('finishedAt'), 2000);
+      near(await at(40), [1000, 1, 1000, '']);
     });
   });
 
@@ -413,7 +419,11 @@ describe('animations', () => {
         await page.evaluate(`__vrf.clock.set(${f}, 30, 1)`);
         widths.push(await page.evaluate('getComputedStyle(document.getElementById("g")).width'));
       }
-      assert.deepEqual(widths, ['3.33333px', '50px', '100px', '100px']);
+      [0, 14, 29, 44].forEach((elapsed, i) => {
+        const want = Math.min(100, (elapsed / 30) * 100);
+        assert.ok(Math.abs(parseFloat(widths[i]) - want) <= 1 / 64, `${widths[i]} vs ${want}`);
+      });
+      assert.equal(widths[0], '0px');
     });
   });
 });
@@ -421,7 +431,7 @@ describe('animations', () => {
 describe('GSAP', () => {
   const frames = 41;
   const fps = [24, 1];
-  const powerInOut = (p) => (p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2);
+  const power2InOut = (p) => (p < 0.5 ? 4 * p ** 3 : 1 - (-2 * p + 2) ** 3 / 2);
 
   test('a free-running GSAP page renders the same state and pixels at frame N regardless of pacing', async () => {
     const runs = [];
@@ -432,7 +442,7 @@ describe('GSAP', () => {
     assert.deepEqual(runs[0].hashes, runs[1].hashes);
     runs[0].states.forEach((s, f) => {
       const ms = Math.floor((f * 1000) / 24);
-      const want = powerInOut(Math.min(1, ms / 1000)) * 240;
+      const want = power2InOut(Math.min(1, ms / 1000)) * 240;
       assert.ok(Math.abs(s.a[0] - want) < 1, `frame ${f}: ${s.a[0]} vs ${want}`);
       assert.equal(s.aBackground, f >= 12 ? 'rgb(0, 136, 0)' : 'rgb(204, 51, 0)');
     });
@@ -486,10 +496,12 @@ describe('requestVideoFrameCallback', () => {
       await page.evaluate(`
         window.video = document.body.appendChild(document.createElement('video'));
         video.muted = true;
-        video.src = '/video.webm';
         window.log = [];
         window.arm = () => video.requestVideoFrameCallback((now, meta) => log.push([now, meta.mediaTime, meta.presentationTime, meta.width]));
-        new Promise((resolve) => video.addEventListener('loadeddata', resolve, { once: true }));
+        fetch('/video.webm').then((r) => r.blob()).then((blob) => new Promise((resolve) => {
+          video.addEventListener('loadeddata', resolve, { once: true });
+          video.src = URL.createObjectURL(blob);
+        }));
       `);
       await page.evaluate('arm(); undefined');
       await sleep(100);
