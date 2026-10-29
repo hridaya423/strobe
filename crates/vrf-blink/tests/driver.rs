@@ -318,7 +318,7 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
 
 fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<()> {
     let project = pages()?;
-    let render = |skip: Option<Skip>, views: usize| -> Result<(Vec<u8>, u64)> {
+    let render = |page: &str, skip: Option<Skip>, views: usize| -> Result<(Vec<u8>, u64)> {
         let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
         config.skip = skip;
         let out = std::env::temp_dir().join(format!("vrf-blink-skip-{views}.mov"));
@@ -327,7 +327,7 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
             Plan::new(views, 7),
             0,
             &out,
-            || View::open_project(ui, &project, "hold.html", 640, 360, Some(TRACK_JS)),
+            || View::open_project(ui, &project, page, 640, 360, Some(TRACK_JS)),
             |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
         )?;
         runs.muxer.finish()?;
@@ -336,8 +336,8 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
         Ok((bytes, runs.stats.skipped))
     };
     for views in [1, 3] {
-        let (plain, none) = render(None, views)?;
-        let (skipping, skipped) = render(Some(Skip::tracked()), views)?;
+        let (plain, none) = render("hold.html", None, views)?;
+        let (skipping, skipped) = render("hold.html", Some(Skip::tracked()), views)?;
         ensure!(none == 0, "{none} frames skipped with skipping off");
         ensure!(skipped >= 48, "{views} views skipped only {skipped} of 96 frames");
         ensure!(
@@ -345,6 +345,18 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
             "{views} views wrote different bytes with skipping on"
         );
         println!("skip, {views} views: {skipped} of 96 frames skipped");
+
+        let (planned, none) = render("hold.html", Some(Skip::planned([])), views)?;
+        ensure!(none == 0, "{none} frames skipped outside the plan");
+        ensure!(plain == planned, "{views} views: an empty plan changed the bytes");
+        let (planned, some) = render("hold.html", Some(Skip::planned(0..96)), views)?;
+        ensure!(some >= 48, "a full plan skipped only {some} of 96 frames");
+        ensure!(plain == planned, "{views} views: a full plan changed the bytes");
+
+        let (every, none) = render("colour.html", None, views)?;
+        let (changing, skipped) = render("colour.html", Some(Skip::tracked()), views)?;
+        ensure!(skipped == 0, "{skipped} frames skipped on a page that changes every frame");
+        ensure!(none == 0 && every == changing, "{views} views: changing frames differ");
     }
     Ok(())
 }
