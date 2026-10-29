@@ -49,6 +49,13 @@ fn apply_flags(command_line: &mut CommandLine) {
     if CPU_RASTER.load(Ordering::Relaxed) {
         command_line.append_switch(Some(&"disable-gpu-rasterization".into()));
     }
+    if command_line.has_switch(Some(&"disable-gpu-rasterization".into())) != 0 {
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        command_line.append_switch_with_value(
+            Some(&"num-raster-threads".into()),
+            Some(&threads.to_string().as_str().into()),
+        );
+    }
 }
 
 #[derive(Default)]
