@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -127,10 +127,107 @@ impl Sample {
     }
 }
 
+#[derive(Clone)]
 struct Chunk {
     entry: u32,
     samples: u32,
     offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioCodec {
+    /// AAC-LC. `audio_specific_config` goes in the `esds` box and `max_packet_bytes` sets its
+    /// decoder buffer size.
+    Aac {
+        audio_specific_config: Vec<u8>,
+        max_packet_bytes: u32,
+    },
+    /// 16-bit little-endian PCM (`sowt`), MOV only.
+    PcmS16Le,
+}
+
+/// A complete audio track. AAC `packets` hold one AAC frame of 1024 samples each. PCM `packets`
+/// hold any whole number of interleaved sample frames.
+///
+/// `priming` samples at the start of the decoded stream are hidden by an edit list, and the
+/// track ends after `frames` samples more.
+#[derive(Debug, Clone)]
+pub struct AudioTrack {
+    pub codec: AudioCodec,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub priming: u32,
+    pub frames: u64,
+    pub packets: Vec<Vec<u8>>,
+}
+
+impl From<&vrf_encode::AacStream> for AudioTrack {
+    fn from(stream: &vrf_encode::AacStream) -> AudioTrack {
+        AudioTrack {
+            codec: AudioCodec::Aac {
+                audio_specific_config: stream.audio_specific_config.clone(),
+                max_packet_bytes: stream.max_packet_bytes,
+            },
+            sample_rate: stream.config.sample_rate,
+            channels: stream.config.channels as u16,
+            priming: stream.priming_frames,
+            frames: stream.frames,
+            packets: stream.packets.clone(),
+        }
+    }
+}
+
+impl AudioTrack {
+    /// Quantises interleaved `f32` samples to 16 bits by rounding, clipping at full scale.
+    pub fn pcm_s16le(samples: &[f32], sample_rate: u32, channels: u16) -> AudioTrack {
+        let bytes = samples
+            .iter()
+            .flat_map(|&v| ((v * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes())
+            .collect();
+        AudioTrack {
+            codec: AudioCodec::PcmS16Le,
+            sample_rate,
+            channels,
+            priming: 0,
+            frames: (samples.len() / usize::from(channels)) as u64,
+            packets: vec![bytes],
+        }
+    }
+
+    fn pcm_frame_bytes(&self) -> usize {
+        2 * usize::from(self.channels)
+    }
+
+    fn packet_frames(&self, packet: &[u8]) -> u64 {
+        match self.codec {
+            AudioCodec::Aac { .. } => u64::from(vrf_encode::AAC_FRAME_SAMPLES),
+            AudioCodec::PcmS16Le => (packet.len() / self.pcm_frame_bytes()) as u64,
+        }
+    }
+
+    fn packet_units(&self, packet: &[u8]) -> u32 {
+        match self.codec {
+            AudioCodec::Aac { .. } => 1,
+            AudioCodec::PcmS16Le => self.packet_frames(packet) as u32,
+        }
+    }
+
+    fn media_frames(&self) -> u64 {
+        self.packets.iter().map(|p| self.packet_frames(p)).sum()
+    }
+}
+
+const INTERLEAVE_SECONDS: f64 = 0.5;
+
+enum Piece {
+    Video { from: u64, len: u64 },
+    Audio { first: usize, last: usize },
+}
+
+struct Plan {
+    video: Vec<Chunk>,
+    audio: Vec<Chunk>,
+    pieces: Vec<Piece>,
 }
 
 /// Writes an MP4 or MOV file with `moov` before `mdat`.
@@ -139,6 +236,10 @@ struct Chunk {
 /// Each chunk started with [`Muxer::start_chunk`] becomes one run of samples that points at its own
 /// `stsd` entry. Chunks with equal configs share an entry. The presentation timeline starts at the
 /// smallest pts: when B-frames put it after the first dts, an edit list hides the gap.
+///
+/// An audio track set with [`Muxer::set_audio`] is written in `finish`, interleaved with the video
+/// in runs of about half a second. When audio is present the movie timescale is the least common
+/// multiple of the video timescale and the sample rate, so the audio edit list is exact.
 pub struct Muxer {
     path: PathBuf,
     tmp_path: PathBuf,
@@ -158,6 +259,7 @@ pub struct Muxer {
     next_dts: i64,
     min_pts: i64,
     max_end: i64,
+    audio: Option<AudioTrack>,
 }
 
 impl Muxer {
@@ -186,7 +288,37 @@ impl Muxer {
             next_dts: 0,
             min_pts: i64::MAX,
             max_end: i64::MIN,
+            audio: None,
         })
+    }
+
+    /// Adds the audio track. The first call wins; there is one audio track per file.
+    pub fn set_audio(&mut self, audio: AudioTrack) -> Result<()> {
+        ensure!(self.audio.is_none(), "the file already has an audio track");
+        ensure!(!audio.packets.is_empty(), "audio track has no packets");
+        ensure!(
+            (1..=2).contains(&audio.channels),
+            "audio is mono or stereo, got {} channels",
+            audio.channels
+        );
+        ensure!(
+            (1..=u32::from(u16::MAX)).contains(&audio.sample_rate),
+            "sample rate {} does not fit the sample entry",
+            audio.sample_rate
+        );
+        if audio.codec == AudioCodec::PcmS16Le {
+            ensure!(
+                self.container == Container::Mov,
+                "PCM audio is only allowed in a MOV container"
+            );
+            let whole = audio
+                .packets
+                .iter()
+                .all(|p| p.len() % audio.pcm_frame_bytes() == 0);
+            ensure!(whole, "PCM packet is not whole sample frames");
+        }
+        self.audio = Some(audio);
+        Ok(())
     }
 
     /// Writes `co64` and a 64-bit `mdat` size even when 32 bits would do. They are used
@@ -285,16 +417,21 @@ impl Muxer {
         self.mdat.flush()?;
 
         let ftyp = self.ftyp();
+        let plan = self.plan();
         let mut wide = self.wide;
-        let mut moov = self.moov(wide, 0)?;
-        if !wide && ftyp.len() as u64 + moov.len() as u64 + 8 + self.mdat_len > u32::MAX as u64 {
+        let mut moov = self.moov(wide, 0, &plan)?;
+        if !wide
+            && ftyp.len() as u64 + moov.len() as u64 + 8 + self.mdat_len + self.audio_len()
+                > u32::MAX as u64
+        {
             wide = true;
-            moov = self.moov(true, 0)?;
+            moov = self.moov(true, 0, &plan)?;
         }
         let header_len = if wide { 16 } else { 8 };
         let base = (ftyp.len() + moov.len() + header_len) as u64;
-        moov = self.moov(wide, base)?;
+        moov = self.moov(wide, base, &plan)?;
 
+        let mdat_len = self.mdat_len + self.audio_len();
         let mut out = BufWriter::new(
             File::create(&self.path).with_context(|| format!("create {:?}", self.path))?,
         );
@@ -303,14 +440,132 @@ impl Muxer {
         if wide {
             out.write_all(&1u32.to_be_bytes())?;
             out.write_all(b"mdat")?;
-            out.write_all(&(self.mdat_len + 16).to_be_bytes())?;
+            out.write_all(&(mdat_len + 16).to_be_bytes())?;
         } else {
-            out.write_all(&(self.mdat_len as u32 + 8).to_be_bytes())?;
+            out.write_all(&(mdat_len as u32 + 8).to_be_bytes())?;
             out.write_all(b"mdat")?;
         }
-        io::copy(&mut File::open(&self.tmp_path)?, &mut out)?;
+        let mut video = File::open(&self.tmp_path)?;
+        for piece in &plan.pieces {
+            match *piece {
+                Piece::Video { from, len } => {
+                    video.seek(SeekFrom::Start(from))?;
+                    io::copy(&mut (&mut video).take(len), &mut out)?;
+                }
+                Piece::Audio { first, last } => {
+                    for packet in &self.audio.as_ref().unwrap().packets[first..last] {
+                        out.write_all(packet)?;
+                    }
+                }
+            }
+        }
         out.flush()?;
         Ok(())
+    }
+
+    fn audio_len(&self) -> u64 {
+        self.audio
+            .iter()
+            .flat_map(|a| &a.packets)
+            .map(|p| p.len() as u64)
+            .sum()
+    }
+
+    fn plan(&self) -> Plan {
+        let Some(audio) = &self.audio else {
+            return Plan {
+                video: self.chunks.clone(),
+                audio: Vec::new(),
+                pieces: vec![Piece::Video {
+                    from: 0,
+                    len: self.mdat_len,
+                }],
+            };
+        };
+
+        let slice_ticks = ((INTERLEAVE_SECONDS * f64::from(self.timescale)) as i64).max(1);
+        let mut video: Vec<(f64, Chunk, u64)> = Vec::new();
+        let (mut index, mut tick) = (0usize, 0i64);
+        for chunk in &self.chunks {
+            let end = index + chunk.samples as usize;
+            let (mut start, mut offset, mut bytes, mut samples) = (tick, chunk.offset, 0u64, 0u32);
+            while index < end {
+                bytes += u64::from(self.sizes[index]);
+                tick += i64::from(self.durations[index]);
+                samples += 1;
+                index += 1;
+                if tick - start >= slice_ticks || index == end {
+                    let at = start as f64 / f64::from(self.timescale);
+                    let slice = Chunk {
+                        entry: chunk.entry,
+                        samples,
+                        offset,
+                    };
+                    video.push((at, slice, bytes));
+                    offset += bytes;
+                    (start, bytes, samples) = (tick, 0, 0);
+                }
+            }
+        }
+
+        let slice_frames = (INTERLEAVE_SECONDS * f64::from(audio.sample_rate)) as u64;
+        let mut sound: Vec<(f64, Chunk, usize, usize)> = Vec::new();
+        let (mut first, mut position, mut frames, mut units) = (0usize, 0u64, 0u64, 0u32);
+        for (i, packet) in audio.packets.iter().enumerate() {
+            let packet_frames = audio.packet_frames(packet);
+            frames += packet_frames;
+            units += audio.packet_units(packet);
+            if frames >= slice_frames || i + 1 == audio.packets.len() {
+                let at = position.saturating_sub(u64::from(audio.priming)) as f64
+                    / f64::from(audio.sample_rate);
+                let slice = Chunk {
+                    entry: 1,
+                    samples: units,
+                    offset: 0,
+                };
+                sound.push((at, slice, first, i + 1));
+                (first, position, frames, units) = (i + 1, position + frames, 0, 0);
+            }
+        }
+
+        let mut plan = Plan {
+            video: Vec::new(),
+            audio: Vec::new(),
+            pieces: Vec::new(),
+        };
+        let (mut v, mut a, mut offset) = (0usize, 0usize, 0u64);
+        while v < video.len() || a < sound.len() {
+            let video_next = a == sound.len() || (v < video.len() && video[v].0 <= sound[a].0);
+            if video_next {
+                let (_, chunk, len) = &video[v];
+                plan.pieces.push(Piece::Video {
+                    from: chunk.offset,
+                    len: *len,
+                });
+                plan.video.push(Chunk {
+                    offset,
+                    ..chunk.clone()
+                });
+                offset += len;
+                v += 1;
+            } else {
+                let (_, chunk, first, last) = &sound[a];
+                plan.pieces.push(Piece::Audio {
+                    first: *first,
+                    last: *last,
+                });
+                plan.audio.push(Chunk {
+                    offset,
+                    ..chunk.clone()
+                });
+                offset += audio.packets[*first..*last]
+                    .iter()
+                    .map(|p| p.len() as u64)
+                    .sum::<u64>();
+                a += 1;
+            }
+        }
+        plan
     }
 
     fn close_chunk(&mut self) {
@@ -336,7 +591,7 @@ impl Muxer {
         })
     }
 
-    fn moov(&self, wide: bool, base: u64) -> Result<Vec<u8>> {
+    fn moov(&self, wide: bool, base: u64, plan: &Plan) -> Result<Vec<u8>> {
         let first = &self.entries[0];
         let start = self.min_pts - self.first_dts;
         ensure!(start >= 0, "pts precedes the first dts");
@@ -345,13 +600,33 @@ impl Muxer {
         let media = u32::try_from(self.next_dts - self.first_dts)
             .context("duration does not fit 32 bits")?;
 
+        let movie_timescale = match &self.audio {
+            Some(audio) => lcm(self.timescale, audio.sample_rate)?,
+            None => self.timescale,
+        };
+        let to_movie = |ticks: u32| {
+            u32::try_from(u64::from(ticks) * u64::from(movie_timescale / self.timescale))
+                .context("duration does not fit 32 bits")
+        };
+        let video_duration = to_movie(presentation)?;
+        let audio_trak = match &self.audio {
+            Some(audio) => Some(self.audio_trak(audio, wide, base, plan, movie_timescale)?),
+            None => None,
+        };
+        let movie_duration = match &self.audio {
+            Some(audio) => video_duration.max(audio_movie_duration(audio, movie_timescale)?),
+            None => video_duration,
+        };
+
         let mvhd = full(b"mvhd", 0, 0, |w| {
-            w.u32(0).u32(0).u32(self.timescale).u32(presentation);
+            w.u32(0).u32(0).u32(movie_timescale).u32(movie_duration);
             w.u32(0x0001_0000).u16(0x0100).bytes(&[0; 10]);
-            w.bytes(&MATRIX).bytes(&[0; 24]).u32(2);
+            w.bytes(&MATRIX)
+                .bytes(&[0; 24])
+                .u32(if audio_trak.is_some() { 3 } else { 2 });
         });
         let tkhd = full(b"tkhd", 0, 3, |w| {
-            w.u32(0).u32(0).u32(1).u32(0).u32(presentation);
+            w.u32(0).u32(0).u32(1).u32(0).u32(video_duration);
             w.bytes(&[0; 8]).u16(0).u16(0).u16(0).u16(0);
             w.bytes(&MATRIX);
             w.u32(u32::from(first.width) << 16)
@@ -361,7 +636,7 @@ impl Muxer {
             bx(b"edts", |w| {
                 w.bytes(&full(b"elst", 0, 0, |w| {
                     w.u32(1)
-                        .u32(presentation)
+                        .u32(video_duration)
                         .i32(start as i32)
                         .u32(0x0001_0000);
                 }));
@@ -391,7 +666,7 @@ impl Muxer {
                 w.u32(1).bytes(&full(b"url ", 0, 1, |_| {}));
             }));
         });
-        let stbl = self.stbl(wide, base)?;
+        let stbl = self.stbl(wide, base, plan)?;
         let minf = bx(b"minf", |w| {
             w.bytes(&vmhd).bytes(&dinf).bytes(&stbl);
         });
@@ -402,11 +677,116 @@ impl Muxer {
             w.bytes(&tkhd).bytes(&edts).bytes(&mdia);
         });
         Ok(bx(b"moov", |w| {
-            w.bytes(&mvhd).bytes(&trak);
+            w.bytes(&mvhd)
+                .bytes(&trak)
+                .bytes(&audio_trak.unwrap_or_default());
         }))
     }
 
-    fn stbl(&self, wide: bool, base: u64) -> Result<Vec<u8>> {
+    fn audio_trak(
+        &self,
+        audio: &AudioTrack,
+        wide: bool,
+        base: u64,
+        plan: &Plan,
+        movie_timescale: u32,
+    ) -> Result<Vec<u8>> {
+        let duration = audio_movie_duration(audio, movie_timescale)?;
+        let media = u32::try_from(audio.media_frames()).context("duration does not fit 32 bits")?;
+        let tkhd = full(b"tkhd", 0, 3, |w| {
+            w.u32(0).u32(0).u32(2).u32(0).u32(duration);
+            w.bytes(&[0; 8]).u16(0).u16(0).u16(0x0100).u16(0);
+            w.bytes(&MATRIX).u32(0).u32(0);
+        });
+        let edts = if audio.priming > 0 {
+            bx(b"edts", |w| {
+                w.bytes(&full(b"elst", 0, 0, |w| {
+                    w.u32(1).u32(duration).u32(audio.priming).u32(0x0001_0000);
+                }));
+            })
+        } else {
+            Vec::new()
+        };
+        let mdhd = full(b"mdhd", 0, 0, |w| {
+            w.u32(0)
+                .u32(0)
+                .u32(audio.sample_rate)
+                .u32(media)
+                .u16(0x55c4)
+                .u16(0);
+        });
+        let hdlr = full(b"hdlr", 0, 0, |w| {
+            w.u32(0)
+                .bytes(b"soun")
+                .bytes(&[0; 12])
+                .bytes(b"SoundHandler\0");
+        });
+        let smhd = full(b"smhd", 0, 0, |w| {
+            w.u16(0).u16(0);
+        });
+        let dinf = bx(b"dinf", |w| {
+            w.bytes(&full(b"dref", 0, 0, |w| {
+                w.u32(1).bytes(&full(b"url ", 0, 1, |_| {}));
+            }));
+        });
+        let stsd = full(b"stsd", 0, 0, |w| {
+            w.u32(1).bytes(&audio_entry(audio, self.container));
+        });
+        let aac = matches!(audio.codec, AudioCodec::Aac { .. });
+        let stts = full(b"stts", 0, 0, |w| {
+            if aac {
+                w.u32(1)
+                    .u32(audio.packets.len() as u32)
+                    .u32(vrf_encode::AAC_FRAME_SAMPLES);
+            } else {
+                w.u32(1).u32(media).u32(1);
+            }
+        });
+        let stsz = full(b"stsz", 0, 0, |w| {
+            if aac {
+                w.u32(0).u32(audio.packets.len() as u32);
+                for packet in &audio.packets {
+                    w.u32(packet.len() as u32);
+                }
+            } else {
+                w.u32(audio.pcm_frame_bytes() as u32).u32(media);
+            }
+        });
+        let (stsc, stco) = chunk_tables(&plan.audio, wide, base)?;
+        let roll = if aac {
+            let sgpd = full(b"sgpd", 1, 0, |w| {
+                w.bytes(b"roll").u32(2).u32(1).i16(-1);
+            });
+            let sbgp = full(b"sbgp", 0, 0, |w| {
+                w.bytes(b"roll")
+                    .u32(1)
+                    .u32(audio.packets.len() as u32)
+                    .u32(1);
+            });
+            [sgpd, sbgp].concat()
+        } else {
+            Vec::new()
+        };
+        let stbl = bx(b"stbl", |w| {
+            w.bytes(&stsd)
+                .bytes(&stts)
+                .bytes(&stsc)
+                .bytes(&stsz)
+                .bytes(&stco)
+                .bytes(&roll);
+        });
+        let minf = bx(b"minf", |w| {
+            w.bytes(&smhd).bytes(&dinf).bytes(&stbl);
+        });
+        let mdia = bx(b"mdia", |w| {
+            w.bytes(&mdhd).bytes(&hdlr).bytes(&minf);
+        });
+        Ok(bx(b"trak", |w| {
+            w.bytes(&tkhd).bytes(&edts).bytes(&mdia);
+        }))
+    }
+
+    fn stbl(&self, wide: bool, base: u64, plan: &Plan) -> Result<Vec<u8>> {
         let stsd = full(b"stsd", 0, 0, |w| {
             w.u32(self.entries.len() as u32);
             for entry in &self.entries {
@@ -442,46 +822,13 @@ impl Muxer {
         } else {
             Vec::new()
         };
-        let stsc = full(b"stsc", 0, 0, |w| {
-            let mut rows: Vec<(u32, u32, u32)> = Vec::new();
-            for (i, chunk) in self.chunks.iter().enumerate() {
-                if rows.last().is_none_or(|&(_, samples, entry)| {
-                    (samples, entry) != (chunk.samples, chunk.entry)
-                }) {
-                    rows.push((i as u32 + 1, chunk.samples, chunk.entry));
-                }
-            }
-            w.u32(rows.len() as u32);
-            for (first_chunk, samples, entry) in rows {
-                w.u32(first_chunk).u32(samples).u32(entry);
-            }
-        });
         let stsz = full(b"stsz", 0, 0, |w| {
             w.u32(0).u32(self.sizes.len() as u32);
             for &size in &self.sizes {
                 w.u32(size);
             }
         });
-        let offsets = self.chunks.iter().map(|c| base + c.offset);
-        let stco = if wide {
-            full(b"co64", 0, 0, |w| {
-                w.u32(self.chunks.len() as u32);
-                for offset in offsets {
-                    w.u64(offset);
-                }
-            })
-        } else {
-            let mut narrow = Vec::with_capacity(self.chunks.len());
-            for offset in offsets {
-                narrow.push(u32::try_from(offset).context("chunk offset needs co64")?);
-            }
-            full(b"stco", 0, 0, |w| {
-                w.u32(narrow.len() as u32);
-                for offset in narrow {
-                    w.u32(offset);
-                }
-            })
-        };
+        let (stsc, stco) = chunk_tables(&plan.video, wide, base)?;
         Ok(bx(b"stbl", |w| {
             w.bytes(&stsd)
                 .bytes(&stts)
@@ -498,6 +845,130 @@ impl Drop for Muxer {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.tmp_path);
     }
+}
+
+fn chunk_tables(chunks: &[Chunk], wide: bool, base: u64) -> Result<(Vec<u8>, Vec<u8>)> {
+    let stsc = full(b"stsc", 0, 0, |w| {
+        let mut rows: Vec<(u32, u32, u32)> = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            if rows
+                .last()
+                .is_none_or(|&(_, samples, entry)| (samples, entry) != (chunk.samples, chunk.entry))
+            {
+                rows.push((i as u32 + 1, chunk.samples, chunk.entry));
+            }
+        }
+        w.u32(rows.len() as u32);
+        for (first_chunk, samples, entry) in rows {
+            w.u32(first_chunk).u32(samples).u32(entry);
+        }
+    });
+    let offsets = chunks.iter().map(|c| base + c.offset);
+    let stco = if wide {
+        full(b"co64", 0, 0, |w| {
+            w.u32(chunks.len() as u32);
+            for offset in offsets {
+                w.u64(offset);
+            }
+        })
+    } else {
+        let mut narrow = Vec::with_capacity(chunks.len());
+        for offset in offsets {
+            narrow.push(u32::try_from(offset).context("chunk offset needs co64")?);
+        }
+        full(b"stco", 0, 0, |w| {
+            w.u32(narrow.len() as u32);
+            for offset in narrow {
+                w.u32(offset);
+            }
+        })
+    };
+    Ok((stsc, stco))
+}
+
+fn audio_movie_duration(audio: &AudioTrack, movie_timescale: u32) -> Result<u32> {
+    let ticks = audio.frames * u64::from(movie_timescale / audio.sample_rate);
+    u32::try_from(ticks).context("duration does not fit 32 bits")
+}
+
+fn lcm(a: u32, b: u32) -> Result<u32> {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    u32::try_from(u64::from(a) / u64::from(x) * u64::from(b))
+        .context("movie timescale does not fit 32 bits")
+}
+
+fn audio_entry(audio: &AudioTrack, container: Container) -> Vec<u8> {
+    let aac = match &audio.codec {
+        AudioCodec::Aac {
+            audio_specific_config,
+            max_packet_bytes,
+        } => {
+            let bytes: u64 = audio.packets.iter().map(|p| p.len() as u64).sum();
+            let rate = u64::from(audio.sample_rate);
+            let average = (bytes * 8 * rate / audio.media_frames()) as u32;
+            let maximum = (u64::from(*max_packet_bytes) * 8 * rate
+                / u64::from(vrf_encode::AAC_FRAME_SAMPLES)) as u32;
+            Some(esds(
+                audio_specific_config,
+                *max_packet_bytes,
+                maximum,
+                average,
+            ))
+        }
+        AudioCodec::PcmS16Le => None,
+    };
+    let quicktime = aac.is_some() && container == Container::Mov;
+    let entry = if aac.is_some() { b"mp4a" } else { b"sowt" };
+    bx(entry, |w| {
+        w.bytes(&[0; 6]).u16(1);
+        w.u16(u16::from(quicktime)).u16(0).u32(0);
+        w.u16(audio.channels)
+            .u16(16)
+            .u16(if quicktime { 0xfffe } else { 0 })
+            .u16(0);
+        w.u32(audio.sample_rate << 16);
+        let Some(esds) = aac else {
+            return;
+        };
+        if quicktime {
+            w.u32(vrf_encode::AAC_FRAME_SAMPLES).u32(0).u32(0).u32(2);
+            w.bytes(&bx(b"wave", |w| {
+                w.bytes(&bx(b"frma", |w| {
+                    w.bytes(b"mp4a");
+                }));
+                w.bytes(&bx(b"mp4a", |w| {
+                    w.u32(0);
+                }));
+                w.bytes(&esds).u32(8).u32(0);
+            }));
+            let layout: u32 = if audio.channels == 1 {
+                0x0064_0001
+            } else {
+                0x0065_0002
+            };
+            w.bytes(&full(b"chan", 0, 0, |w| {
+                w.u32(layout).u32(0).u32(0).u32(0);
+            }));
+        } else {
+            w.bytes(&esds);
+        }
+    })
+}
+
+fn esds(config: &[u8], buffer: u32, maximum: u32, average: u32) -> Vec<u8> {
+    full(b"esds", 0, 0, |w| {
+        let specific = 2 + config.len();
+        let decoder = 13 + specific;
+        w.u8(0x03).u8((3 + 2 + decoder + 3) as u8).u16(0).u8(0);
+        w.u8(0x04).u8(decoder as u8).u8(0x40).u8(0x15);
+        w.u8((buffer >> 16) as u8).u16(buffer as u16);
+        w.u32(maximum).u32(average);
+        w.u8(0x05).u8(config.len() as u8).bytes(config);
+        w.u8(0x06).u8(1).u8(2);
+    })
 }
 
 const MATRIX: [u8; 36] = {
