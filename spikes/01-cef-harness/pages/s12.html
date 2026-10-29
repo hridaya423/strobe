@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; background: #fff; overflow: hidden; }
+#row { display: flex; height: 720px; width: 1280px; }
+#a { background: #f00; }
+#b { width: 200px; background: #0f0; }
+#c { flex: 1; background: #00f; }
+#m { position: absolute; left: 0; top: 300px; width: 100px; height: 100px; background: #f00; will-change: transform; }
+#p { position: absolute; left: 0; top: 0; width: 64px; height: 64px; }
+</style>
+<div id="row"><div id="a"></div><div id="b"></div><div id="c"></div></div>
+<div id="m"></div>
+<div id="p"></div>
+<script>
+const variant = location.search.slice(1);
+const row = document.getElementById('row');
+const m = document.getElementById('m');
+const p = document.getElementById('p');
+if (variant !== 'layout') row.style.display = 'none';
+if (variant !== 'transform') m.style.display = 'none';
+window.seek = (i) => {
+  if (variant === 'layout') {
+    document.getElementById('a').style.width = (100 + (i * 37) % 900) + 'px';
+  } else if (variant === 'transform') {
+    m.style.transform = `translate(${(i * 173) % 1000}px, 0)`;
+  } else {
+    p.style.backgroundColor = `rgb(${i & 255},${(i >> 8) & 255},165)`;
+  }
+  return Promise.resolve(i);
+};
+</script>
