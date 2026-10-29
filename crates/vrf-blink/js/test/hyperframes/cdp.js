@@ -102,7 +102,7 @@ export class Page {
   }
 }
 
-export async function launch() {
+export async function launch({ gpu = false, windowSize } = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'vrf-hf-'));
   const child = spawn(
     findChrome(),
@@ -115,7 +115,8 @@ export async function launch() {
       '--force-color-profile=srgb',
       '--font-render-hinting=none',
       '--autoplay-policy=no-user-gesture-required',
-      '--disable-gpu',
+      ...(gpu === 'metal' ? ['--enable-webgl', '--ignore-gpu-blocklist', '--use-gl=angle', '--use-angle=metal', '--enable-gpu-rasterization'] : gpu ? [] : ['--disable-gpu']),
+      ...(windowSize ? [`--window-size=${windowSize[0]},${windowSize[1]}`] : []),
       'about:blank',
     ],
     { stdio: ['ignore', 'ignore', 'pipe'] },
@@ -132,13 +133,13 @@ export async function launch() {
   const connection = new Connection(ws);
 
   return {
-    async newPage({ width = 320, height = 180, scripts = [] } = {}) {
+    async newPage({ width = 320, height = 180, scripts = [], emulate = true } = {}) {
       const { targetId } = await connection.send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await connection.send('Target.attachToTarget', { targetId, flatten: true });
       const page = new Page(connection, sessionId, targetId);
       await page.send('Page.enable');
       await page.send('Runtime.enable');
-      await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      if (emulate) await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       for (const source of scripts) await page.send('Page.addScriptToEvaluateOnNewDocument', { source });
       return page;
     },

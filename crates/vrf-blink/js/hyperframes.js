@@ -255,13 +255,33 @@
     };
   };
 
-  const init = async ({ fps, timeoutMs = 45000, quality = 'standard', alpha = false, motionBlur = false, skipVideoIds = [] } = {}) => {
+  const applyVideoMetadataHints = async (hints) => {
+    const posters = new Set();
+    for (const hint of hints) {
+      if (!hint.id || !(hint.width > 0) || !(hint.height > 0)) continue;
+      const video = document.getElementById(hint.id);
+      if (!video || video.hasAttribute('poster')) continue;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${hint.width}" height="${hint.height}"/>`;
+      video.poster = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+      posters.add(video.poster);
+    }
+    await Promise.all(
+      [...posters].map((src) => {
+        const image = new Image();
+        image.src = src;
+        return image.decode();
+      }),
+    );
+  };
+
+  const init = async ({ fps, timeoutMs = 45000, quality = 'standard', alpha = false, motionBlur = false, skipVideoIds = [], videoMetadataHints = [] } = {}) => {
     state.fps = parseFps(fps) ?? parseFps(root()?.getAttribute('data-fps')) ?? [30, 1];
     renderSeekConfig.fps = fpsValue();
     window.__hfFlushSync?.();
     await waitHfReady(timeoutMs);
     await waitSubCompositionTimelines(timeoutMs);
     await waitHfReady(timeoutMs);
+    await applyVideoMetadataHints(videoMetadataHints);
     await Promise.all([waitVideosReady(timeoutMs, new Set(skipVideoIds)), waitImagesReady(timeoutMs), document.fonts?.ready]);
     if (alpha) applyTransparentBackground();
     ensureRenderFrameSiblings();
