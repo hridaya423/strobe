@@ -6,7 +6,8 @@ use std::process::Command;
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use vrf::audio::{
-    HyperframesTrack, RemotionAsset, SAMPLE_RATE, Volume, hyperframes_clips, mix, remotion_clips,
+    Clip, HyperframesTrack, RemotionAsset, SAMPLE_RATE, Volume, hyperframes_clips, mix,
+    remotion_clips,
 };
 
 fn bench_dir() -> PathBuf {
@@ -356,4 +357,292 @@ fn volume_frames_hold_from_half_a_frame_before_to_half_a_frame_after() {
     assert_eq!(volume.at(samples_per_frame + 799), 0.5);
     assert_eq!(volume.at(samples_per_frame * 2), 0.25);
     assert_eq!(volume.at(samples_per_frame * 9), 0.25);
+}
+
+struct Entry {
+    id: &'static str,
+    project: &'static str,
+    entry: &'static str,
+    composition: &'static str,
+    fps: u32,
+    frames: u32,
+}
+
+const REMOTION: [Entry; 3] = [
+    Entry {
+        id: "rm-transitions-video",
+        project: "transitions-video",
+        entry: "src/index.ts",
+        composition: "Main",
+        fps: 30,
+        frames: 840,
+    },
+    Entry {
+        id: "rm-4-0-trailer",
+        project: "4-0-trailer",
+        entry: "src/index.ts",
+        composition: "Intro",
+        fps: 30,
+        frames: 1900,
+    },
+    Entry {
+        id: "rm-github-unwrapped",
+        project: "github-unwrapped",
+        entry: "remotion/index.ts",
+        composition: "Main",
+        fps: 30,
+        frames: 1692,
+    },
+];
+
+const HYPERFRAMES: [Entry; 4] = [
+    Entry {
+        id: "hf-figma-launch",
+        project: "figma-launch",
+        entry: "",
+        composition: "",
+        fps: 30,
+        frames: 1922,
+    },
+    Entry {
+        id: "hf-heygen-stripe",
+        project: "HF-heygen-stripe",
+        entry: "",
+        composition: "",
+        fps: 30,
+        frames: 1161,
+    },
+    Entry {
+        id: "hf-hyperframes-launch",
+        project: "hyperframes-launch",
+        entry: "",
+        composition: "",
+        fps: 30,
+        frames: 1494,
+    },
+    Entry {
+        id: "hf-spacex-launch",
+        project: "spacex-launch",
+        entry: "",
+        composition: "",
+        fps: 30,
+        frames: 1185,
+    },
+];
+
+const SPAN_SECONDS: u64 = 10;
+
+fn loudest_span(clips: &[Clip], total_seconds: u64) -> u64 {
+    let rate = u64::from(SAMPLE_RATE);
+    let weight = |second: u64| -> f64 {
+        let (from, to) = (second * rate, (second + SPAN_SECONDS) * rate);
+        clips
+            .iter()
+            .map(|c| {
+                let overlap = (c.start + c.length)
+                    .min(to)
+                    .saturating_sub(c.start.max(from));
+                let gain = match &c.volume {
+                    Volume::Constant(v) => *v,
+                    Volume::Frames { values, .. } => {
+                        values.iter().sum::<f64>() / values.len() as f64
+                    }
+                };
+                overlap as f64 * gain
+            })
+            .sum()
+    };
+    (0..=total_seconds.saturating_sub(SPAN_SECONDS))
+        .max_by(|a, b| weight(*a).total_cmp(&weight(*b)))
+        .unwrap_or(0)
+}
+
+struct Row {
+    id: &'static str,
+    clips: usize,
+    span_start: u64,
+    onset_ours: Option<usize>,
+    onset_ref: Option<usize>,
+    rms_ours: f64,
+    rms_ref: f64,
+    error: f64,
+    lag: i64,
+    worst: f32,
+}
+
+fn first_sound(stereo: &[f32], threshold: f32) -> Option<usize> {
+    stereo.chunks_exact(2).position(|f| f[0].abs() > threshold)
+}
+
+fn best_lag(ours: &[f32], reference: &[f32], reach: i64) -> i64 {
+    let rate = SAMPLE_RATE as usize;
+    let frames = ours.len() / 2;
+    let energy = |from: usize| -> f64 {
+        ours[from * 2..(from + rate) * 2]
+            .iter()
+            .map(|v| f64::from(*v).powi(2))
+            .sum()
+    };
+    let from = (0..frames.saturating_sub(rate + reach as usize))
+        .step_by(rate / 4)
+        .skip(1)
+        .max_by(|a, b| energy(*a).total_cmp(&energy(*b)))
+        .unwrap_or(reach as usize);
+    (-reach..=reach)
+        .max_by(|a, b| {
+            let score = |lag: i64| -> f64 {
+                (from..from + rate)
+                    .map(|i| {
+                        f64::from(ours[i * 2])
+                            * f64::from(reference[((i as i64 + lag) as usize) * 2])
+                    })
+                    .sum()
+            };
+            score(*a).total_cmp(&score(*b))
+        })
+        .unwrap()
+}
+
+fn compare(
+    id: &'static str,
+    clips: usize,
+    span_start: u64,
+    ours: &[f32],
+    reference: &[f32],
+) -> Row {
+    let frames = (ours.len() / 2).min(reference.len() / 2);
+    let (ours, reference) = (&ours[..frames * 2], &reference[..frames * 2]);
+    let diff: Vec<f32> = ours.iter().zip(reference).map(|(a, b)| a - b).collect();
+    let reach = 4_800;
+    Row {
+        id,
+        clips,
+        span_start,
+        onset_ours: first_sound(ours, 1e-3),
+        onset_ref: first_sound(reference, 1e-3),
+        rms_ours: rms(ours, 0, frames),
+        rms_ref: rms(reference, 0, frames),
+        error: rms(&diff, 0, frames),
+        lag: best_lag(
+            &ours[reach as usize * 2..],
+            &reference[reach as usize * 2..],
+            reach,
+        ),
+        worst: diff.iter().fold(0.0, |m, v| m.max(v.abs())),
+    }
+}
+
+fn print_row(row: &Row) {
+    eprintln!(
+        "{:<24} clips {:>2}  span {:>2}-{:>2}s  onset ours/REF {:?}/{:?}  rms ours {:.5} REF {:.5}  error {:.5} ({:+.1} dB)  lag {:+}  worst {:.5}",
+        row.id,
+        row.clips,
+        row.span_start,
+        row.span_start + SPAN_SECONDS,
+        row.onset_ours,
+        row.onset_ref,
+        row.rms_ours,
+        row.rms_ref,
+        row.error,
+        20.0 * (row.error / row.rms_ref.max(1e-12)).log10(),
+        row.lag,
+        row.worst
+    );
+}
+
+fn remotion_corpus_row(entry: &Entry) -> Row {
+    let project = bench_dir().join("corpus/external").join(entry.project);
+    let dir = Dir::new(entry.id);
+    let collected = remotion_assets(&project, entry.entry, entry.composition).unwrap();
+    let total = u64::from(entry.frames) / u64::from(entry.fps);
+    let probe = remotion_clips(&collected.frames, collected.fps, public_file(&project)).unwrap();
+    let start = loudest_span(&probe, total);
+    let first = (start * u64::from(entry.fps)) as usize;
+    let last = first + (SPAN_SECONDS * u64::from(entry.fps)) as usize;
+    let span: Vec<Vec<RemotionAsset>> = collected.frames[first..last].to_vec();
+    let clips = remotion_clips(&span, collected.fps, public_file(&project)).unwrap();
+    let ours = mix(&clips, SPAN_SECONDS * u64::from(SAMPLE_RATE)).unwrap();
+    let reference = dir.file("ref.wav");
+    run(
+        project.join("node_modules/.bin/remotion"),
+        &[
+            "render",
+            entry.entry,
+            entry.composition,
+            reference.to_str().unwrap(),
+            "--codec=wav",
+            &format!("--frames={first}-{}", last - 1),
+            "--browser-executable",
+            headless_shell().to_str().unwrap(),
+        ],
+        &project,
+    )
+    .unwrap();
+    compare(entry.id, clips.len(), start, &ours, &decode(&reference))
+}
+
+fn hyperframes_corpus_row(entry: &Entry) -> Row {
+    let project = bench_dir()
+        .join("corpus/external/hyperframes-launches")
+        .join(entry.project);
+    let json = run(
+        "node",
+        &[
+            support("hyperframes-tracks.mjs").to_str().unwrap(),
+            hyperframes_dir().to_str().unwrap(),
+            project.to_str().unwrap(),
+        ],
+        &project,
+    )
+    .unwrap();
+    let tracks: Vec<HyperframesTrack> = serde_json::from_str(&json).unwrap();
+    let all = hyperframes_clips(&tracks, |src| Ok(project.join(src))).unwrap();
+    let total = u64::from(entry.frames) / u64::from(entry.fps);
+    let start = loudest_span(&all, total);
+    let full = mix(
+        &all,
+        (u64::from(entry.frames) * u64::from(SAMPLE_RATE)) / u64::from(entry.fps),
+    )
+    .unwrap();
+    let from = (start * u64::from(SAMPLE_RATE)) as usize * 2;
+    let ours = &full[from..from + (SPAN_SECONDS * u64::from(SAMPLE_RATE)) as usize * 2];
+
+    let dir = Dir::new(entry.id);
+    let reference = dir.file("ref.mp4");
+    run(
+        hyperframes_dir().join("../.bin/hyperframes"),
+        &[
+            "render",
+            project.to_str().unwrap(),
+            "-o",
+            reference.to_str().unwrap(),
+            "--fps",
+            "1",
+            "--quiet",
+        ],
+        &bench_dir().join("engines"),
+    )
+    .unwrap();
+    let decoded = decode(&reference);
+    compare(
+        entry.id,
+        all.len(),
+        start,
+        ours,
+        &decoded[from..from + ours.len()],
+    )
+}
+
+#[test]
+#[ignore = "renders every corpus composition's audio with its own framework; run with --ignored --nocapture"]
+fn corpus_audio_matches_each_frameworks_own_mix_over_ten_seconds() {
+    let mut rows = Vec::new();
+    for entry in &REMOTION {
+        rows.push(remotion_corpus_row(entry));
+        print_row(rows.last().unwrap());
+    }
+    for entry in &HYPERFRAMES {
+        rows.push(hyperframes_corpus_row(entry));
+        print_row(rows.last().unwrap());
+    }
 }
