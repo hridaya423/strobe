@@ -36,11 +36,11 @@ const PROBE_SIZE: (i32, i32) = (640, 360);
 /// its CPU raster in blended fills and glyph edges, so frames only equal HyperFrames' on the GPU.
 pub const CPU_RASTER: bool = false;
 
-/// The ranges a render is cut into when its plan names none: HyperFrames' worker count on the
-/// machines its references come from. HyperFrames renders each worker's range in a browser of
-/// its own, and Chromium keeps raster state of `will-change` layers from the frame where each
-/// first painted, so a frame's pixels depend on where its range began.
-pub const WORKERS: u64 = 8;
+/// The ranges a render is cut into when its plan names none: the most workers HyperFrames' bar
+/// spans (1 to 10). HyperFrames renders each worker's range in a browser of its own, and
+/// Chromium keeps raster state of `will-change` layers from the frame where each first painted,
+/// so a frame's pixels depend on where its range began.
+pub const WORKERS: u64 = 10;
 const AUDIO_BIT_RATE: u32 = 192_000;
 const FRAMES_URL: &str = "/__hyperframes_video_frames/";
 

@@ -457,6 +457,7 @@
     const active = new Set(entries.map((entry) => entry.id));
     const decodes = [];
     const published = [];
+    const natives = [];
     releaseNativeSurfaces(active);
     for (const video of document.querySelectorAll('video[data-start]')) {
       const img = frameSibling(video);
@@ -511,13 +512,8 @@
       img.style.setProperty('visibility', 'hidden', 'important');
       img.decoding = 'sync';
       if (entry.slot !== undefined) {
-        const surface = await showNativeFrame(entry.id, entry.slot);
         img.style.opacity = String(Number.isNaN(opacity) ? 1 : opacity);
-        surface.image.className = img.className;
-        surface.image.style.cssText = img.style.cssText;
-        surface.image.style.setProperty('visibility', 'hidden', 'important');
-        if (surface.image.previousElementSibling !== img) img.after(surface.image);
-        published.push(surface.image);
+        natives.push({ img, surface: showNativeFrame(entry.id, entry.slot) });
         continue;
       }
       if (entry.src !== undefined && img.getAttribute('src') !== entry.src) {
@@ -532,6 +528,14 @@
       }
       img.style.opacity = String(Number.isNaN(opacity) ? 1 : opacity);
       published.push(img);
+    }
+    for (const { img, surface: pending } of natives) {
+      const surface = await pending;
+      surface.image.className = img.className;
+      surface.image.style.cssText = img.style.cssText;
+      surface.image.style.setProperty('visibility', 'hidden', 'important');
+      if (surface.image.previousElementSibling !== img) img.after(surface.image);
+      published.push(surface.image);
     }
     await Promise.all(decodes);
     for (const img of published) img.style.visibility = 'visible';
