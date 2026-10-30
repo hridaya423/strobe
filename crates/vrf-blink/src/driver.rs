@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use vrf::colour::{Chroma, Format};
 use vrf::gpu::Gpu;
@@ -645,7 +645,73 @@ struct Worker<T> {
     convert: Vec<Duration>,
 }
 
+struct Handoff {
+    jobs: mpsc::Sender<(u64, Option<Paint>)>,
+    finished: mpsc::Receiver<Result<()>>,
+    pending: usize,
+}
+
+impl Handoff {
+    fn send(&mut self, index: u64, paint: Option<Paint>) -> Result<()> {
+        self.jobs
+            .send((index, paint))
+            .map_err(|_| anyhow!("the converter stopped"))?;
+        self.pending += 1;
+        Ok(())
+    }
+
+    fn wait(&mut self) -> Result<()> {
+        while self.pending > 0 {
+            self.finished
+                .recv()
+                .map_err(|_| anyhow!("the converter stopped"))??;
+            self.pending -= 1;
+        }
+        Ok(())
+    }
+}
+
+fn convert_frames(
+    lane: &mut Lane,
+    queued: mpsc::Receiver<(u64, Option<Paint>)>,
+    finished: mpsc::Sender<Result<()>>,
+) {
+    for (index, paint) in queued {
+        let result = match paint {
+            Some(paint) => lane.frame(index, &paint),
+            None => lane.repeat(index),
+        };
+        let failed = result.is_err();
+        let _ = finished.send(result);
+        if failed {
+            break;
+        }
+    }
+}
+
 fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
+    let (jobs, queued) = mpsc::channel();
+    let (acks, finished) = mpsc::channel();
+    let mut worker = thread::scope(|scope| {
+        scope.spawn(|| convert_frames(lane, queued, acks));
+        drive(
+            shared,
+            Handoff {
+                jobs,
+                finished,
+                pending: 0,
+            },
+        )
+    })?;
+    worker.repeats = lane.repeats;
+    worker.convert = std::mem::take(&mut lane.convert);
+    Ok(worker)
+}
+
+/// Seeks and captures the view's runs. A delivered surface stays valid until the next begin
+/// frame, so its conversion runs on the lane's thread while the page seeks the next frame, and
+/// is awaited just before that begin frame.
+fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
     let mut worker = Worker {
         frames: Vec::new(),
         seek: Vec::new(),
@@ -669,6 +735,7 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
             .max(last.map_or(0, |last| last + 1));
         for before in resume..start {
             (shared.seek)(&mut view, before).with_context(|| format!("seek to frame {before}"))?;
+            handoff.wait()?;
             worker
                 .capture
                 .next(&view, shared.watchdog)
@@ -681,24 +748,21 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
             let value = (shared.seek)(&mut view, frame)
                 .with_context(|| format!("seek to frame {frame}"))?;
             worker.seek.push(step.elapsed());
-            match worker
+            handoff.wait()?;
+            let paint = worker
                 .capture
                 .next(&view, shared.watchdog)
-                .with_context(|| format!("capture frame {frame}"))?
-            {
-                Some(paint) => lane.frame(index, &paint)?,
-                None => lane.repeat(index)?,
-            }
+                .with_context(|| format!("capture frame {frame}"))?;
+            handoff.send(index, paint)?;
             worker.frames.push((index, value));
             let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
             (shared.on_frame)(done)?;
         }
         last = Some(shared.first + to - 1);
     }
+    handoff.wait()?;
     view.check_project()?;
     view.close()?;
-    worker.repeats = lane.repeats;
-    worker.convert = std::mem::take(&mut lane.convert);
     Ok(worker)
 }
 
