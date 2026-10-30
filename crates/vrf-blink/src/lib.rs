@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod driver;
 mod mac;
 mod scheme;
+pub mod skip;
 pub mod video;
 mod view;
 

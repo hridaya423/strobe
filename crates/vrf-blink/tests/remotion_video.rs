@@ -68,6 +68,7 @@ fn options(project: &Path, composition: &str, video: VideoDecoder) -> Options {
         plan: Plan::single(),
         audio: true,
         video,
+        skip: false,
     }
 }
 

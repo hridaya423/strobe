@@ -19,6 +19,7 @@ use super::{
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
 use crate::video::NativeVideos;
+use crate::skip::{Skip, TRACK_JS};
 use crate::{Mode, Project, Ui, View};
 
 const HYPERFRAMES_JS: &str = include_str!("../../js/hyperframes.js");
@@ -44,6 +45,7 @@ pub struct Options {
     /// Mix the composition's audio into the file. Off leaves a video-only file.
     pub audio: bool,
     pub native_video: bool,
+    pub skip: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
@@ -273,9 +275,10 @@ impl Page {
         Ok(Page {
             project,
             script: format!(
-                "{early_stub}\n{}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}",
+                "{early_stub}\n{}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}\n{}",
                 if native.is_empty() { "" } else { VIDEO_JS },
-                if native.is_empty() { "" } else { HOP_JS }
+                if native.is_empty() { "" } else { HOP_JS },
+                if options.skip { TRACK_JS } else { "" }
             ),
             init: json!({ "fps": [options.fps, 1], "videoMetadataHints": hints, "nativeVideos": native.params() })
                 .to_string(),
@@ -357,7 +360,13 @@ pub struct Report {
     pub stages: Stages,
     pub per_frame: PerFrame,
     pub repeats: u64,
+    pub skipped: u64,
     pub capture_retries: u64,
+}
+
+fn static_frames(probe: &mut View) -> Result<Vec<u64>> {
+    let plan = probe.evaluate("__vrf.hf.staticFrames()")?;
+    Ok(serde_json::from_value(plan["frames"].clone())?)
 }
 
 fn track_file(project: &Path) -> impl Fn(&str) -> Result<PathBuf> + '_ {
@@ -395,7 +404,11 @@ pub fn render(
     let page = Page::new(prepare, options)?;
 
     let step = Instant::now();
-    let (probe, composition) = page.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
+    let (mut probe, composition) = page.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
+    let static_frames = options
+        .skip
+        .then(|| static_frames(&mut probe))
+        .transpose()?;
     probe.close()?;
     let probe_s = step.elapsed();
     ensure!(
@@ -420,13 +433,14 @@ pub fn render(
     let count = last - first + 1;
 
     let frame_rate = Rational::new(i64::from(options.fps), 1);
-    let config = Config::new(
+    let mut config = Config::new(
         composition.width,
         composition.height,
         frame_rate,
         *codec,
         count,
     );
+    config.skip = static_frames.map(Skip::planned);
     let (width, height) = (composition.width as i32, composition.height as i32);
     let progress = Progress::new(progress, count, command_start);
     let first_ready = OnceLock::new();
@@ -504,6 +518,7 @@ pub fn render(
             encode: StageStats::of(&stats.encode),
         },
         repeats: stats.repeats,
+        skipped: stats.skipped,
         capture_retries: stats.retries,
     })
 }

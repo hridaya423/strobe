@@ -34,6 +34,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
                 plan: Plan::single(),
                 audio: false,
                 video: VideoDecoder::Remotion,
+                skip: false,
             };
             let bundle = remotion::bundle(&options.project, options.entry.as_deref())?;
             let server = remotion::Offthread::start(&options.project.canonicalize()?, &bundle.dir)?;
@@ -58,6 +59,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
                 plan: Plan::single(),
                 audio: false,
                 native_video: std::env::var("VRF_NATIVE_VIDEO").map_or(true, |value| value != "0"),
+                skip: false,
             };
             let prepare = hyperframes::prepare_for(&options)?;
             let page = hyperframes::Page::new(prepare, &options)?;
