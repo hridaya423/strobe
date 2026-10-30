@@ -14,13 +14,27 @@ fn one_begin_frame_one_iosurface(ui: &Ui) -> Result<()> {
     let paint = view
         .recv_paint(Duration::from_secs(5))
         .context("no OnAcceleratedPaint within 5 s")?;
-    ensure!(paint.surface.id() != 0, "IOSurface has no id");
-    ensure!(
-        (paint.surface.width(), paint.surface.height()) == (1280, 720),
-        "IOSurface is {}x{}",
-        paint.surface.width(),
-        paint.surface.height()
-    );
+    #[cfg(target_os = "macos")]
+    {
+        ensure!(paint.surface.id() != 0, "IOSurface has no id");
+        ensure!(
+            (paint.surface.width(), paint.surface.height()) == (1280, 720),
+            "IOSurface is {}x{}",
+            paint.surface.width(),
+            paint.surface.height()
+        );
+    }
+    #[cfg(windows)]
+    {
+        let gpu = vrf::gpu::Gpu::new()?;
+        let texture = gpu.import_shared_handle(&paint.surface, wgpu::TextureUsages::COPY_SRC)?;
+        ensure!(
+            (texture.width(), texture.height()) == (1280, 720),
+            "the shared texture is {}x{}",
+            texture.width(),
+            texture.height()
+        );
+    }
     ensure!(
         view.recv_paint(Duration::from_millis(300)).is_none(),
         "a second delivery followed one begin frame"

@@ -240,8 +240,7 @@ struct Located {
 }
 
 fn locate(project: &Path, entry: Option<&Path>) -> Result<Located> {
-    let project = project
-        .canonicalize()
+    let project = crate::canonical(project)
         .with_context(|| format!("project directory {} does not exist", project.display()))?;
     let entry = match entry {
         Some(entry) => entry.to_owned(),
@@ -388,7 +387,7 @@ pub struct Fallback {
 impl Fallback {
     pub fn new(project_dir: &Path, bundle_dir: &Path, project: Project) -> Result<Fallback> {
         Ok(Fallback {
-            project_dir: project_dir.canonicalize()?,
+            project_dir: crate::canonical(&project_dir)?,
             bundle_dir: bundle_dir.to_owned(),
             project,
             server: Mutex::new(None),
@@ -486,7 +485,7 @@ impl Page {
             ))
             .context("the composition did not initialise")?;
         ensure!(
-            crate::software_webgl() || meta["webgl"] != true,
+            crate::webgl_settled() || meta["webgl"] != true,
             "{NEEDS_SOFTWARE_WEBGL}"
         );
         Ok((view, serde_json::from_value(meta)?))
@@ -532,7 +531,7 @@ impl Page {
             .context("the composition did not mount")?;
         view.settle()?;
         ensure!(
-            crate::software_webgl() || view.evaluate("__vrf.rm.webgl()")? != true,
+            crate::webgl_settled() || view.evaluate("__vrf.rm.webgl()")? != true,
             "{NEEDS_SOFTWARE_WEBGL}"
         );
         Ok(())
@@ -553,7 +552,7 @@ impl Page {
             ask,
         )?;
         ensure!(
-            result["webgl"] != true || crate::software_webgl(),
+            result["webgl"] != true || crate::webgl_settled(),
             "{NEEDS_SOFTWARE_WEBGL}"
         );
         Ok((serde_json::from_value(result["assets"].clone())?, unchanged))
@@ -755,7 +754,7 @@ impl Renderer {
         let bundle = bundle(&options.project, options.entry.as_deref())?;
         let bundle_s = step.elapsed();
 
-        let project_dir = options.project.canonicalize()?;
+        let project_dir = crate::canonical(&options.project)?;
         let key = Key {
             project: project_dir,
             bundle: bundle.dir.clone(),

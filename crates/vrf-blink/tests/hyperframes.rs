@@ -152,7 +152,7 @@ fn options(project: &Path) -> Options {
         mode: Mode::Offline,
         plan: Plan::single(),
         audio: true,
-        native_video: true,
+        native_video: cfg!(target_os = "macos"),
         skip: false,
     }
 }
@@ -176,7 +176,11 @@ fn render(
 
 fn hyperframes_render(project: &Path, out: &Path) -> Result<()> {
     run(
-        hyperframes_package().join("../.bin/hyperframes"),
+        hyperframes_package().join(if cfg!(windows) {
+            "../.bin/hyperframes.cmd"
+        } else {
+            "../.bin/hyperframes"
+        }),
         &[
             "render",
             project.to_str().unwrap(),
@@ -465,10 +469,10 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     counted_clip(&project.join("assets/counted.mp4"))?;
     let mut files = Vec::new();
     for views in [1, 2, 4] {
-        let out = work_dir().join(format!("parallel-{views}.mov"));
+        let out = work_dir().join(format!("parallel-{views}.{}", support::DETERMINISTIC.1));
         let mut options = options(&project);
         options.plan = Plan::new(views, 7);
-        let report = render(ui, &options, None, Codec::ProRes422, &out)?;
+        let report = render(ui, &options, None, support::DETERMINISTIC.0, &out)?;
         ensure!(report.frames == 60 && report.views == views && report.repeats == 0);
         files.push((views, fs::read(&out)?));
     }
@@ -493,13 +497,16 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
     )?;
     for views in [1, 3] {
         let mut render_with = |skip: bool| -> Result<(Vec<u8>, u64)> {
-            let out = work_dir().join(format!("skip-{views}-{skip}.mov"));
+            let out = work_dir().join(format!(
+                "skip-{views}-{skip}.{}",
+                support::DETERMINISTIC.1
+            ));
             let options = Options {
                 skip,
                 plan: Plan::new(views, 7),
                 ..options(&project)
             };
-            let report = render(ui, &options, None, Codec::ProRes422, &out)?;
+            let report = render(ui, &options, None, support::DETERMINISTIC.0, &out)?;
             ensure!(report.frames == 90 && report.views == views);
             Ok((fs::read(&out)?, report.skipped))
         };
@@ -521,7 +528,7 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
 
 fn main() -> ExitCode {
     vrf_blink::set_cpu_raster(hyperframes::CPU_RASTER);
-    support::run(&[
+    let mut cases: Vec<support::Case> = vec![
         (
             "hyperframes_frames_and_audio_match_hyperframes_own_render",
             frames_and_audio_match_hyperframes_own_render,
@@ -551,5 +558,9 @@ fn main() -> ExitCode {
             "hyperframes_skipped_frames_write_the_same_bytes",
             unchanged_frames_are_skipped_and_the_bytes_do_not_change,
         ),
-    ])
+    ];
+    if cfg!(windows) {
+        cases.retain(|(name, _)| !name.contains("native_video"));
+    }
+    support::run(&cases)
 }

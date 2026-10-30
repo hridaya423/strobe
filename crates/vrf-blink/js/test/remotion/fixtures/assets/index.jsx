@@ -14,6 +14,6 @@ const Offset = () => (
   </>
 );
 
-const Root = () => <Composition id="Offset" component={Offset} width={64} height={64} fps={30} durationInFrames={90} />;
+const Root = () => <Composition id="Offset" component={Offset} width={160} height={160} fps={30} durationInFrames={90} />;
 
 registerRoot(Root);

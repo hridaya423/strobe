@@ -1,32 +1,34 @@
-use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread::{self, JoinHandle};
+use std::sync::{Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
-use vrf::colour::{Chroma, Format};
-use vrf::gpu::Gpu;
-use vrf::gpu::convert::{Converter, Source};
-use vrf::gpu::metal::PoolTargets;
+use vrf::colour::Chroma;
 use vrf::mux::{Container, Muxer};
 use vrf::sched::{self, Consumer, Producer, Submission};
 use vrf::sink::Sink;
-use vrf_encode::turbo::{TurboEncoder, TurboOptions};
-use vrf_encode::videotoolbox::pool::{PixelFormat, PixelPool, PoolBuffer};
-use vrf_encode::videotoolbox::{self, VideoToolboxEncoder};
-use vrf_encode::x264;
 use vrf_encode::{Codec, ColourSpace, Encoder, EncoderConfig, EncoderFrame, Rational};
 
+#[cfg(target_os = "macos")]
+pub use crate::pipeline_mac::Warm;
+#[cfg(target_os = "macos")]
+use crate::pipeline_mac::{
+    Converting, ConvertingSpec, Frame, Keep, POOL_MARGIN, Started, Submit, start, turbo_default,
+};
+#[cfg(windows)]
+pub use crate::pipeline_win::Warm;
+#[cfg(windows)]
+use crate::pipeline_win::{
+    Converting, ConvertingSpec, Frame, Keep, POOL_MARGIN, Started, Submit, start, turbo_default,
+};
 use crate::skip::Skip;
 use crate::{Paint, View};
 
 const WINDOW: usize = 32;
-const MAX_IMPORTS: usize = 16;
-const POOL_MARGIN: usize = 32;
 const MEMORY_BUDGET: u64 = 3 << 29;
 const MAX_MEMORY_BUDGET: u64 = 3 << 30;
 const MIN_RUN: u64 = 80;
@@ -44,16 +46,12 @@ pub struct Config {
     pub watchdog: Duration,
     pub window: usize,
     pub turbo: bool,
+    pub sessions: usize,
     pub skip: Option<Skip>,
     pub colour: ColourSpace,
 }
 
 impl Config {
-    fn turbo_options(&self) -> Option<TurboOptions> {
-        self.turbo
-            .then(|| TurboOptions::for_frame(self.width, self.height))
-    }
-
     pub fn new(width: u32, height: u32, frame_rate: Rational, codec: Codec, frames: u64) -> Self {
         Config {
             width,
@@ -63,19 +61,20 @@ impl Config {
             frames,
             watchdog: Duration::from_millis(500),
             window: WINDOW,
-            turbo: codec == Codec::H264 && x264::available().is_ok(),
+            turbo: turbo_default(codec),
+            sessions: 1,
             skip: None,
             colour: ColourSpace::BT709,
         }
     }
 
-    fn encoder_config(&self) -> EncoderConfig {
+    pub(crate) fn encoder_config(&self) -> EncoderConfig {
         let mut config = EncoderConfig::new(self.codec, self.width, self.height, self.frame_rate);
         config.colour = self.colour;
         config
     }
 
-    fn chroma(&self) -> Chroma {
+    pub(crate) fn chroma(&self) -> Chroma {
         if self.colour == ColourSpace::BT709 {
             Chroma::Swscale
         } else {
@@ -123,138 +122,9 @@ impl Summary {
     }
 }
 
-const WARM_POOLS: usize = 2;
-
-type PoolKey = (u32, u32, PixelFormat, usize, ColourSpace);
-
-struct PoolSlot {
-    key: PoolKey,
-    pool: PixelPool,
-    targets: PoolTargets,
-}
-
-/// The GPU device, the converter and the encoder pixel pools, kept from one render to the next.
-/// Creating them costs more than a short render takes.
-pub struct Warm {
-    gpu: Arc<Gpu>,
-    converter: Arc<Converter>,
-    pools: Vec<PoolSlot>,
-}
-
-// Metal devices and CoreVideo pools are thread-safe; a `Warm` is only ever used by one thread
-// at a time.
-unsafe impl Send for Warm {}
-
-impl Warm {
-    pub fn new() -> Result<Warm> {
-        let gpu = Gpu::new()?;
-        let converter = Converter::new(&gpu, Format::Nv12);
-        Ok(Warm {
-            gpu: Arc::new(gpu),
-            converter: Arc::new(converter),
-            pools: Vec::new(),
-        })
-    }
-
-    /// Allocates the pixel pool for frames of `width` x `height` if no render has yet.
-    pub fn prepare(&mut self, width: u32, height: u32, colour: ColourSpace) -> Result<()> {
-        let mut config = Config::new(width, height, Rational::new(30, 1), Codec::H264, 0);
-        config.colour = colour;
-        let key = pool_key(&config, &config.encoder_config(), config.turbo_options())?;
-        self.slot(key).map(|_| ())
-    }
-
-    fn slot(&mut self, key: PoolKey) -> Result<&mut PoolSlot> {
-        let at = match self.pools.iter().position(|slot| slot.key == key) {
-            Some(at) => at,
-            None => {
-                if self.pools.len() >= WARM_POOLS {
-                    self.pools.remove(0);
-                }
-                let (width, height, format, size, colour) = key;
-                self.pools.push(PoolSlot {
-                    key,
-                    pool: PixelPool::with_colour(
-                        width as usize,
-                        height as usize,
-                        format,
-                        size,
-                        colour,
-                    )?,
-                    targets: PoolTargets::default(),
-                });
-                self.pools.len() - 1
-            }
-        };
-        Ok(&mut self.pools[at])
-    }
-}
-
-struct Converting {
-    gpu: Arc<Gpu>,
-    converter: Arc<Converter>,
-    targets: PoolTargets,
-    imports: HashMap<u32, Source>,
-    pool: PixelPool,
-    chroma: Chroma,
-}
-
-impl Converting {
-    fn convert(&mut self, paint: &Paint) -> Result<PoolBuffer> {
-        let id = paint.surface.id();
-        if !self.imports.contains_key(&id) {
-            if self.imports.len() >= MAX_IMPORTS {
-                self.imports.clear();
-            }
-            let texture = self.gpu.import_iosurface(&paint.surface, 0, paint.format)?;
-            let source = self
-                .converter
-                .source(&texture.create_view(&Default::default()));
-            self.imports.insert(id, source);
-        }
-        let buffer = self.pool.acquire()?;
-        let target = self.targets.get(&self.gpu, &self.converter, &buffer)?;
-        let mut commands = self.gpu.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = commands.begin_compute_pass(&Default::default());
-            self.converter.encode(
-                &mut pass,
-                &self.imports[&id],
-                target,
-                paint.visible,
-                self.chroma,
-            );
-        }
-        let submission = self.gpu.queue.submit([commands.finish()]);
-        self.gpu.device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: None,
-        })?;
-        Ok(buffer)
-    }
-}
-
-fn pool_key(
-    config: &Config,
-    encoder_config: &EncoderConfig,
-    turbo: Option<TurboOptions>,
-) -> Result<PoolKey> {
-    let lane_buffers = match &turbo {
-        Some(options) => TurboEncoder::lane_buffers(encoder_config, options)?,
-        None => 0,
-    };
-    Ok((
-        config.width,
-        config.height,
-        videotoolbox::pixel_format(encoder_config),
-        config.window + POOL_MARGIN + lane_buffers,
-        config.colour,
-    ))
-}
-
-fn submit_loop(
+pub(crate) fn submit_loop<F: Clone + Into<EncoderFrame>>(
     mut encoder: impl Encoder,
-    mut consumer: Consumer<PoolBuffer>,
+    mut consumer: Consumer<F>,
     mut sink: Sink,
     frame_rate: Rational,
 ) -> Result<(Muxer, Vec<Duration>)> {
@@ -262,7 +132,7 @@ fn submit_loop(
     while let Some((index, buffer)) = consumer.recv()? {
         let started = Instant::now();
         let pts = Rational::new(index as i64 * frame_rate.den, frame_rate.num);
-        encoder.submit(EncoderFrame::PixelBuffer(buffer), pts)?;
+        encoder.submit(buffer.into(), pts)?;
         encode.push(started.elapsed());
         let packets = encoder.drain()?;
         sink.write(&encoder, packets)?;
@@ -336,26 +206,16 @@ impl Capture {
 /// What a worker thread needs to build its own [`Lane`]. The GPU device is created on the
 /// thread that calls [`LaneSpec::open`].
 pub struct LaneSpec {
-    producer: Producer<PoolBuffer>,
-    pool: PixelPool,
+    producer: Producer<Frame>,
+    converting: ConvertingSpec,
     width: u32,
     height: u32,
-    chroma: Chroma,
 }
 
 impl LaneSpec {
     pub fn open(self) -> Result<Lane> {
-        let gpu = Gpu::new()?;
-        let converter = Converter::new(&gpu, Format::Nv12);
         Ok(Lane {
-            converting: Converting {
-                gpu: Arc::new(gpu),
-                converter: Arc::new(converter),
-                targets: PoolTargets::default(),
-                imports: HashMap::new(),
-                pool: self.pool,
-                chroma: self.chroma,
-            },
+            converting: self.converting.open()?,
             producer: self.producer,
             width: self.width,
             height: self.height,
@@ -370,7 +230,7 @@ impl LaneSpec {
 /// by frame index. Each view thread has its own lane.
 pub struct Lane {
     converting: Converting,
-    producer: Producer<PoolBuffer>,
+    producer: Producer<Frame>,
     width: u32,
     height: u32,
     pub repeats: u64,
@@ -390,7 +250,7 @@ impl Lane {
             self.height
         );
         let step = Instant::now();
-        let buffer = self.converting.convert(paint)?;
+        let buffer = self.converting.convert(index, paint)?;
         self.convert.push(step.elapsed());
         self.producer.submit(index, Submission::Frame(buffer))
     }
@@ -411,10 +271,9 @@ impl Lane {
     pub fn spec(&self) -> LaneSpec {
         LaneSpec {
             producer: self.producer.clone(),
-            pool: self.converting.pool.clone(),
+            converting: self.converting.spec(),
             width: self.width,
             height: self.height,
-            chroma: self.converting.chroma,
         }
     }
 }
@@ -423,9 +282,9 @@ impl Lane {
 /// through lanes; the pipeline is itself the first lane, and uses the GPU state of `warm`.
 pub struct Pipeline<'w> {
     lane: Lane,
-    submit: JoinHandle<Result<(Muxer, Vec<Duration>)>>,
+    submit: Submit,
     warm: &'w mut Warm,
-    key: PoolKey,
+    keep: Keep,
 }
 
 impl Deref for Pipeline<'_> {
@@ -444,15 +303,7 @@ impl DerefMut for Pipeline<'_> {
 
 impl<'w> Pipeline<'w> {
     pub fn new(config: &Config, out: &Path, warm: &'w mut Warm) -> Result<Pipeline<'w>> {
-        let encoder_config = config.encoder_config();
-        let turbo = config.turbo_options();
-        let key = pool_key(config, &encoder_config, turbo)?;
-        let gpu = warm.gpu.clone();
-        let converter = warm.converter.clone();
-        let slot = warm.slot(key)?;
-        let pool = slot.pool.clone();
-        let targets = std::mem::take(&mut slot.targets);
-        let (producer, consumer) = sched::ordered::<PoolBuffer>(config.window);
+        let (producer, consumer) = sched::ordered::<Frame>(config.window);
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
             Codec::H264 | Codec::Hevc | Codec::Av1 => Container::Mp4,
@@ -461,15 +312,13 @@ impl<'w> Pipeline<'w> {
             Muxer::create(out, container, config.frame_rate.num as u32)?,
             config.frame_rate.den as u32,
         );
+        let Started {
+            converting,
+            keep,
+            submit,
+        } = start(config, warm, consumer, sink)?;
         let lane = Lane {
-            converting: Converting {
-                gpu,
-                converter,
-                targets,
-                imports: HashMap::new(),
-                pool: pool.clone(),
-                chroma: config.chroma(),
-            },
+            converting,
             producer,
             width: config.width,
             height: config.height,
@@ -477,22 +326,11 @@ impl<'w> Pipeline<'w> {
             skipped: 0,
             convert: Vec::new(),
         };
-        let frame_rate = config.frame_rate;
-        let submit = match turbo {
-            Some(options) => {
-                let encoder = TurboEncoder::with_pool(encoder_config, options, pool)?;
-                thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate))
-            }
-            None => {
-                let encoder = VideoToolboxEncoder::with_pool(encoder_config, pool, None)?;
-                thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate))
-            }
-        };
         Ok(Pipeline {
             lane,
             submit,
             warm,
-            key,
+            keep,
         })
     }
 
@@ -503,7 +341,7 @@ impl<'w> Pipeline<'w> {
             lane,
             submit,
             warm,
-            key,
+            keep,
         } = self;
         let Lane {
             converting,
@@ -511,10 +349,7 @@ impl<'w> Pipeline<'w> {
             ..
         } = lane;
         drop(producer);
-        let Converting { targets, .. } = converting;
-        if let Some(slot) = warm.pools.iter_mut().find(|slot| slot.key == key) {
-            slot.targets = targets;
-        }
+        warm.keep(keep, converting);
         submit.join().expect("submit thread panicked")
     }
 }
@@ -608,10 +443,16 @@ pub struct Plan {
     pub turbo: bool,
     #[serde(default)]
     pub ranges: Option<u64>,
+    #[serde(default = "one")]
+    pub sessions: usize,
 }
 
 fn enabled() -> bool {
     true
+}
+
+fn one() -> usize {
+    1
 }
 
 impl Plan {
@@ -622,6 +463,7 @@ impl Plan {
             lead_in: LEAD_IN,
             turbo: true,
             ranges: None,
+            sessions: 1,
         }
     }
 
@@ -632,6 +474,7 @@ impl Plan {
             lead_in: LEAD_IN,
             turbo: true,
             ranges: None,
+            sessions: 1,
         }
     }
 
@@ -930,6 +773,7 @@ pub fn render_runs<T: Send>(
     let mut config = config.clone();
     config.window = config.window.max(plan.window());
     config.turbo &= plan.turbo;
+    config.sessions = plan.sessions.max(1);
     let step = Instant::now();
     let mut pipeline = Pipeline::new(&config, out, warm)?;
     let pipeline_s = step.elapsed();

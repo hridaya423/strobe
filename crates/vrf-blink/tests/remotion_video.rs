@@ -3,7 +3,6 @@ mod clips;
 mod support;
 
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -43,7 +42,7 @@ fn project() -> Result<PathBuf> {
         let reference = std::env::var_os("VRF_BENCH_DIR")
             .map_or_else(bench_dir, PathBuf::from)
             .join("corpus/external/github-unwrapped/node_modules");
-        symlink(reference, project.join("node_modules"))?;
+        support::link_dir(reference, project.join("node_modules"))?;
     }
     fs::create_dir_all(project.join("src"))?;
     fs::copy(FIXTURE, project.join("src/index.jsx"))?;
@@ -100,7 +99,7 @@ fn shoot(ui: &Ui, composition: &str, video: VideoDecoder, frames: &[u64]) -> Res
         let paint = view
             .recv_paint(Duration::from_secs(10))
             .context("no delivery")?;
-        let texture = gpu.import_iosurface(&paint.surface, 0, paint.format)?;
+        let texture = support::import(&gpu, &paint)?;
         shots.push((frame, gpu.read_texture(&texture)?));
     }
     view.check_project()?;
@@ -302,5 +301,9 @@ const CASES: &[support::Case] = &[
 ];
 
 fn main() -> ExitCode {
+    if cfg!(windows) {
+        println!("native video decoding is macOS only; skipped");
+        return ExitCode::SUCCESS;
+    }
     support::run(CASES)
 }

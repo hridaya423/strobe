@@ -87,10 +87,14 @@ struct RenderArgs {
     /// Leave the audio out of the file.
     #[arg(long)]
     no_audio: bool,
-    /// What decodes embedded video: `native` (VideoToolbox, falling back to the framework's own
-    /// decoding for clips it cannot reproduce exactly) or `remotion` (the framework's own for
-    /// all: Remotion's frame server, HyperFrames' ffmpeg extraction).
-    #[arg(long, value_enum, default_value = "native")]
+    /// What decodes embedded video: `native` (VideoToolbox, macOS only, falling back to the
+    /// framework's own decoding for clips it cannot reproduce exactly) or `remotion` (the
+    /// framework's own for all: Remotion's frame server, HyperFrames' ffmpeg extraction).
+    #[cfg_attr(target_os = "macos", arg(long, value_enum, default_value = "native"))]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        arg(long, value_enum, default_value = "remotion")
+    )]
     video: VideoArg,
     /// Render every frame, even those the page proves unchanged.
     #[arg(long)]
@@ -104,6 +108,9 @@ struct RenderArgs {
     /// Encode H.264 on VideoToolbox alone, without the libx264 lane.
     #[arg(long)]
     no_turbo: bool,
+    /// NVENC sessions that share the encoding, a chunk of frames each in turn (Windows only).
+    #[arg(long, default_value_t = 1)]
+    encoder_sessions: usize,
 }
 
 #[derive(Args)]
@@ -140,6 +147,8 @@ enum CodecArg {
     H264,
     Hevc,
     Prores,
+    #[cfg(windows)]
+    Av1,
 }
 
 impl From<CodecArg> for Codec {
@@ -148,6 +157,8 @@ impl From<CodecArg> for Codec {
             CodecArg::H264 => Codec::H264,
             CodecArg::Hevc => Codec::Hevc,
             CodecArg::Prores => Codec::ProRes422,
+            #[cfg(windows)]
+            CodecArg::Av1 => Codec::Av1,
         }
     }
 }
@@ -218,6 +229,7 @@ impl RenderArgs {
         };
         let plan = Plan {
             turbo: !self.no_turbo,
+            sessions: self.encoder_sessions,
             ..plan
         };
         let output = std::path::absolute(&self.output)?;

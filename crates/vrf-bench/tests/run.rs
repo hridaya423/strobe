@@ -28,7 +28,11 @@ fn vrf_engine_renders_both_frameworks() {
     assert!(Engine::Vrf.supports(Framework::Remotion));
     assert!(Engine::Vrf.supports(Framework::Hyperframes));
     let invocation = Engine::Vrf.invocation(&remotion, std::path::Path::new("/tmp/out.mp4"));
-    assert!(invocation.argv[0].ends_with("target/release/vrf"));
+    assert!(
+        std::path::Path::new(&invocation.argv[0])
+            .with_extension("")
+            .ends_with("target/release/vrf")
+    );
     assert_eq!(
         invocation.argv[1..],
         [

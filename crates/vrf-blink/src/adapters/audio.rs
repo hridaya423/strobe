@@ -8,7 +8,10 @@ use vrf::audio::{
     Clip, Predecoder, RemotionAsset, SAMPLE_RATE, Volume, mix_range, remotion_clip_states,
     remotion_start, saturate,
 };
+#[cfg(target_os = "macos")]
 use vrf_encode::audiotoolbox::encode_aac_chunks;
+#[cfg(windows)]
+use vrf_encode::mediafoundation::encode_aac_chunks;
 use vrf_encode::{AacConfig, AacStream};
 
 const ROUND_FRAMES: usize = 30;

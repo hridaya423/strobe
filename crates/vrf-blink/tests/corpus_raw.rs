@@ -92,7 +92,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
             continue;
         }
         if let Some(paint) = capture.next(&view, Duration::from_millis(700))? {
-            let texture = gpu.import_iosurface(&paint.surface, 0, paint.format)?;
+            let texture = support::import(&gpu, &paint)?;
             last = Some(Rgb8 {
                 width: corpus.width,
                 height: corpus.height,
@@ -113,7 +113,8 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
             );
         }
         if s.flip_mean > worst_flip.0 {
-            let dir = std::path::Path::new("/tmp/vrf-o-out");
+            let dir = std::env::temp_dir().join("vrf-o-out");
+            std::fs::create_dir_all(&dir)?;
             ours.save_png(&dir.join("raw-worst-ours.png"))?;
             score::heatmap(&map).save_png(&dir.join("raw-worst-heat.png"))?;
         }

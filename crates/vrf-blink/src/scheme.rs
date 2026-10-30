@@ -81,7 +81,7 @@ impl Project {
         mode: Mode,
     ) -> Result<Project> {
         let canonical = |dir: &Path| {
-            dir.canonicalize()
+            crate::canonical(dir)
                 .with_context(|| format!("project directory {} does not exist", dir.display()))
         };
         let root = canonical(root.as_ref())?;

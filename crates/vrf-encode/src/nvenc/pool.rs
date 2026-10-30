@@ -6,8 +6,8 @@ use nvidia_video_codec_sdk::sys::nvEncodeAPI as nv;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_DESC,
     D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
-    D3D12_RESOURCE_STATE_COMMON, D3D12_TEXTURE_LAYOUT_UNKNOWN, ID3D12Device, ID3D12Fence,
-    ID3D12Resource,
+    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
+    D3D12_TEXTURE_LAYOUT_UNKNOWN, ID3D12Device, ID3D12Fence, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_SAMPLE_DESC,
@@ -17,7 +17,7 @@ use windows::core::Interface;
 use super::api::{Session, zeroed};
 use super::version;
 
-/// Input textures per encoder. The output ring has the same depth.
+/// Input textures per encoder by default, and the depth of the output ring.
 pub const POOL_SIZE: usize = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,16 +73,99 @@ pub struct InputPool {
     pub(super) shared: Arc<PoolShared>,
 }
 
-/// One pool texture. It goes back to the pool when dropped, which the encoder does once the
-/// frame's packet has come out.
-pub struct PoolFrame {
+struct Lease {
     shared: Arc<PoolShared>,
-    pub(super) slot: usize,
+    slot: usize,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.shared.lock_free().push(self.slot);
+        self.shared.released.notify_one();
+    }
+}
+
+/// One pool texture. Clones share it, and it goes back to the pool when the last clone drops,
+/// which the encoder does for its own once the frame's packet has come out.
+#[derive(Clone)]
+pub struct PoolFrame {
+    lease: Arc<Lease>,
     /// Set after the GPU work that wrote the texture, so the encoder waits for it.
     pub ready: Option<Ready>,
 }
 
+fn texture(
+    device: &ID3D12Device,
+    width: u32,
+    height: u32,
+    format: PixelFormat,
+) -> Result<ID3D12Resource> {
+    ensure!(
+        width % 2 == 0 && height % 2 == 0,
+        "{width}x{height} is not a 4:2:0 size"
+    );
+    let desc = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Width: width as u64,
+        Height: height,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: format.dxgi(),
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS
+            | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        ..Default::default()
+    };
+    let mut resource: Option<ID3D12Resource> = None;
+    unsafe {
+        device.CreateCommittedResource(
+            &D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_DEFAULT,
+                ..Default::default()
+            },
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            None,
+            &mut resource,
+        )?;
+    }
+    resource.context("no texture returned")
+}
+
 impl InputPool {
+    /// Textures for an encoder that takes D3D12 resources directly and registers nothing.
+    pub fn unregistered(
+        device: &ID3D12Device,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        count: usize,
+    ) -> Result<InputPool> {
+        let slots = (0..count)
+            .map(|_| {
+                Ok(Slot {
+                    resource: texture(device, width, height, format)?,
+                    registered: std::ptr::null_mut(),
+                    mapped: std::ptr::null_mut(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(InputPool {
+            shared: Arc::new(PoolShared {
+                free: Mutex::new((0..count).rev().collect()),
+                slots,
+                released: Condvar::new(),
+                format,
+                size: (width, height),
+            }),
+        })
+    }
+
     pub(super) fn new(
         session: &Session,
         device: &ID3D12Device,
@@ -90,26 +173,8 @@ impl InputPool {
         width: u32,
         height: u32,
         format: PixelFormat,
+        count: usize,
     ) -> Result<InputPool> {
-        ensure!(
-            width % 2 == 0 && height % 2 == 0,
-            "{width}x{height} is not a 4:2:0 size"
-        );
-        let desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Width: width as u64,
-            Height: height,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: format.dxgi(),
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
-            ..Default::default()
-        };
         let mut point = nv::NV_ENC_FENCE_POINT_D3D12 {
             version: version::NV_ENC_FENCE_POINT_D3D12_VER,
             reserved: 0,
@@ -120,23 +185,9 @@ impl InputPool {
             _bitfield_1: Default::default(),
             reserved1: [0; 7],
         };
-        let mut slots = Vec::with_capacity(POOL_SIZE);
-        for _ in 0..POOL_SIZE {
-            let mut resource: Option<ID3D12Resource> = None;
-            unsafe {
-                device.CreateCommittedResource(
-                    &D3D12_HEAP_PROPERTIES {
-                        Type: D3D12_HEAP_TYPE_DEFAULT,
-                        ..Default::default()
-                    },
-                    D3D12_HEAP_FLAG_NONE,
-                    &desc,
-                    D3D12_RESOURCE_STATE_COMMON,
-                    None,
-                    &mut resource,
-                )?;
-            }
-            let resource = resource.context("no texture returned")?;
+        let mut slots = Vec::with_capacity(count);
+        for _ in 0..count {
+            let resource = texture(device, width, height, format)?;
             let (registered, mapped) = unsafe {
                 let mut register: nv::NV_ENC_REGISTER_RESOURCE = zeroed();
                 register.version = version::NV_ENC_REGISTER_RESOURCE_VER;
@@ -173,7 +224,7 @@ impl InputPool {
         }
         Ok(InputPool {
             shared: Arc::new(PoolShared {
-                free: Mutex::new((0..POOL_SIZE).rev().collect()),
+                free: Mutex::new((0..count).rev().collect()),
                 slots,
                 released: Condvar::new(),
                 format,
@@ -194,11 +245,7 @@ impl InputPool {
     /// the packet of the frame they carried.
     pub fn try_acquire(&self) -> Option<PoolFrame> {
         let slot = self.shared.lock_free().pop()?;
-        Some(PoolFrame {
-            shared: self.shared.clone(),
-            slot,
-            ready: None,
-        })
+        Some(self.lend(slot))
     }
 
     /// Waits for a free texture. This does not need the caller to drain packets: the encoder
@@ -207,11 +254,7 @@ impl InputPool {
         let mut free = self.shared.lock_free();
         loop {
             if let Some(slot) = free.pop() {
-                return PoolFrame {
-                    shared: self.shared.clone(),
-                    slot,
-                    ready: None,
-                };
+                return self.lend(slot);
             }
             free = self
                 .shared
@@ -219,6 +262,24 @@ impl InputPool {
                 .wait(free)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+    }
+
+    fn lend(&self, slot: usize) -> PoolFrame {
+        PoolFrame {
+            lease: Arc::new(Lease {
+                shared: self.shared.clone(),
+                slot,
+            }),
+            ready: None,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.shared.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shared.slots.is_empty()
     }
 
     pub(super) fn unregister(&self, session: &Session) {
@@ -247,29 +308,28 @@ impl PoolFrame {
     /// The texture to write. Leave it in the common state: it allows simultaneous access, so
     /// it needs no barrier between the queue that writes it and the encoder.
     pub fn resource(&self) -> &ID3D12Resource {
-        &self.shared.slots[self.slot].resource
+        &self.lease.shared.slots[self.lease.slot].resource
     }
 
     pub fn format(&self) -> PixelFormat {
-        self.shared.format
+        self.lease.shared.format
     }
 
     pub fn size(&self) -> (u32, u32) {
-        self.shared.size
+        self.lease.shared.size
     }
 
-    pub(super) fn pool_is(&self, pool: &InputPool) -> bool {
-        Arc::ptr_eq(&self.shared, &pool.shared)
+    /// The index of this texture in its pool. A pool hands out the same textures for the whole
+    /// render, so per-texture state can be kept by slot.
+    pub fn slot(&self) -> usize {
+        self.lease.slot
+    }
+
+    pub fn pool_is(&self, pool: &InputPool) -> bool {
+        Arc::ptr_eq(&self.lease.shared, &pool.shared)
     }
 
     pub(super) fn mapped(&self) -> *mut c_void {
-        self.shared.slots[self.slot].mapped
-    }
-}
-
-impl Drop for PoolFrame {
-    fn drop(&mut self) {
-        self.shared.lock_free().push(self.slot);
-        self.shared.released.notify_one();
+        self.lease.shared.slots[self.lease.slot].mapped
     }
 }

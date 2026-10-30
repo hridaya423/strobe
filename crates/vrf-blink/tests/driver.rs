@@ -7,16 +7,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
-use objc2_io_surface::IOSurfaceLockOptions;
 use support::{
-    HEIGHT, TOLERANCE, WIDTH, centre_colours, centre_colours_as, expected_colour, load_average,
-    page_url,
+    DETERMINISTIC, HEIGHT, TOLERANCE, WIDTH, centre_colours, centre_colours_as, expected_colour,
+    load_average, page_url, pixel,
 };
 use vrf_blink::driver::{
     Capture, Config, Pipeline, Plan, Stats, Summary, Warm, render, render_runs,
 };
 use vrf_blink::skip::{self, Skip, TRACK_JS};
-use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
+use vrf_blink::{Mode, Project, Ui, View, calibration};
 use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
 const FRAME_RATE: Rational = Rational::new(30, 1);
@@ -249,18 +248,6 @@ fn pages() -> Result<Project> {
     )
 }
 
-fn pixel(paint: &Paint, x: usize, y: usize) -> [u8; 3] {
-    let surface = &paint.surface;
-    let options = IOSurfaceLockOptions::ReadOnly;
-    unsafe { surface.lock(options, std::ptr::null_mut()) };
-    let base = surface.base_address().as_ptr() as *const u8;
-    let bgra =
-        unsafe { std::slice::from_raw_parts(base.add(y * surface.bytes_per_row() + x * 4), 4) };
-    let rgb = [bgra[2], bgra[1], bgra[0]];
-    unsafe { surface.unlock(options, std::ptr::null_mut()) };
-    rgb
-}
-
 fn ticking_view_delivers_every_begin_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let mut view = View::open_project(
@@ -319,7 +306,7 @@ fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
                 (WIDTH as usize - 1, 0),
                 (WIDTH as usize / 2, HEIGHT as usize / 2),
             ] {
-                let got = pixel(&paint, x, y);
+                let got = pixel(&paint, x, y)?;
                 ensure!(
                     got == want,
                     "level {level}: pixel ({x}, {y}) is {got:?}, expected {want:?}"
@@ -337,11 +324,12 @@ fn seek(view: &mut View, frame: u64, ask: bool) -> Result<((), bool)> {
 
 fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let project = pages()?;
-    let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+    let config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, 96);
     let mut files = Vec::new();
     let mut warm = Warm::new()?;
     for views in [1, 2, 4, 8] {
-        let out = std::env::temp_dir().join(format!("vrf-blink-parallel-{views}.mov"));
+        let out =
+            std::env::temp_dir().join(format!("vrf-blink-parallel-{views}.{}", DETERMINISTIC.1));
         let runs = render_runs(
             &config,
             Plan::new(views, 7),
@@ -374,11 +362,11 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
 
 fn shrinking_runs_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let project = pages()?;
-    let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 420);
+    let config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, 420);
     let mut files = Vec::new();
     let mut warm = Warm::new()?;
     for views in [1, 2, 4, 5] {
-        let out = std::env::temp_dir().join(format!("vrf-blink-shrinking-{views}.mov"));
+        let out = std::env::temp_dir().join(format!("vrf-blink-shrinking-{views}.{}", DETERMINISTIC.1));
         let runs = render_runs(
             &config,
             Plan { lead_in: 2, ..Plan::new(views, 200) },
@@ -413,9 +401,9 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
     let project = pages()?;
     let mut warm = Warm::new()?;
     let mut render = |page: &str, skip: Option<Skip>, views: usize| -> Result<(Vec<u8>, u64)> {
-        let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+        let mut config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, 96);
         config.skip = skip;
-        let out = std::env::temp_dir().join(format!("vrf-blink-skip-{views}.mov"));
+        let out = std::env::temp_dir().join(format!("vrf-blink-skip-{views}.{}", DETERMINISTIC.1));
         let runs = render_runs(
             &config,
             Plan::new(views, 7),
@@ -476,10 +464,13 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let mut warm = Warm::new()?;
     let mut render = |skip: Option<Skip>| -> Result<(Vec<u8>, u64)> {
-        let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+        let mut config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, 96);
         config.skip = skip;
-        let out =
-            std::env::temp_dir().join(format!("vrf-blink-skip-flip-{}.mov", std::process::id()));
+        let out = std::env::temp_dir().join(format!(
+            "vrf-blink-skip-flip-{}.{}",
+            std::process::id(),
+            DETERMINISTIC.1
+        ));
         let runs = render_runs(
             &config,
             Plan::new(3, 7),
@@ -506,6 +497,51 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
             plain == skipping,
             "run starts were skipped against another run's frame"
         );
+    }
+    Ok(())
+}
+
+fn encoder_sessions_write_every_frame_in_order(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let frames = 200;
+    let mut colours = Vec::new();
+    let mut warm = Warm::new()?;
+    for sessions in [1, 2, 3] {
+        let mut config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, frames);
+        config.sessions = sessions;
+        let out =
+            std::env::temp_dir().join(format!("vrf-blink-sessions-{sessions}.{}", DETERMINISTIC.1));
+        let runs = render_runs(
+            &config,
+            Plan {
+                sessions,
+                ..Plan::new(2, 7)
+            },
+            0,
+            &out,
+            &mut warm,
+            || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
+            |view, frame, ask| seek(view, frame, ask),
+            |_, _, _| Ok(()),
+        )?;
+        runs.muxer.finish()?;
+        ensure!(runs.stats.repeats == 0, "{} repeats", runs.stats.repeats);
+        colours.push((sessions, centre_colours(&out)?));
+        std::fs::remove_file(&out)?;
+    }
+    for (sessions, got) in &colours[1..] {
+        ensure!(
+            got.len() == colours[0].1.len(),
+            "{sessions} sessions: {} frames",
+            got.len()
+        );
+        for (index, (a, b)) in got.iter().zip(&colours[0].1).enumerate() {
+            let error = a.iter().zip(b).map(|(a, b)| (a - b).abs()).max().unwrap();
+            ensure!(
+                error <= TOLERANCE,
+                "{sessions} sessions: frame {index} is {a:?}, one session wrote {b:?}"
+            );
+        }
     }
     Ok(())
 }
@@ -617,6 +653,10 @@ fn main() -> ExitCode {
         (
             "driver_shrinking_runs_write_the_same_bytes_as_one_view",
             shrinking_runs_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "driver_encoder_sessions_write_every_frame_in_order",
+            encoder_sessions_write_every_frame_in_order,
         ),
         (
             "driver_back_to_back_begin_frames_are_all_delivered",
