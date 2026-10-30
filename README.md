@@ -13,19 +13,11 @@
   <img src="https://img.shields.io/badge/license-Apache--2.0-2F7BFF?style=flat-square&labelColor=04060D" alt="License: Apache 2.0">
 </p>
 
-<p align="center">
-  <a href="#the-numbers">The numbers</a> ·
-  <a href="#the-frame-never-leaves-the-gpu">How it works</a> ·
-  <a href="#build-it">Build it</a> ·
-  <a href="#render-a-project">Render a project</a> ·
-  <a href="#what-does-not-work-yet">What does not work yet</a>
-</p>
-
 <br>
 
-Agents write motion graphics now. You describe a launch film, and the agent writes the HTML, the CSS and the GSAP timeline for Remotion or HyperFrames. The code takes a minute. Then the render starts, and you wait.
+With Opus 5.5, we all make motion graphics with code now. The agent writes the scene in minutes. Then every change waits on a render, and the render is slow.
 
-Strobe is a new render engine for those projects. It reads the same project folder and writes the same MP4. It does the work in a different place: on the GPU, from the paint to the encoder.
+I built Strobe to change that. Strobe reads the same Remotion or HyperFrames project and writes the same MP4. It keeps each frame on the GPU, from the paint to the encoder.
 
 ```sh
 vrf render ./launch-film -o launch.mp4
@@ -33,8 +25,6 @@ vrf render ./launch-film -o launch.mp4
 
 <p align="center">
   <img src="assets/readme/film.gif" alt="The opening of the Strobe launch film: the word forever, the strobe wordmark and 5.2× faster than Remotion" width="100%">
-  <br>
-  <sub>Strobe rendered its own launch film. The project is in <a href="launch/"><code>launch/</code></a>.</sub>
 </p>
 
 > [!NOTE]
@@ -49,7 +39,7 @@ vrf render ./launch-film -o launch.mp4
   </picture>
 </p>
 
-We rendered seven public launch videos, each one on the framework it was built for.
+I rendered seven public launch videos, each one on the framework it was built for.
 
 | Launch video | Rival | Rival time | Strobe time | Speedup |
 |---|---|---:|---:|---:|
@@ -63,7 +53,7 @@ We rendered seven public launch videos, each one on the framework it was built f
 
 Each time is wall clock, from the command to the finished file. The machine is an Apple M4 Mac mini with 10 cores and 16 GiB of memory. The rival times are the median of five runs. The Strobe times on the four HyperFrames videos come from one run each.
 
-Seven videos are a start, not proof. The repository also holds 26 synthetic projects. Each one pushes on one axis: canvas, text, images, 4K, WebGL, embedded video and more. If Strobe is slower on your project, we want that project.
+Seven videos are a start, not proof. The repository also holds 26 synthetic projects. Each one pushes on one axis: canvas, text, images, 4K, WebGL, embedded video and more. If Strobe is slower on your project, I want to see that project.
 
 <details>
 <summary><b>Run the benchmark on your machine</b></summary>
@@ -82,7 +72,10 @@ The bench refuses to start while the load average is 2 or higher. It waits up to
 ## The frame never leaves the GPU
 
 <p align="center">
-  <img src="assets/readme/architecture.png" alt="Remotion and HyperFrames screenshot each frame to a JPEG or PNG on the CPU and pipe it to FFmpeg. Strobe moves each frame from a CEF view through IOSurface and a wgpu convert into VideoToolbox, all on the GPU." width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/architecture-dark.png">
+    <img src="assets/readme/architecture-light.png" alt="Strobe keeps every frame in GPU memory, from the CEF view through IOSurface, a wgpu shader and VideoToolbox, to the MP4. Remotion and HyperFrames read every frame back to CPU memory as a JPEG or PNG and pipe it to FFmpeg." width="100%">
+  </picture>
 </p>
 
 Remotion and HyperFrames drive headless Chrome over DevTools. For every frame, they ask Chrome for a screenshot. Chrome reads the pixels back from the GPU and compresses them on the CPU. FFmpeg then decompresses the image and encodes it again. At 30 fps, a one-minute video makes that trip 1,800 times.
@@ -171,10 +164,10 @@ Projects that use WebGL render on SwiftShader, and they need a daemon of their o
 
 ## What does not work yet
 
-We would rather you read this here than find it in production.
+I would rather you read this here than find it in production.
 
 - **Linux.** Strobe runs on macOS and Windows. Linux is not done.
-- **Text on Windows.** Windows draws glyph edges with DirectWrite, and macOS uses CoreText. On Windows, `github-unwrapped` and `4-0-trailer` do not pass our 10% fidelity margin yet. `progress.md` tracks the details.
+- **Text on Windows.** Windows draws glyph edges with DirectWrite, and macOS uses CoreText. On Windows, `github-unwrapped` and `4-0-trailer` do not pass the 10% fidelity margin yet. `progress.md` tracks the details.
 - **Embedded video on Windows.** The `native` decoder uses VideoToolbox, so it works only on macOS.
 - **Release builds.** There is no installer and no prebuilt binary.
 

@@ -4,15 +4,6 @@
     <meta charset="utf-8" />
     <style>
       @font-face {
-        font-family: "Departure Mono";
-        src: url("../assets/fonts/DepartureMono-Regular.woff2") format("woff2");
-      }
-      @font-face {
-        font-family: "Instrument Serif";
-        font-style: italic;
-        src: url("../assets/fonts/InstrumentSerif-Italic.woff2") format("woff2");
-      }
-      @font-face {
         font-family: "Geist";
         font-weight: 100 900;
         src: url("../assets/fonts/Geist.woff2") format("woff2");
@@ -30,97 +21,83 @@
   <body>
     <div id="out"></div>
     <script>
-      const C = { night: "#04060D", deep: "#0B2A6B", electric: "#2F7BFF", ice: "#8FE3FF", core: "#F4FBFF", dim: "#5B6678", ash: "#2A3240", fog: "#8D97A8" };
-      const W = 1600, H = 820, NW = 248, NH = 92, GAP = 50;
-      const X = [64, 64 + (NW + GAP), 64 + 2 * (NW + GAP), 64 + 3 * (NW + GAP), 64 + 4 * (NW + GAP)];
-      const R1 = 300, R2 = 560;
-      const BOLT = "34.18,10 22.72,35.08 30.91,35.08 27.36,54 41.82,26.72 33.36,26.72 38.82,10";
+      const dark = new URLSearchParams(location.search).get("theme") === "dark";
+      const T = dark
+        ? { ink: "#E6EDF3", sub: "#8B949E", line: "#3D444D", paper: "#0D1117", gpu: "rgba(47,123,255,0.07)", rival: "#6E7681", rivalNode: "#30363D", accent: "#4C8DFF" }
+        : { ink: "#1F2328", sub: "#59636E", line: "#D1D9E0", paper: "#FFFFFF", gpu: "rgba(47,123,255,0.06)", rival: "#8C959F", rivalNode: "#D1D9E0", accent: "#2F7BFF" };
+      const W = 1600, H = 560, NW = 250, NH = 92, GAP = 50;
+      const COL = [210, 210 + NW + GAP, 210 + 2 * (NW + GAP), 210 + 3 * (NW + GAP)];
+      const MP4X = COL[3] + NW + GAP, MP4W = W - 24 - MP4X;
+      const ROW = { a: 40, b: 172, c: 384 };
+      const EDGE = 304, MH = 140;
 
-      const bolt = (x, y, s, fill) => `<g transform="translate(${x} ${y}) scale(${s}) translate(-32 -32)"><polygon points="${BOLT}" fill="${fill}"/></g>`;
-
-      const chip = (x, y, text, live) => {
-        const w = text.length * 10 + 18;
-        return `<rect x="${x}" y="${y}" width="${w}" height="22" rx="4" fill="${live ? "rgba(47,123,255,0.16)" : "rgba(141,151,168,0.10)"}" stroke="${live ? "rgba(143,227,255,0.45)" : "rgba(141,151,168,0.28)"}"/>
-          <text x="${x + w / 2}" y="${y + 16}" text-anchor="middle" font-family="Departure Mono" font-size="13" letter-spacing="1" fill="${live ? C.ice : C.fog}">${text}</text>`;
+      const node = (x, y, w, name, sub, kind) => {
+        const stroke = kind === "strobe" ? T.accent : kind === "rival" ? T.rivalNode : T.ink;
+        return `<rect x="${x}" y="${y}" width="${w}" height="${kind === "file" ? MH : NH}" rx="8" fill="${T.paper}" stroke="${stroke}" stroke-width="${kind === "strobe" ? 1.6 : 1.2}"/>
+          <text x="${x + 22}" y="${y + 40 + (kind === "file" ? (MH - NH) / 2 : 0)}" font-family="Geist" font-weight="600" font-size="25" fill="${T.ink}">${name}</text>
+          <text x="${x + 22}" y="${y + 70 + (kind === "file" ? (MH - NH) / 2 : 0)}" font-family="Geist" font-size="19" fill="${T.sub}">${sub}</text>`;
       };
 
-      const node = (i, y, name, sub, tag, live, focal) => {
-        const x = X[i];
-        const fill = focal ? "url(#focal)" : live ? "#08122A" : "#0A0D14";
-        const stroke = focal ? C.ice : live ? "rgba(47,123,255,0.75)" : C.ash;
-        return `${focal ? `<rect x="${x - 6}" y="${y - 6}" width="${NW + 12}" height="${NH + 12}" rx="14" fill="${C.electric}" opacity="0.35" filter="url(#bloom)"/>` : ""}
-          <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="10" fill="${fill}" stroke="${stroke}" stroke-width="${focal ? 1.6 : 1.2}"/>
-          <text x="${x + 20}" y="${y + 38}" font-family="Geist" font-weight="600" font-size="22" fill="${live ? C.core : "#B7C0CE"}">${name}</text>
-          <text x="${x + 20}" y="${y + 66}" font-family="Departure Mono" font-size="15" fill="${live ? "rgba(143,227,255,0.72)" : C.dim}">${sub}</text>
-          ${tag ? chip(x + NW - tag.length * 10 - 32, y + 14, tag, live) : ""}`;
+      const path = (pts, kind) => {
+        let d = `M${pts[0][0]} ${pts[0][1]}`;
+        for (let i = 1; i < pts.length; i++) {
+          const [x, y] = pts[i], [px, py] = pts[i - 1], nxt = pts[i + 1];
+          if (!nxt) { d += ` L${x} ${y}`; break; }
+          const r = 10, dx1 = Math.sign(x - px), dy1 = Math.sign(y - py), dx2 = Math.sign(nxt[0] - x), dy2 = Math.sign(nxt[1] - y);
+          d += ` L${x - dx1 * r} ${y - dy1 * r} Q${x} ${y} ${x + dx2 * r} ${y + dy2 * r}`;
+        }
+        const c = kind === "strobe" ? T.accent : T.rival;
+        return `<path d="${d}" fill="none" stroke="${c}" stroke-width="${kind === "strobe" ? 2.6 : 2}" ${kind === "rival" ? 'stroke-dasharray="7,6"' : ""} marker-end="url(#${kind})"/>`;
       };
 
-      const wire = (i, j, y, live) => {
-        const x1 = X[i] + NW, x2 = X[j] - 3;
-        if (!live) return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${C.dim}" stroke-width="1.4" stroke-dasharray="4,5" marker-end="url(#dull)"/>`;
-        return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${C.electric}" stroke-width="6" opacity="0.55" filter="url(#bloom)"/>
-          <line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${C.ice}" stroke-width="2" marker-end="url(#hot)"/>`;
-      };
-
-      const grid = () => {
-        let d = "";
-        for (let x = 40; x < W; x += 40) d += `M${x} 0V${H}`;
-        for (let y = 40; y < H; y += 40) d += `M0 ${y}H${W}`;
-        return `<path d="${d}" stroke="rgba(47,123,255,0.07)" stroke-width="1"/>`;
-      };
+      const mid = (r) => ROW[r] + NH / 2;
+      const crossX = COL[1] - GAP / 2;
+      const mp4Y = EDGE - MH / 2;
 
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="t d">
-        <title id="t">The frame never leaves the GPU</title>
-        <desc id="d">Remotion and HyperFrames screenshot each frame to a JPEG or PNG on the CPU and pipe it to FFmpeg. Strobe moves each frame from a CEF view through IOSurface and a wgpu convert into VideoToolbox without a CPU readback.</desc>
+        <title id="t">Where each frame travels</title>
+        <desc id="d">Strobe keeps every frame in GPU memory, from the CEF view through IOSurface, a wgpu convert and VideoToolbox, to the MP4. Remotion and HyperFrames read every frame back to CPU memory as a JPEG or PNG and pipe it to FFmpeg.</desc>
         <defs>
-          <clipPath id="card"><rect width="${W}" height="${H}" rx="20"/></clipPath>
-          <filter id="bloom" x="-40%" y="-200%" width="180%" height="500%"><feGaussianBlur stdDeviation="9"/></filter>
-          <filter id="haze" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="70"/></filter>
-          <linearGradient id="focal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#123A8C"/><stop offset="1" stop-color="#0B2A6B"/></linearGradient>
-          <marker id="dull" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="${C.dim}"/></marker>
-          <marker id="hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${C.ice}"/></marker>
+          <marker id="strobe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.accent}"/></marker>
+          <marker id="rival" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.rival}"/></marker>
         </defs>
-        <g clip-path="url(#card)">
-          <rect width="${W}" height="${H}" fill="${C.night}"/>
-          ${grid()}
-          <ellipse cx="${X[2] + NW / 2}" cy="${R2 + NH / 2}" rx="620" ry="150" fill="${C.electric}" opacity="0.20" filter="url(#haze)"/>
+        <rect width="${W}" height="${H}" fill="${T.paper}"/>
+        <rect x="0" y="0" width="${MP4X - GAP / 2}" height="${EDGE}" fill="${T.gpu}"/>
+        <line x1="0" y1="${EDGE}" x2="${MP4X - GAP / 2}" y2="${EDGE}" stroke="${T.line}" stroke-width="1.5"/>
+        <text x="28" y="${ROW.a + 40}" font-family="Geist" font-weight="600" font-size="22" fill="${T.accent}">GPU memory</text>
+        <text x="28" y="${ROW.a + 68}" font-family="Geist" font-size="18" fill="${T.sub}">where the page</text>
+        <text x="28" y="${ROW.a + 92}" font-family="Geist" font-size="18" fill="${T.sub}">paints</text>
+        <text x="28" y="${ROW.c + 40}" font-family="Geist" font-weight="600" font-size="22" fill="${T.ink}">CPU memory</text>
+        <text x="28" y="${ROW.c + 68}" font-family="Geist" font-size="18" fill="${T.sub}">one copy away</text>
 
-          <text x="64" y="78" font-family="Departure Mono" font-size="16" letter-spacing="2" fill="${C.electric}">HOW A FRAME REACHES THE FILE</text>
-          <text x="64" y="150" font-family="Instrument Serif" font-style="italic" font-size="74" fill="${C.core}">The frame never leaves the GPU.</text>
+        ${path([[COL[0] + NW, mid("a")], [COL[1] - 2, mid("a")]], "strobe")}
+        ${path([[COL[1] + NW, mid("a")], [COL[2] - 2, mid("a")]], "strobe")}
+        ${path([[COL[2] + NW, mid("a")], [COL[3] - 2, mid("a")]], "strobe")}
+        ${path([[COL[3] + NW, mid("a")], [MP4X - GAP / 2, mid("a")], [MP4X - GAP / 2, mp4Y + 36], [MP4X - 2, mp4Y + 36]], "strobe")}
 
-          <text x="64" y="${R1 - 26}" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.fog}">REMOTION, HYPERFRAMES</text>
-          <text x="${W - 64}" y="${R1 - 26}" text-anchor="end" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.dim}">SCREENSHOT, THEN FFMPEG</text>
-          ${wire(0, 1, R1 + NH / 2, false)}
-          ${wire(1, 2, R1 + NH / 2, false)}
-          ${wire(2, 4, R1 + NH / 2, false)}
-          ${node(0, R1, "Headless Chrome", "paints the frame")}
-          ${node(1, R1, "JPEG or PNG", "read back, compressed", "CPU")}
-          ${node(2, R1, "FFmpeg", "decodes, encodes", "CPU")}
-          ${node(4, R1, "MP4", "with AAC audio")}
+        ${path([[COL[0] + NW, mid("b")], [crossX, mid("b")], [crossX, mid("c")], [COL[1] - 2, mid("c")]], "rival")}
+        ${path([[COL[1] + NW, mid("c")], [COL[2] - 2, mid("c")]], "rival")}
+        ${path([[COL[2] + NW, mid("c")], [MP4X - GAP / 2, mid("c")], [MP4X - GAP / 2, mp4Y + MH - 36], [MP4X - 2, mp4Y + MH - 36]], "rival")}
 
-          <line x1="64" y1="${(R1 + NH + R2) / 2 - 4}" x2="${W - 64}" y2="${(R1 + NH + R2) / 2 - 4}" stroke="rgba(141,151,168,0.14)"/>
+        <circle cx="${crossX}" cy="${EDGE}" r="7" fill="${T.paper}" stroke="${T.ink}" stroke-width="2"/>
+        <text x="${crossX + 20}" y="${EDGE + 34}" font-family="Geist" font-weight="600" font-size="19" fill="${T.ink}">Every frame, every render:</text>
+        <text x="${crossX + 20}" y="${EDGE + 58}" font-family="Geist" font-size="19" fill="${T.sub}">read back and compressed.</text>
 
-          ${bolt(80, R2 - 31, 0.42, C.electric)}
-          <text x="98" y="${R2 - 26}" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.ice}">STROBE</text>
-          <text x="${W - 64}" y="${R2 - 26}" text-anchor="end" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.electric}">ZERO CPU READBACKS ON MACOS</text>
-          <rect x="${X[1] - 22}" y="${R2 - 18}" width="${X[3] + NW - X[1] + 44}" height="${NH + 64}" rx="16" fill="none" stroke="rgba(143,227,255,0.45)" stroke-width="1.2" stroke-dasharray="2,6" stroke-linecap="round"/>
-          <text x="${(X[1] + X[3] + NW) / 2}" y="${R2 + NH + 36}" text-anchor="middle" font-family="Departure Mono" font-size="14" letter-spacing="2" fill="rgba(143,227,255,0.8)">STAYS ON THE GPU</text>
-          ${wire(0, 1, R2 + NH / 2, true)}
-          ${wire(1, 2, R2 + NH / 2, true)}
-          ${wire(2, 3, R2 + NH / 2, true)}
-          ${wire(3, 4, R2 + NH / 2, true)}
-          ${node(0, R2, "CEF 156 view", "one begin frame", "", true)}
-          ${node(1, R2, "IOSurface", "D3D12 on Windows", "GPU", true)}
-          ${node(2, R2, "wgpu convert", "BGRA to NV12", "GPU", true, true)}
-          ${node(3, R2, "VideoToolbox", "NVENC on Windows", "GPU", true)}
-          ${node(4, R2, "MP4", "with AAC audio", "", true)}
+        ${node(COL[0], ROW.a, NW, "CEF 156 view", "one begin frame", "strobe")}
+        ${node(COL[1], ROW.a, NW, "IOSurface", "D3D12 on Windows", "strobe")}
+        ${node(COL[2], ROW.a, NW, "wgpu shader", "BGRA to NV12", "strobe")}
+        ${node(COL[3], ROW.a, NW, "VideoToolbox", "NVENC on Windows", "strobe")}
+        ${node(COL[0], ROW.b, NW, "Headless Chrome", "paints the frame", "rival")}
+        ${node(COL[1], ROW.c, NW, "JPEG or PNG", "a screenshot", "rival")}
+        ${node(COL[2], ROW.c, NW, "FFmpeg", "decodes, encodes", "rival")}
+        ${node(MP4X, mp4Y, MP4W, "MP4", "with AAC audio", "file")}
 
-          <text x="64" y="${H - 40}" font-family="Departure Mono" font-size="14" letter-spacing="1.5" fill="${C.dim}">SAME PROJECT, SAME CODE, 2.4× TO 5.2× FASTER ON SEVEN LAUNCH VIDEOS</text>
-          <text x="${W - 64}" y="${H - 38}" text-anchor="end" font-family="Instrument Serif" font-style="italic" font-size="40" fill="${C.core}">strobe</text>
-        </g>
-        <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="20" fill="none" stroke="rgba(143,227,255,0.12)"/>
+        <line x1="${COL[0]}" y1="${H - 34}" x2="${COL[0] + 36}" y2="${H - 34}" stroke="${T.accent}" stroke-width="2.6"/>
+        <text x="${COL[0] + 48}" y="${H - 27}" font-family="Geist" font-weight="600" font-size="19" fill="${T.ink}">Strobe</text>
+        <line x1="${COL[0] + 150}" y1="${H - 34}" x2="${COL[0] + 186}" y2="${H - 34}" stroke="${T.rival}" stroke-width="2" stroke-dasharray="7,6"/>
+        <text x="${COL[0] + 198}" y="${H - 27}" font-family="Geist" font-weight="600" font-size="19" fill="${T.ink}">Remotion, HyperFrames</text>
       </svg>`;
-      Promise.all([document.fonts.load('600 22px "Geist"'), document.fonts.load('15px "Departure Mono"'), document.fonts.load('italic 74px "Instrument Serif"')]).then(() => {
+      document.fonts.load('600 26px "Geist"').then(() => {
         document.getElementById("out").innerHTML = svg;
         document.title = "ready";
       });
