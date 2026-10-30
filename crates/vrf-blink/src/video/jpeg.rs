@@ -230,8 +230,12 @@ impl Plane {
     /// The quantised levels of block (`bx`, `by`) in zigzag order. Samples past the edge repeat
     /// the last row and column.
     fn block(&self, bx: usize, by: usize) -> [i32; 64] {
-        let mut samples = [[0i32; 8]; 8];
         let (x0, y0) = (bx * 8, by * 8);
+        #[cfg(target_arch = "aarch64")]
+        if x0 + 8 <= self.width && y0 + 8 <= self.height {
+            return neon::block(&self.samples[y0 * self.width + x0..], self.width);
+        }
+        let mut samples = [[0i32; 8]; 8];
         if x0 + 8 <= self.width && y0 + 8 <= self.height {
             for (j, column) in samples.iter_mut().enumerate() {
                 for (r, sample) in column.iter_mut().enumerate() {
@@ -268,6 +272,158 @@ impl Plane {
 }
 
 type Block = [[i32; 8]; 8];
+
+/// [`Plane::block`] for a whole block on NEON: the same `jfdctint` butterflies and quantiser,
+/// eight lanes at a time, sixteen-bit sums and thirty-two-bit products as in libjpeg-turbo's
+/// NEON transform, so the levels are equal to the scalar ones.
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use std::arch::aarch64::*;
+
+    use super::{NATURAL_TO_ZIGZAG, QUANT, RECIPROCAL};
+
+    struct Row {
+        reciprocal: [u32; 8],
+        step: [i32; 8],
+        tie: [u32; 8],
+    }
+
+    const ROWS: [Row; 8] = {
+        let mut rows = [const {
+            Row {
+                reciprocal: [0; 8],
+                step: [0; 8],
+                tie: [0; 8],
+            }
+        }; 8];
+        let mut i = 0;
+        while i < 64 {
+            let (v, u, q) = (i / 8, i % 8, QUANT[i]);
+            rows[v].reciprocal[u] = RECIPROCAL[i];
+            rows[v].step[u] = 8 * q;
+            rows[v].tie[u] = if q == 4 || q == 8 { u32::MAX } else { 0 };
+            i += 1;
+        }
+        rows
+    };
+
+    #[inline(always)]
+    unsafe fn transpose(m: [int16x8_t; 8]) -> [int16x8_t; 8] {
+        unsafe {
+            let a: [int16x8_t; 8] = std::array::from_fn(|k| {
+                let (x, y) = (m[k & !1], m[k | 1]);
+                if k & 1 == 0 { vtrn1q_s16(x, y) } else { vtrn2q_s16(x, y) }
+            });
+            let b: [int32x4_t; 8] = std::array::from_fn(|k| {
+                let (i, j) = ((k & !3) | (k & 1), (k & !3) | (k & 1) | 2);
+                let (x, y) = (vreinterpretq_s32_s16(a[i]), vreinterpretq_s32_s16(a[j]));
+                if k & 2 == 0 { vtrn1q_s32(x, y) } else { vtrn2q_s32(x, y) }
+            });
+            std::array::from_fn(|k| {
+                let (i, j) = (k & 3, (k & 3) | 4);
+                let (x, y) = (vreinterpretq_s64_s32(b[i]), vreinterpretq_s64_s32(b[j]));
+                vreinterpretq_s16_s64(if k & 4 == 0 { vtrn1q_s64(x, y) } else { vtrn2q_s64(x, y) })
+            })
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn product(x: int16x8_t, k: i16) -> (int32x4_t, int32x4_t) {
+        unsafe { (vmull_n_s16(vget_low_s16(x), k), vmull_high_n_s16(x, k)) }
+    }
+
+    #[inline(always)]
+    unsafe fn add(a: (int32x4_t, int32x4_t), b: (int32x4_t, int32x4_t)) -> (int32x4_t, int32x4_t) {
+        unsafe { (vaddq_s32(a.0, b.0), vaddq_s32(a.1, b.1)) }
+    }
+
+    #[inline(always)]
+    unsafe fn descale<const N: i32>(x: (int32x4_t, int32x4_t)) -> int16x8_t {
+        unsafe { vcombine_s16(vrshrn_n_s32::<N>(x.0), vrshrn_n_s32::<N>(x.1)) }
+    }
+
+    #[inline(always)]
+    unsafe fn fdct<const SECOND: bool, const N: i32>(d: [int16x8_t; 8]) -> [int16x8_t; 8] {
+        unsafe {
+            let (t0, t7) = (vaddq_s16(d[0], d[7]), vsubq_s16(d[0], d[7]));
+            let (t1, t6) = (vaddq_s16(d[1], d[6]), vsubq_s16(d[1], d[6]));
+            let (t2, t5) = (vaddq_s16(d[2], d[5]), vsubq_s16(d[2], d[5]));
+            let (t3, t4) = (vaddq_s16(d[3], d[4]), vsubq_s16(d[3], d[4]));
+            let (t10, t13) = (vaddq_s16(t0, t3), vsubq_s16(t0, t3));
+            let (t11, t12) = (vaddq_s16(t1, t2), vsubq_s16(t1, t2));
+            let (o0, o4) = if SECOND {
+                (
+                    vrshrq_n_s16::<1>(vaddq_s16(t10, t11)),
+                    vrshrq_n_s16::<1>(vsubq_s16(t10, t11)),
+                )
+            } else {
+                (
+                    vshlq_n_s16::<1>(vaddq_s16(t10, t11)),
+                    vshlq_n_s16::<1>(vsubq_s16(t10, t11)),
+                )
+            };
+            let z1 = product(vaddq_s16(t12, t13), 4433);
+            let o2 = descale::<N>(add(z1, product(t13, 6270)));
+            let o6 = descale::<N>(add(z1, product(t12, -15137)));
+            let (t10, t11) = (vaddq_s16(t4, t7), vaddq_s16(t5, t6));
+            let (t12, t13) = (vaddq_s16(t4, t6), vaddq_s16(t5, t7));
+            let z5 = product(vaddq_s16(t12, t13), 9633);
+            let (z1, z2) = (product(t10, -7373), product(t11, -20995));
+            let z3 = add(product(t12, -16069), z5);
+            let z4 = add(product(t13, -3196), z5);
+            let o7 = descale::<N>(add(add(product(t4, 2446), z1), z3));
+            let o5 = descale::<N>(add(add(product(t5, 16819), z2), z4));
+            let o3 = descale::<N>(add(add(product(t6, 25172), z2), z3));
+            let o1 = descale::<N>(add(add(product(t7, 12299), z1), z4));
+            [o0, o1, o2, o3, o4, o5, o6, o7]
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn quantise(c: int32x4_t, row: &Row, half: usize) -> int32x4_t {
+        unsafe {
+            let n = vabsq_s32(c);
+            let k = vreinterpretq_s32_u32(vshrq_n_u32::<22>(vmulq_u32(
+                vreinterpretq_u32_s32(n),
+                vld1q_u32(row.reciprocal[half..].as_ptr()),
+            )));
+            let step = vld1q_s32(row.step[half..].as_ptr());
+            let rem = vshlq_n_s32::<3>(vsubq_s32(n, vmulq_s32(k, step)));
+            let five = vmulq_n_s32(step, 5);
+            let up = vorrq_u32(
+                vcgtq_s32(rem, five),
+                vandq_u32(vceqq_s32(rem, five), vld1q_u32(row.tie[half..].as_ptr())),
+            );
+            let magnitude = vsubq_s32(k, vreinterpretq_s32_u32(up));
+            let sign = vshrq_n_s32::<31>(c);
+            vsubq_s32(veorq_s32(magnitude, sign), sign)
+        }
+    }
+
+    pub(super) fn block(samples: &[u8], stride: usize) -> [i32; 64] {
+        unsafe {
+            let rows: [int16x8_t; 8] = std::array::from_fn(|r| {
+                let line = vld1_u8(samples[r * stride..r * stride + 8].as_ptr());
+                vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(line)), vdupq_n_s16(128))
+            });
+            let first = fdct::<false, 12>(transpose(rows));
+            let columns = fdct::<true, 14>(transpose(first));
+            let mut levels = [0i32; 64];
+            let mut lanes = [0i32; 8];
+            for (v, row) in columns.iter().enumerate() {
+                let low = quantise(vmovl_s16(vget_low_s16(*row)), &ROWS[v], 0);
+                let high = quantise(vmovl_high_s16(*row), &ROWS[v], 4);
+                vst1q_s32(lanes.as_mut_ptr(), low);
+                vst1q_s32(lanes[4..].as_mut_ptr(), high);
+                for (u, &value) in lanes.iter().enumerate() {
+                    levels[NATURAL_TO_ZIGZAG[v * 8 + u]] = value;
+                }
+            }
+            levels[0] = (i32::from(vgetq_lane_s16::<0>(columns[0])) + 32) >> 6;
+            levels
+        }
+    }
+}
 
 /// ffmpeg's `jfdctint` butterfly on the eight columns of `d` at once: row `k` holds sample `k` of
 /// each one-dimensional transform. `SECOND` is the column pass, which descales by the pass-one
