@@ -12,5 +12,5 @@ pub use decoder::{Clip, Frame, Matrix, Reader};
 pub use decoder::set_hardware_decoding;
 pub use hyperframes::NativeVideos;
 pub use link::{Clips, Link, Pusher, Resolve, StartFallback};
-pub(crate) use renderer::{PAGE, PUSH, VideoRenderHandler};
+pub(crate) use renderer::{INIT, PAGE, PUSH, VideoRenderHandler};
 pub use stream::Stream;

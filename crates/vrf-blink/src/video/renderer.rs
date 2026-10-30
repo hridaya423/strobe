@@ -1,5 +1,10 @@
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
 use cef::{rc::Rc as _, *};
 
+pub(crate) const INIT: &str = "vrf.init";
+static INITS: LazyLock<Mutex<HashMap<i32, String>>> = LazyLock::new(Default::default);
 pub(crate) const PUSH: &str = "vrf.video.push";
 pub(crate) const PAGE: &str = "vrf.video.page";
 const SEND: &str = "__vrf_video_send";
@@ -33,13 +38,32 @@ wrap_render_process_handler! {
     pub(crate) struct VideoRenderHandler;
 
     impl RenderProcessHandler {
+        fn on_browser_created(&self, browser: Option<&mut Browser>, extra_info: Option<&mut DictionaryValue>) {
+            let (Some(browser), Some(extra_info)) = (browser, extra_info) else { return };
+            if extra_info.has_key(Some(&INIT.into())) != 0 {
+                let script = CefString::from(&extra_info.string(Some(&INIT.into()))).to_string();
+                INITS.lock().unwrap().insert(browser.identifier(), script);
+            }
+        }
+
+        fn on_browser_destroyed(&self, browser: Option<&mut Browser>) {
+            if let Some(browser) = browser {
+                INITS.lock().unwrap().remove(&browser.identifier());
+            }
+        }
+
         fn on_context_created(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             context: Option<&mut V8Context>,
         ) {
             let (Some(frame), Some(context)) = (frame, context) else { return };
+            let script = browser.and_then(|browser| INITS.lock().unwrap().get(&browser.identifier()).cloned());
+            if let Some(script) = script {
+                let (mut retval, mut exception) = (None, None);
+                context.eval(Some(&script.as_str().into()), Some(&"vrf://init".into()), 1, Some(&mut retval), Some(&mut exception));
+            }
             if frame.is_main() == 0 {
                 return;
             }
