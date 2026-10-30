@@ -80,7 +80,11 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
     let mut worst_delta = (0u8, 0u32);
     let mut over8 = 0.0f64;
     let mut over32 = 0.0f64;
-    for frame in 0..frames {
+    let env_frame = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+    let first = env_frame("VRF_FROM").unwrap_or(0);
+    let last_frame = env_frame("VRF_TO").map_or(frames, |to| (to + 1).min(frames));
+    let history_free = history_free && std::env::var("VRF_SEQ").is_err();
+    for frame in first..last_frame {
         if history_free && frame % 5 != 0 {
             continue;
         }
@@ -103,6 +107,12 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
         let ours = last.clone().context("no first delivery")?;
         let theirs = Rgb8::load_png(&refs.join(format!("{frame:06}.png")))?;
         let (s, map) = score::compare_with_map(&ours, &theirs)?;
+        if std::env::var("VRF_PRINT").is_ok() {
+            println!(
+                "FRAME {frame} {:.5} {} {:.5}",
+                s.flip_mean, s.max_delta, s.frac_over_8
+            );
+        }
         if s.flip_mean > worst_flip.0 {
             let dir = std::path::Path::new("/tmp/vrf-o-out");
             ours.save_png(&dir.join("raw-worst-ours.png"))?;
