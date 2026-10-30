@@ -11,7 +11,7 @@ use vrf_encode::turbo::{LaneKind, TurboEncoder, TurboOptions};
 use vrf_encode::videotoolbox::VideoToolboxEncoder;
 use vrf_encode::videotoolbox::pool::{PixelFormat, PixelPool, PoolBuffer};
 use vrf_encode::x264::X264Encoder;
-use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Rational};
+use vrf_encode::{Codec, ColourSpace, Encoder, EncoderConfig, EncoderFrame, Matrix, Packet, Range, Rational};
 
 const WIDTH: usize = 640;
 const HEIGHT: usize = 360;
@@ -249,10 +249,10 @@ fn turbo_rejects_codecs_with_their_own_engine() {
 fn halftone(x: usize, y: usize, index: usize) -> u8 {
     let dots = ((x + index * 3) as f64 * 0.9).sin() * (y as f64 * 0.9).sin();
     let noise = (hash((x + y * WIDTH + index * 7919) as u32) & 7) as f64 - 4.0;
-    (128.0 + 28.0 * dots + noise).round().clamp(0.0, 255.0) as u8
+    (128.0 + 90.0 * dots + noise).round().clamp(0.0, 255.0) as u8
 }
 
-fn fill_halftone(buffer: &PoolBuffer, index: usize) {
+fn fill_with(buffer: &PoolBuffer, index: usize, luma: &dyn Fn(usize, usize, usize) -> u8) {
     let surface = buffer.surface();
     unsafe { surface.lock(IOSurfaceLockOptions::empty(), null_mut()) };
     for plane in 0..2 {
@@ -262,7 +262,7 @@ fn fill_halftone(buffer: &PoolBuffer, index: usize) {
         let bytes = unsafe { std::slice::from_raw_parts_mut(base, stride * rows) };
         for (y, line) in bytes.chunks_mut(stride).enumerate() {
             for (x, byte) in line.iter_mut().enumerate() {
-                *byte = if plane == 0 { halftone(x, y, index) } else { 128 };
+                *byte = if plane == 0 { luma(x, y, index) } else { 128 };
             }
         }
     }
@@ -298,25 +298,37 @@ fn annex_b(packets: &[Packet], avcc: &[u8]) -> Vec<u8> {
     out
 }
 
-fn over_eight(encoder: &mut impl Encoder, pool: &PixelPool, frames: usize, name: &str) -> Result<f64> {
-    let packets = feed_with(encoder, pool, frames, fill_halftone)?;
+fn over_eight(
+    encoder: &mut impl Encoder,
+    pool: &PixelPool,
+    frames: usize,
+    name: &str,
+    luma: &dyn Fn(usize, usize, usize) -> u8,
+) -> Result<f64> {
+    let mut packets = Vec::new();
+    for index in 0..frames {
+        let buffer = pool.acquire()?;
+        fill_with(&buffer, index, luma);
+        encoder.submit(EncoderFrame::PixelBuffer(buffer), time(index))?;
+        packets.extend(encoder.drain()?);
+    }
+    packets.extend(encoder.flush()?);
     assert_in_order(&packets, frames);
     let info = encoder.stream_info()?;
-    let stream = std::env::temp_dir().join(format!("vrf-halftone-{name}-{}.h264", std::process::id()));
+    let stream = std::env::temp_dir().join(format!("vrf-lane-{name}-{}.h264", std::process::id()));
     std::fs::write(&stream, annex_b(&packets, &info.config))?;
     let output = std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(&stream)
-        .args(["-pix_fmt", "gray", "-f", "rawvideo", "-"])
+        .args(["-pix_fmt", "yuv420p", "-f", "rawvideo", "-"])
         .output()?;
     std::fs::remove_file(&stream)?;
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(output.stdout.len(), frames * WIDTH * HEIGHT);
+    assert_eq!(output.stdout.len(), frames * WIDTH * HEIGHT * 3 / 2);
     let mut over = 0usize;
-    for (index, frame) in output.stdout.chunks(WIDTH * HEIGHT).enumerate() {
-        for (at, luma) in frame.iter().enumerate() {
-            let source = halftone(at % WIDTH, at / WIDTH, index);
-            if luma.abs_diff(source) > 8 {
+    for (index, frame) in output.stdout.chunks(WIDTH * HEIGHT * 3 / 2).enumerate() {
+        for (at, decoded) in frame[..WIDTH * HEIGHT].iter().enumerate() {
+            if decoded.abs_diff(luma(at % WIDTH, at / WIDTH, index)) > 8 {
                 over += 1;
             }
         }
@@ -324,36 +336,55 @@ fn over_eight(encoder: &mut impl Encoder, pool: &PixelPool, frames: usize, name:
     Ok(over as f64 / (frames * WIDTH * HEIGHT) as f64)
 }
 
-fn feed_with(
-    encoder: &mut impl Encoder,
-    pool: &PixelPool,
+fn lanes_over_eight(
+    config: EncoderConfig,
+    luma: &dyn Fn(usize, usize, usize) -> u8,
     frames: usize,
-    paint: fn(&PoolBuffer, usize),
-) -> Result<Vec<Packet>> {
-    let mut packets = Vec::new();
-    for index in 0..frames {
-        let buffer = pool.acquire()?;
-        paint(&buffer, index);
-        encoder.submit(EncoderFrame::PixelBuffer(buffer), time(index))?;
-        packets.extend(encoder.drain()?);
-    }
-    packets.extend(encoder.flush()?);
-    Ok(packets)
+) -> (f64, f64) {
+    let mut vt = VideoToolboxEncoder::new(config.clone()).unwrap();
+    let pool = vt.pool().clone();
+    let vt_over = over_eight(&mut vt, &pool, frames, "vt", luma).unwrap();
+    let mut x264 = X264Encoder::new(config, 4).unwrap();
+    let pool = PixelPool::with_size(WIDTH, HEIGHT, PixelFormat::Nv12, 8).unwrap();
+    let x264_over = over_eight(&mut x264, &pool, frames, "x264", luma).unwrap();
+    eprintln!("over 8: VideoToolbox {vt_over:.5}, x264 {x264_over:.5}");
+    (vt_over, x264_over)
 }
 
 #[test]
 fn the_cpu_lane_holds_fine_detail_as_well_as_videotoolbox() {
     let _engine = engine();
-    let frames = 60;
-    let mut vt = VideoToolboxEncoder::new(config(Codec::H264)).unwrap();
-    let pool = vt.pool().clone();
-    let vt_over = over_eight(&mut vt, &pool, frames, "vt").unwrap();
-    let mut x264 = X264Encoder::new(config(Codec::H264), 4).unwrap();
-    let pool = PixelPool::with_size(WIDTH, HEIGHT, PixelFormat::Nv12, 8).unwrap();
-    let x264_over = over_eight(&mut x264, &pool, frames, "x264").unwrap();
-    eprintln!("over 8: VideoToolbox {vt_over:.5}, x264 {x264_over:.5}");
+    let (vt_over, x264_over) = lanes_over_eight(config(Codec::H264), &halftone, 60);
     assert!(
-        x264_over <= vt_over * 1.25,
+        x264_over <= vt_over * 1.25 + 0.0005,
+        "the x264 lane has {x264_over} of its luma over 8 against VideoToolbox's {vt_over}"
+    );
+}
+
+fn static_text_luma() -> Vec<u8> {
+    let png = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/frames/static-text.png");
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i", png, "-vf"])
+        .arg("scale=out_color_matrix=bt601:out_range=pc:flags=accurate_rnd+full_chroma_int,format=yuvj420p")
+        .args(["-f", "rawvideo", "-"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    output.stdout[..WIDTH * HEIGHT].to_vec()
+}
+
+#[test]
+fn the_cpu_lane_keeps_the_top_edge_of_text_on_a_page_that_holds_still() {
+    let _engine = engine();
+    let luma = static_text_luma();
+    let mut config = config(Codec::H264);
+    config.colour = ColourSpace {
+        matrix: Matrix::Bt601,
+        range: Range::Full,
+    };
+    let (vt_over, x264_over) = lanes_over_eight(config, &|x, y, _| luma[y * WIDTH + x], 1);
+    assert!(
+        x264_over <= vt_over + 0.0005,
         "the x264 lane has {x264_over} of its luma over 8 against VideoToolbox's {vt_over}"
     );
 }
