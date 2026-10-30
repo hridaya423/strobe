@@ -83,11 +83,20 @@ fn main() -> ExitCode {
 }
 
 fn gpu_webgl_is_reported(ui: &Ui) -> Result<()> {
-    let (mut view, _) = open(ui)?;
-    let error = Page::seek(&mut view, 0, 1, false).expect_err("a GPU WebGL page was rendered");
+    let project = fixture_project("webgl")?;
+    let bundle = remotion::bundle(&project, Some(Path::new("src/index.jsx")))?;
+    let page = Page::new(
+        Project::open(&bundle.dir, Mode::Offline)?,
+        &options(&project, "Shader"),
+        None,
+    )?;
+    let error = page
+        .open(ui, 320, 180)
+        .err()
+        .context("a GPU WebGL page was opened")?;
     ensure!(
         format!("{error:#}").contains(NEEDS_SOFTWARE_WEBGL),
         "unexpected error: {error:#}"
     );
-    view.close()
+    Ok(())
 }

@@ -1,5 +1,6 @@
 pub mod adapters;
 mod app;
+mod bitmap;
 mod bundle;
 pub mod calibration;
 pub mod daemon;

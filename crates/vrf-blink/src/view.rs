@@ -1,8 +1,8 @@
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,7 @@ use objc2_io_surface::IOSurfaceRef;
 use vrf::colour;
 
 use crate::app::{OnUi, Ui};
+use crate::bitmap::Bitmaps;
 use crate::scheme::Project;
 use crate::video::{self, Pusher};
 
@@ -44,6 +45,7 @@ pub struct Paint {
     pub visible: colour::Rect,
     pub counter: u64,
     pub at: Instant,
+    _lease: Option<Arc<()>>,
 }
 
 unsafe impl Send for Paint {}
@@ -69,61 +71,12 @@ struct Channels {
     pages: Sender<String>,
 }
 
-fn bitmap_surface(
-    buffer: *const u8,
-    width: usize,
-    height: usize,
-) -> Option<CFRetained<IOSurfaceRef>> {
-    use objc2_core_foundation::{CFDictionary, CFNumber, CFString, CFType};
-    use objc2_io_surface::{
-        kIOSurfaceBytesPerElement, kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
-    };
-    let number = |v: i64| CFNumber::new_i64(v);
-    let (w, h, bpe, fmt) = (
-        number(width as i64),
-        number(height as i64),
-        number(4),
-        number(0x4247_5241),
-    );
-    let properties = unsafe {
-        CFDictionary::<CFString, CFType>::from_slices(
-            &[
-                kIOSurfaceWidth,
-                kIOSurfaceHeight,
-                kIOSurfaceBytesPerElement,
-                kIOSurfacePixelFormat,
-            ],
-            &[w.as_ref(), h.as_ref(), bpe.as_ref(), fmt.as_ref()],
-        )
-    };
-    let surface = unsafe { IOSurfaceRef::new(properties.as_opaque()) }?;
-    unsafe {
-        surface.lock(
-            objc2_io_surface::IOSurfaceLockOptions::empty(),
-            std::ptr::null_mut(),
-        );
-        let stride = surface.bytes_per_row();
-        let base = surface.base_address().as_ptr().cast::<u8>();
-        for row in 0..height {
-            std::ptr::copy_nonoverlapping(
-                buffer.add(row * width * 4),
-                base.add(row * stride),
-                width * 4,
-            );
-        }
-        surface.unlock(
-            objc2_io_surface::IOSurfaceLockOptions::empty(),
-            std::ptr::null_mut(),
-        );
-    }
-    Some(surface)
-}
-
 wrap_render_handler! {
     struct BlinkRenderHandler {
         size: Arc<Size>,
         paints: Sender<Paint>,
         soft_counter: Arc<AtomicU64>,
+        bitmaps: Arc<Mutex<Bitmaps>>,
     }
 
     impl RenderHandler {
@@ -154,7 +107,7 @@ wrap_render_handler! {
             &self,
             _browser: Option<&mut Browser>,
             type_: PaintElementType,
-            _dirty_rects: Option<&[Rect]>,
+            dirty_rects: Option<&[Rect]>,
             buffer: *const u8,
             width: ::std::os::raw::c_int,
             height: ::std::os::raw::c_int,
@@ -164,7 +117,12 @@ wrap_render_handler! {
                 return;
             }
             let (w, h) = (width as usize, height as usize);
-            let Some(surface) = bitmap_surface(buffer, w, h) else {
+            let Some((surface, lease)) = self
+                .bitmaps
+                .lock()
+                .unwrap()
+                .paint(buffer, w, h, dirty_rects.unwrap_or_default())
+            else {
                 return;
             };
             let counter = self.soft_counter.fetch_add(1, Ordering::Relaxed);
@@ -174,6 +132,7 @@ wrap_render_handler! {
                 visible: colour::Rect { x: 0, y: 0, width: w as u32, height: h as u32 },
                 counter,
                 at,
+                _lease: Some(lease),
             });
         }
 
@@ -210,6 +169,7 @@ wrap_render_handler! {
                 },
                 counter: info.extra.capture_counter,
                 at,
+                _lease: None,
             });
         }
     }
@@ -444,7 +404,12 @@ impl View {
                 ..Default::default()
             };
             let mut client = BlinkClient::new(
-                BlinkRenderHandler::new(render_size, channels.paints, Arc::new(AtomicU64::new(0))),
+                BlinkRenderHandler::new(
+                    render_size,
+                    channels.paints,
+                    Arc::new(AtomicU64::new(0)),
+                    Arc::new(Mutex::new(Bitmaps::new())),
+                ),
                 BlinkLoadHandler::new(channels.loaded),
                 BlinkLifeSpanHandler::new(channels.closed),
                 request_handler,

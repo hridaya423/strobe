@@ -20,12 +20,18 @@ use crate::adapters::remotion::{FrameAssets, RenderJob, Renderer, Report};
 
 const BUILD_ID_BYTES: u64 = 64 * 1024;
 
-/// Where the daemon listens: `VRF_SOCKET`, or a socket in the temp directory.
+/// Where the daemon listens: `VRF_SOCKET`, or a socket in the temp directory. A process that runs
+/// WebGL on SwiftShader has a socket of its own, because a running CEF cannot change that.
 pub fn socket_path() -> PathBuf {
     std::env::var_os("VRF_SOCKET").map_or_else(
         || {
             let user = unsafe { libc::getuid() };
-            std::env::temp_dir().join(format!("vrf-daemon-{user}.sock"))
+            let mode = if crate::software_webgl() {
+                "-swiftshader"
+            } else {
+                ""
+            };
+            std::env::temp_dir().join(format!("vrf-daemon-{user}{mode}.sock"))
         },
         PathBuf::from,
     )
@@ -65,6 +71,8 @@ pub struct Request {
     pub build: String,
     /// Whether the client wants software rasterisation, which a running CEF cannot change.
     pub cpu_raster: bool,
+    /// Whether the client runs WebGL on SwiftShader, which a running CEF cannot change either.
+    pub software_webgl: bool,
     /// When the user's command began, in microseconds since the Unix epoch.
     pub command_start_us: u64,
     pub job: Job,
@@ -75,6 +83,7 @@ impl Request {
         Ok(Request {
             build: build_id()?,
             cpu_raster,
+            software_webgl: crate::software_webgl(),
             command_start_us: command_start.duration_since(UNIX_EPOCH)?.as_micros() as u64,
             job,
         })
@@ -238,6 +247,15 @@ fn accept(
                 Some(format!(
                     "the daemon rasterises on the {}; start one with the mode you need",
                     if cpu_raster { "CPU" } else { "GPU" }
+                ))
+            } else if renders && request.software_webgl != crate::software_webgl() {
+                Some(format!(
+                    "the daemon runs WebGL on {}; start one for the WebGL mode you need",
+                    if request.software_webgl {
+                        "the GPU"
+                    } else {
+                        "SwiftShader"
+                    },
                 ))
             } else {
                 None
