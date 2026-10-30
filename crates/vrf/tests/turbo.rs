@@ -217,6 +217,43 @@ fn every_chunk_of_a_turbo_file_decodes_to_the_frames_its_lane_produced() {
     }
 }
 
+#[test]
+fn both_lanes_tag_a_full_range_bt601_stream_the_same_way() {
+    let _engine = engine();
+    let dir = Dir::new("colour");
+    let content = Content::new(WIDTH, HEIGHT, 120);
+    let colour = vrf_encode::ColourSpace {
+        matrix: vrf_encode::Matrix::Bt601,
+        range: vrf_encode::Range::Full,
+    };
+    let x264 = dir.file("x264.mp4");
+    let vt = dir.file("vt.mp4");
+    encode_x264_coloured(&x264, &content, 30, colour).unwrap();
+    encode_single_coloured(&vt, &content, 30, colour).unwrap();
+    for file in [&x264, &vt] {
+        let tags = probe(
+            file,
+            &[
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=pix_fmt,color_range,color_space,color_transfer,color_primaries",
+            ],
+        );
+        let tags = &tags[0];
+        assert_eq!(tags["pix_fmt"], "yuvj420p", "{file:?}");
+        assert_eq!(tags["color_range"], "pc", "{file:?}");
+        assert_eq!(tags["color_space"], "smpte170m", "{file:?}");
+        assert_eq!(tags["color_primaries"], "bt709", "{file:?}");
+        assert_eq!(tags["color_transfer"], "bt709", "{file:?}");
+    }
+    assert_eq!(
+        ffmpeg_md5s(&x264).len(),
+        ffmpeg_md5s(&vt).len(),
+        "both files decode fully"
+    );
+}
+
 const AUDIO_RATE: u32 = 48_000;
 const CLICK_FRAMES: [usize; 4] = [30, 60, 90, 120];
 

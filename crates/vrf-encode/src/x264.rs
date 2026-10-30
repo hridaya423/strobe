@@ -7,7 +7,9 @@ use libloading::Library;
 use objc2_io_surface::IOSurfaceLockOptions;
 
 use crate::avcc::AvcRecord;
-use crate::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Rational, StreamInfo};
+use crate::{
+    Codec, Encoder, EncoderConfig, EncoderFrame, Matrix, Packet, Range, Rational, StreamInfo,
+};
 
 const CSP_NV12: c_int = 4;
 const TYPE_AUTO: c_int = 0;
@@ -198,7 +200,22 @@ impl X264Encoder {
             ("sps-id", "1".to_string()),
             ("colorprim", "bt709".to_string()),
             ("transfer", "bt709".to_string()),
-            ("colormatrix", "bt709".to_string()),
+            (
+                "colormatrix",
+                match config.colour.matrix {
+                    Matrix::Bt601 => "smpte170m",
+                    Matrix::Bt709 => "bt709",
+                }
+                .to_string(),
+            ),
+            (
+                "fullrange",
+                match config.colour.range {
+                    Range::Limited => "off",
+                    Range::Full => "on",
+                }
+                .to_string(),
+            ),
             ("chromaloc", "0".to_string()),
             ("crf", crf),
         ];
@@ -326,6 +343,7 @@ impl Encoder for X264Encoder {
             codec: Codec::H264,
             width: self.config.width,
             height: self.config.height,
+            colour: self.config.colour,
             timebase: Rational::new(1, self.config.frame_rate.num),
             config: self.record.to_bytes(),
         })

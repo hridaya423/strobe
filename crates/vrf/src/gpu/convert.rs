@@ -1,7 +1,9 @@
 use super::Gpu;
-use crate::colour::{Chroma, Format, Rect};
+use vrf_encode::{Matrix, Range};
 
-const IMMEDIATE_BYTES: usize = 24;
+use crate::colour::{Chroma, Format, Rect, Weights};
+
+const IMMEDIATE_BYTES: usize = 44;
 
 /// One compute dispatch that reads an RGBA8 or BGRA8 texture, crops it to a
 /// rect at any offset, and writes the Y and CbCr planes of NV12 or P010.
@@ -147,13 +149,27 @@ impl Converter {
             rect.width.is_multiple_of(2) && rect.height.is_multiple_of(2),
             "NV12 and P010 need even dimensions"
         );
+        assert!(
+            self.format == Format::Nv12 || !matches!(chroma, Chroma::Exact(_)),
+            "exact conversion is for NV12"
+        );
+        let (mode, weights, full) = match chroma {
+            Chroma::Swscale => (0, Weights::of(Matrix::Bt709), false),
+            Chroma::Spec => (1, Weights::of(Matrix::Bt709), false),
+            Chroma::Exact(space) => (2, Weights::of(space.matrix), space.range == Range::Full),
+        };
         let params = [
             rect.x,
             rect.y,
             rect.width,
             rect.height,
-            u32::from(chroma == Chroma::Spec),
+            mode,
             self.format.bits(),
+            weights.kr,
+            weights.kg,
+            weights.kb,
+            weights.d,
+            u32::from(full),
         ];
         let mut bytes = [0u8; IMMEDIATE_BYTES];
         for (chunk, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(params) {

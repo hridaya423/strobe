@@ -347,8 +347,13 @@ impl TurboEncoder {
             PixelFormat::Nv12
         };
         let size = POOL_SIZE + TurboEncoder::lane_buffers(&config, &options)?;
-        let pool =
-            PixelPool::with_size(config.width as usize, config.height as usize, format, size)?;
+        let pool = PixelPool::with_colour(
+            config.width as usize,
+            config.height as usize,
+            format,
+            size,
+            config.colour,
+        )?;
         TurboEncoder::with_pool(config, options, pool)
     }
 
@@ -567,6 +572,7 @@ impl Encoder for TurboEncoder {
             codec: self.config.codec,
             width: self.config.width,
             height: self.config.height,
+            colour: self.config.colour,
             timebase: Rational::new(1, self.config.frame_rate.num),
             config,
         })

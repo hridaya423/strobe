@@ -94,6 +94,35 @@ impl Quality {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum Matrix {
+    Bt601,
+    #[default]
+    Bt709,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum Range {
+    #[default]
+    Limited,
+    Full,
+}
+
+/// The YCbCr matrix and quantisation range of the frames an encoder takes, which it tags in the
+/// stream. Primaries and transfer are always BT.709, the sRGB primaries a browser paints in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct ColourSpace {
+    pub matrix: Matrix,
+    pub range: Range,
+}
+
+impl ColourSpace {
+    pub const BT709: ColourSpace = ColourSpace {
+        matrix: Matrix::Bt709,
+        range: Range::Limited,
+    };
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncoderConfig {
     pub codec: Codec,
@@ -104,6 +133,7 @@ pub struct EncoderConfig {
     pub quality: Quality,
     /// 10-bit from P010 input: HEVC Main10, or AV1 on NVENC. Rejected for other codecs.
     pub ten_bit: bool,
+    pub colour: ColourSpace,
 }
 
 impl EncoderConfig {
@@ -116,6 +146,7 @@ impl EncoderConfig {
             keyframe_interval: 240,
             quality: Quality::default(),
             ten_bit: false,
+            colour: ColourSpace::BT709,
         }
     }
 }
@@ -136,6 +167,7 @@ pub struct StreamInfo {
     pub codec: Codec,
     pub width: u32,
     pub height: u32,
+    pub colour: ColourSpace,
     /// `1 / frame_rate.num`, so frame `i` lands on a whole tick.
     pub timebase: Rational,
     /// The payload of the `avcC` (H.264), `hvcC` (HEVC) or `av1C` (AV1) box,

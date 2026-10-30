@@ -133,11 +133,15 @@ pub fn expected_colour(index: u64) -> [i32; 3] {
 }
 
 pub fn centre_colours(path: &std::path::Path) -> Result<Vec<[i32; 3]>> {
+    centre_colours_as(path, "in_color_matrix=bt709:in_range=limited")
+}
+
+pub fn centre_colours_as(path: &std::path::Path, input: &str) -> Result<Vec<[i32; 3]>> {
     let crop = format!("crop=2:2:{}:{}", WIDTH / 2, HEIGHT / 2);
     let output = std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
-        .args(["-vf", &format!("{crop},scale=in_color_matrix=bt709:in_range=limited:out_range=full:flags=accurate_rnd+full_chroma_int,format=rgb24")])
+        .args(["-vf", &format!("{crop},scale={input}:out_range=full:flags=accurate_rnd+full_chroma_int,format=rgb24")])
         .args(["-f", "rawvideo", "-"])
         .output()?;
     anyhow::ensure!(

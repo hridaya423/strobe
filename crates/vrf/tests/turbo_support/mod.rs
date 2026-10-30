@@ -244,3 +244,35 @@ pub fn encode_x264(out: &Path, content: &Content, frames: usize, quality: Qualit
     )?;
     pump(&mut encoder, &pool, content, frames, out, None)
 }
+
+pub fn encode_x264_coloured(
+    out: &Path,
+    content: &Content,
+    frames: usize,
+    colour: vrf_encode::ColourSpace,
+) -> Result<()> {
+    let mut config = config_for(content, Quality::default());
+    config.colour = colour;
+    let mut encoder = vrf_encode::x264::X264Encoder::new(config, 8)?;
+    let pool = PixelPool::with_colour(
+        content.width,
+        content.height,
+        vrf_encode::videotoolbox::pool::PixelFormat::Nv12,
+        8,
+        colour,
+    )?;
+    pump(&mut encoder, &pool, content, frames, out, None)
+}
+
+pub fn encode_single_coloured(
+    out: &Path,
+    content: &Content,
+    frames: usize,
+    colour: vrf_encode::ColourSpace,
+) -> Result<()> {
+    let mut config = config_for(content, Quality::default());
+    config.colour = colour;
+    let mut encoder = VideoToolboxEncoder::new(config)?;
+    let pool = encoder.pool().clone();
+    pump(&mut encoder, &pool, content, frames, out, None)
+}

@@ -16,7 +16,7 @@ use objc2_core_media::{
 };
 use objc2_core_video::{
     kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferTransferFunction_ITU_R_709_2,
-    kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+    kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
 };
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionCopyProperty, VTSessionSetProperty,
@@ -33,7 +33,9 @@ use objc2_video_toolbox::{
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 
-use crate::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Rational, StreamInfo};
+use crate::{
+    Codec, Encoder, EncoderConfig, EncoderFrame, Matrix, Packet, Range, Rational, StreamInfo,
+};
 
 pub mod pool;
 
@@ -275,7 +277,10 @@ fn configure(session: &VTCompressionSession, config: &EncoderConfig) -> Result<(
             session,
             "YCbCrMatrix",
             kVTCompressionPropertyKey_YCbCrMatrix,
-            kCVImageBufferYCbCrMatrix_ITU_R_709_2.as_ref(),
+            match config.colour.matrix {
+                Matrix::Bt601 => kCVImageBufferYCbCrMatrix_ITU_R_601_4.as_ref(),
+                Matrix::Bt709 => kCVImageBufferYCbCrMatrix_ITU_R_709_2.as_ref(),
+            },
         )?;
     }
     Ok(())
@@ -374,10 +379,12 @@ unsafe extern "C-unwind" fn on_output(
 
 impl VideoToolboxEncoder {
     pub fn new(config: EncoderConfig) -> Result<Self> {
-        let pool = PixelPool::new(
+        let pool = PixelPool::with_colour(
             config.width as usize,
             config.height as usize,
             pixel_format(&config),
+            pool::POOL_SIZE,
+            config.colour,
         )?;
         Self::with_pool(config, pool, None)
     }
@@ -393,6 +400,10 @@ impl VideoToolboxEncoder {
         ensure!(
             !config.ten_bit || config.codec == Codec::Hevc,
             "ten_bit is only supported for HEVC"
+        );
+        ensure!(
+            !config.ten_bit || config.colour.range == Range::Limited,
+            "full range is for 8-bit input only"
         );
         ensure!(
             config.frame_rate.num > 0 && config.frame_rate.den > 0,
@@ -524,6 +535,7 @@ impl Encoder for VideoToolboxEncoder {
             codec: self.config.codec,
             width: self.config.width,
             height: self.config.height,
+            colour: self.config.colour,
             timebase: Rational::new(1, self.config.frame_rate.num),
             config,
         })
