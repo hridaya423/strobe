@@ -35,6 +35,9 @@ const MIN_RUN: u64 = 80;
 const LEAD_IN_RUNS: u64 = 10;
 const MIN_RUN_LEAD_INS: u64 = 4;
 const TICKING_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long before the end of its range a view opens the next one. An open takes about half a
+/// second, and a view that sits idle for long may stop answering.
+const SPARE_LEAD: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -934,9 +937,6 @@ fn drive_in<'s, T>(
             tl(format_args!("closed"));
             last = None;
         }
-        if fixed && shared.claims.remaining() {
-            spare = Some(scope.spawn(|| (shared.spare)()));
-        }
         tl(format_args!("range {from} {to}"));
         let run_started = Instant::now();
         let (mut ts, mut tw, mut tc) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
@@ -957,6 +957,13 @@ fn drive_in<'s, T>(
         for index in from..to {
             let frame = shared.first + index;
             let step = Instant::now();
+            let done = (index - from) as u32;
+            let near_end =
+                done >= 8 && run_started.elapsed() / done * ((to - index) as u32) < SPARE_LEAD;
+            let last = index + 1 == to;
+            if fixed && spare.is_none() && (near_end || last) && shared.claims.remaining() {
+                spare = Some(scope.spawn(|| (shared.spare)()));
+            }
             let ask = shared.skip.is_some_and(|skip| skip.wants(frame));
             let (value, unchanged) = (shared.seek)(&mut view, frame, ask)
                 .with_context(|| format!("seek to frame {frame}"))?;
