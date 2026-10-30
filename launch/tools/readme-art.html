@@ -66,44 +66,69 @@
         return { ox, oy: y - oh * 0.5, oh, width };
       }
 
-      function logo(c, dark) {
-        const LW = 1200, LH = 400;
-        c.width = LW;
-        c.height = LH;
-        const ctx = c.getContext("2d");
-        const ink = document.createElement("canvas");
-        ink.width = LW;
-        ink.height = LH;
-        wordmark(ink.getContext("2d"), 280, LW / 2, 262, dark ? HEX.core : HEX.night, HEX.electric);
-        ctx.drawImage(ink, 0, 0);
-        ctx.font = '500 38px "Geist"';
-        ctx.textAlign = "center";
-        ctx.fillStyle = dark ? "rgba(230,237,243,0.7)" : "rgba(31,35,40,0.7)";
-        ctx.fillText("The fast render engine for HTML video", LW / 2, 352);
-      }
-
-      function card(c) {
-        const CW = 1280, CH = 640;
+      function mark(c, CW, CH, size, base, lines, r = 28) {
         c.width = CW;
         c.height = CH;
         const ctx = c.getContext("2d");
         ctx.fillStyle = HEX.night;
-        ctx.fillRect(0, 0, CW, CH);
+        ctx.beginPath();
+        ctx.roundRect(0, 0, CW, CH, r);
+        ctx.fill();
+        ctx.save();
+        ctx.clip();
         const ink = document.createElement("canvas");
         ink.width = CW;
         ink.height = CH;
-        wordmark(ink.getContext("2d"), 250, CW / 2, 318, HEX.core, HEX.electric);
+        const { ox, oy, oh } = wordmark(ink.getContext("2d"), size, CW / 2, base, HEX.core, "rgba(0,0,0,0)");
+        dither(ctx, 3, (f, k) => {
+          f.globalCompositeOperation = "lighter";
+          f.filter = `blur(${70 * k}px)`;
+          light(f, 0.05);
+          boltPath(f, ox * k, oy * k, oh * 2.6 * k);
+          f.fill();
+          f.filter = `blur(${22 * k}px)`;
+          light(f, 0.09);
+          boltPath(f, ox * k, oy * k, oh * 1.5 * k);
+          f.fill();
+          f.filter = "none";
+          f.globalCompositeOperation = "source-over";
+          const g = f.createLinearGradient(0, (oy - oh * 0.55) * k, 0, (oy + oh * 0.55) * k);
+          const gray = (v) => {
+            const q = Math.round(Math.pow(v, 1 / 2.2) * 255);
+            return `rgb(${q},${q},${q})`;
+          };
+          g.addColorStop(0, gray(1));
+          g.addColorStop(0.5, gray(0.78));
+          g.addColorStop(1, gray(0.3));
+          f.fillStyle = g;
+          boltPath(f, ox * k, oy * k, oh * 1.05 * k);
+          f.fill();
+        });
         ctx.drawImage(ink, 0, 0);
+        ctx.restore();
         ctx.textAlign = "center";
-        ctx.font = '500 40px "Geist"';
-        ctx.fillStyle = "rgba(244,251,255,0.78)";
-        ctx.fillText("The fast render engine for HTML video", CW / 2, 410);
-        ctx.font = '500 30px "Geist"';
-        ctx.fillStyle = HEX.ice;
-        ctx.fillText("Remotion and HyperFrames, up to 5.2× faster", CW / 2, 462);
-        ctx.font = '22px "Departure Mono"';
-        ctx.fillStyle = "rgba(244,251,255,0.42)";
-        ctx.fillText("github.com/hridaya423/strobe", CW / 2, CH - 56);
+        lines.forEach(([text, font, color, y]) => {
+          ctx.font = font;
+          ctx.fillStyle = color;
+          ctx.fillText(text, CW / 2, y);
+        });
+        ctx.strokeStyle = "rgba(143,227,255,0.10)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(1, 1, CW - 2, CH - 2, r);
+        ctx.stroke();
+      }
+
+      function logo(c) {
+        mark(c, 1200, 400, 250, 252, [["The fast render engine for HTML video", '500 36px "Geist"', "rgba(244,251,255,0.72)", 336]]);
+      }
+
+      function card(c) {
+        mark(c, 1280, 640, 250, 318, [
+          ["The fast render engine for HTML video", '500 40px "Geist"', "rgba(244,251,255,0.78)", 410],
+          ["Remotion and HyperFrames, up to 5.2× faster", '500 30px "Geist"', HEX.ice, 462],
+          ["github.com/hridaya423/strobe", '22px "Departure Mono"', "rgba(244,251,255,0.42)", 584],
+        ], 0);
       }
 
       function chart(c, dark) {
@@ -169,7 +194,7 @@
         Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 38px "Geist"')]).then(() => {
           const c = document.getElementById("c");
           if (art === "card") card(c);
-          else if (art.startsWith("logo")) logo(c, art === "logo-dark");
+          else if (art === "logo") logo(c);
           else chart(c, art === "chart-dark");
           document.title = "ready";
         }),

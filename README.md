@@ -1,8 +1,5 @@
 <div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/logo-dark.png">
-    <img src="assets/readme/logo-light.png" alt="Strobe: the fast render engine for HTML video" width="560">
-  </picture>
+  <img src="assets/readme/logo.png" alt="Strobe: the fast render engine for HTML video" width="640">
 
   <p>
     <img src="https://img.shields.io/badge/Remotion-compatible-2F7BFF?style=flat-square" alt="Remotion compatible">
