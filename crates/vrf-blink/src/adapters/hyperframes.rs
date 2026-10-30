@@ -261,6 +261,14 @@ pub struct Page {
     native: NativeVideos,
     tracks: Vec<HyperframesTrack>,
     frames: u64,
+    probed: PathBuf,
+}
+
+/// What a probe view learns about a composition.
+#[derive(Serialize, Deserialize)]
+struct Probe {
+    composition: Composition,
+    static_frames: Option<Vec<u64>>,
 }
 
 impl Page {
@@ -282,15 +290,22 @@ impl Page {
             .iter()
             .map(|v| json!({ "id": v.id, "width": v.width, "height": v.height }))
             .collect();
+        let script = format!(
+            "{early_stub}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}\n{}",
+            if native.is_empty() { "" } else { VIDEO_JS },
+            if options.skip { TRACK_JS } else { "" }
+        );
+        let init = json!({ "fps": [options.fps, 1], "videoMetadataHints": hints, "nativeVideos": native.params() })
+            .to_string();
+        let mut context = digest::Context::new(&digest::SHA256);
+        context.update(script.as_bytes());
+        context.update(init.as_bytes());
+        let probed = dir.join(format!("probe-{}.json", short_hex(context)));
         Ok(Page {
             project,
-            script: format!(
-                "{early_stub}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}\n{}",
-                if native.is_empty() { "" } else { VIDEO_JS },
-                if options.skip { TRACK_JS } else { "" }
-            ),
-            init: json!({ "fps": [options.fps, 1], "videoMetadataHints": hints, "nativeVideos": native.params() })
-                .to_string(),
+            script,
+            init,
+            probed,
             native,
             video: VideoFrames {
                 table: prepared.frames,
@@ -319,6 +334,31 @@ impl Page {
             .evaluate(&format!("__vrf.hf.init({})", self.init))
             .context("the composition did not initialise")?;
         Ok((view, serde_json::from_value(meta)?))
+    }
+
+    /// The composition's size and length, and the frames it plans to leave unchanged when `skip`
+    /// is on. They depend only on the prepared files and the injected script, so they are kept
+    /// beside the prepared project and a later render skips the probe view.
+    fn probe(&self, ui: &Ui, skip: bool) -> Result<Probe> {
+        if let Some(probe) = fs::read(&self.probed)
+            .ok()
+            .and_then(|text| serde_json::from_slice(&text).ok())
+        {
+            return Ok(probe);
+        }
+        let (mut view, composition) = self.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
+        let static_frames = skip.then(|| static_frames(&mut view)).transpose()?;
+        view.close()?;
+        let probe = Probe {
+            composition,
+            static_frames,
+        };
+        let partial = self
+            .probed
+            .with_extension(format!("partial-{}", std::process::id()));
+        fs::write(&partial, serde_json::to_vec(&probe)?)?;
+        fs::rename(&partial, &self.probed)?;
+        Ok(probe)
     }
 
     /// Leaves the view showing `frame`.
@@ -414,12 +454,10 @@ pub fn render(
     let page = Page::new(prepare, options)?;
 
     let step = Instant::now();
-    let (mut probe, composition) = page.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
-    let static_frames = options
-        .skip
-        .then(|| static_frames(&mut probe))
-        .transpose()?;
-    probe.close()?;
+    let Probe {
+        composition,
+        static_frames,
+    } = page.probe(ui, options.skip)?;
     let probe_s = step.elapsed();
     ensure!(
         composition.frames == page.frames,
