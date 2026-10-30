@@ -26,7 +26,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["metal"] }
 
 [target.'cfg(windows)'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
-windows = { version = "0.62", features = ["Win32_Media"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media", "Win32_System_Console"] }
 
 [build-dependencies]
 cc = "1.2"

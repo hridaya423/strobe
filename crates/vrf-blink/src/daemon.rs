@@ -284,6 +284,34 @@ pub enum Reply {
     Gone,
 }
 
+/// Starts `command` as a process that outlives this one, with no console and no handle of this
+/// process's: a Windows child inherits this process's pipes, and a caller reading them would
+/// wait for the child to exit.
+pub fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    use std::process::Stdio;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
+        use windows::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            if let Ok(handle) = unsafe { GetStdHandle(id) } {
+                let _ =
+                    unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) };
+            }
+        }
+        std::os::windows::process::CommandExt::creation_flags(command, 0x0000_0208);
+    }
+    command.spawn()
+}
+
 /// Connects to the daemon at `socket`, if one is listening.
 pub fn connect(socket: &Path) -> Option<Stream> {
     transport::connect(socket)

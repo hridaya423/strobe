@@ -1,7 +1,7 @@
 use std::io::{IsTerminal, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::process::{Command as Process, ExitCode, Stdio};
+use std::process::{Command as Process, ExitCode};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -345,13 +345,6 @@ impl From<hyperframes::Report> for Rendered {
     }
 }
 
-fn detach(command: &mut Process) {
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(command, 0);
-    #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(command, 0x0000_0208);
-}
-
 fn start_daemon(cpu_raster: bool, socket: &Path) -> Option<Stream> {
     if !daemon::all_sockets().any(|other| daemon::connect(&other).is_some()) {
         return None;
@@ -361,13 +354,8 @@ fn start_daemon(cpu_raster: bool, socket: &Path) -> Option<Stream> {
         "vrf: starting a {mode} daemon beside the running one; this render waits for it, later ones start warm"
     );
     let mut command = Process::new(std::env::current_exe().ok()?);
-    command
-        .args(["daemon", "--mode", mode])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    detach(&mut command);
-    let mut child = command.spawn().ok()?;
+    command.args(["daemon", "--mode", mode]);
+    let mut child = daemon::spawn_detached(&mut command).ok()?;
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if let Some(stream) = daemon::connect(socket) {
