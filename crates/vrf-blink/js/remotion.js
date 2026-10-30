@@ -81,6 +81,9 @@ globalThis.process.env.NODE_ENV = 'production';
     notify();
   });
 
+  window.process ??= {};
+  window.process.env ??= {};
+  window.process.env.NODE_ENV = 'production';
   window.remotion_puppeteerTimeout = config.timeoutInMilliseconds;
   window.remotion_inputProps = config.inputProps;
   window.remotion_initialFrame = config.initialFrame;

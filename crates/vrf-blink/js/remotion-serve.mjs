@@ -9,6 +9,8 @@ const server = await RenderInternals.prepareServer({
   port: null,
   remotionRoot: projectDir,
   concurrency: 1,
+  offthreadVideoThreads: 1,
+  sampleRate: 48000,
   logLevel: 'error',
   indent: false,
   offthreadVideoCacheSizeInBytes: null,

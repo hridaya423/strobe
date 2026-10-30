@@ -175,6 +175,22 @@ fn frame_range_renders_the_slice(ui: &Ui) -> Result<()> {
     near(pixel(&frames[9], 300, 170), colour(39), 4)
 }
 
+fn current_remotion_renders_the_page_not_black(ui: &Ui) -> Result<()> {
+    let project = bench_dir().join("corpus/synth-remotion");
+    let options = Options {
+        entry: Some("src/static/index.tsx".into()),
+        ..options(&project, "static")
+    };
+    let out = work_dir().join("synth-static.mp4");
+    render(ui, &options, Some(20..=24), Codec::H264, &out)?;
+    let frames = frames_of(&out)?;
+    ensure!(frames.len() == 5, "{} frames in the file", frames.len());
+    for frame in &frames {
+        near(pixel(frame, 5, 5), [246, 241, 231], 6)?;
+    }
+    Ok(())
+}
+
 fn failed_frame_is_retried_on_a_fresh_page(ui: &Ui) -> Result<()> {
     let project = fixture_project("retry")?;
     let out = work_dir().join("retry.mp4");
@@ -411,6 +427,10 @@ fn main() -> ExitCode {
             h264_render_stays_near_the_codec_floor,
         ),
         ("remotion_frame_range", frame_range_renders_the_slice),
+        (
+            "remotion_current_version_not_black",
+            current_remotion_renders_the_page_not_black,
+        ),
         (
             "remotion_retry_on_fresh_page",
             failed_frame_is_retried_on_a_fresh_page,
