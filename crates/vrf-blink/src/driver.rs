@@ -749,26 +749,33 @@ pub struct Runs<T> {
 const OPENING: usize = 3;
 
 struct Limit {
-    free: Mutex<usize>,
+    state: Mutex<(usize, usize)>,
     changed: Condvar,
 }
 
 impl Limit {
     fn new(count: usize) -> Limit {
         Limit {
-            free: Mutex::new(count),
+            state: Mutex::new((count, 0)),
             changed: Condvar::new(),
         }
     }
 
-    fn run<T>(&self, f: impl FnOnce() -> T) -> T {
-        *self
+    /// Runs `f` once a slot is free. A job that is not `urgent` also waits while an urgent one
+    /// waits.
+    fn run<T>(&self, urgent: bool, f: impl FnOnce() -> T) -> T {
+        let mut state = self.state.lock().unwrap();
+        state.1 += usize::from(urgent);
+        state = self
             .changed
-            .wait_while(self.free.lock().unwrap(), |free| *free == 0)
-            .unwrap() -= 1;
+            .wait_while(state, |(free, waiting)| *free == 0 || (!urgent && *waiting > 0))
+            .unwrap();
+        state.0 -= 1;
+        state.1 -= usize::from(urgent);
+        drop(state);
         let result = f();
-        *self.free.lock().unwrap() += 1;
-        self.changed.notify_one();
+        self.state.lock().unwrap().0 += 1;
+        self.changed.notify_all();
         result
     }
 }
@@ -781,7 +788,8 @@ struct Shared<'a, T> {
     claims: Claims,
     done: AtomicU64,
     on_frame: &'a (dyn Fn(u64, u64, &T) -> Result<()> + Sync),
-    open: &'a (dyn Fn() -> Result<View> + Sync),
+    opened: Mutex<mpsc::Receiver<Result<View>>>,
+    spare: &'a (dyn Fn() -> Result<View> + Sync),
     seek: &'a (dyn Fn(&mut View, u64, bool) -> Result<(T, bool)> + Sync),
 }
 
@@ -901,7 +909,12 @@ fn drive_in<'s, T>(
         convert: Vec::new(),
     };
     tl(format_args!("open0"));
-    let mut view = (shared.open)()?;
+    let mut view = shared
+        .opened
+        .lock()
+        .unwrap()
+        .recv()
+        .map_err(|_| anyhow!("no view was opened for this worker"))??;
     tl(format_args!("opened"));
     let mut last = None;
     loop {
@@ -914,7 +927,7 @@ fn drive_in<'s, T>(
             tl(format_args!("open"));
             let fresh = match spare.take() {
                 Some(opening) => opening.join().expect("opening a view panicked")?,
-                None => (shared.open)()?,
+                None => (shared.spare)()?,
             };
             tl(format_args!("opened"));
             std::mem::replace(&mut view, fresh).close()?;
@@ -922,7 +935,7 @@ fn drive_in<'s, T>(
             last = None;
         }
         if fixed && shared.claims.remaining() {
-            spare = Some(scope.spawn(|| (shared.open)()));
+            spare = Some(scope.spawn(|| (shared.spare)()));
         }
         tl(format_args!("range {from} {to}"));
         let run_started = Instant::now();
@@ -1007,7 +1020,8 @@ pub fn render_runs<T: Send>(
 ) -> Result<Runs<T>> {
     let started = Instant::now();
     let opening = Limit::new(OPENING);
-    let open = || opening.run(&open);
+    let spare = || opening.run(false, &open);
+    let open = || opening.run(true, &open);
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
     let plan = plan.fit(frame_bytes).sized(config.frames);
     let mut config = config.clone();
@@ -1017,91 +1031,101 @@ pub fn render_runs<T: Send>(
     config.turbo &= plan.turbo;
     config.sessions = plan.sessions.max(1);
     tl(format_args!("render_runs"));
-    let step = Instant::now();
-    let mut pipeline = Pipeline::new(&config, out, warm)?;
-    let pipeline_s = step.elapsed();
-    tl(format_args!("pipeline {pipeline_s:?}"));
     let views = (plan.views as u64)
         .min(config.frames.div_ceil(plan.run))
         .max(1) as usize;
-    let specs: Vec<LaneSpec> = (1..views).map(|_| pipeline.spec()).collect();
-    let aborter = pipeline.producer.clone();
-    let shared = Shared {
-        first,
-        plan,
-        watchdog: config.watchdog,
-        skip: config.skip.as_ref(),
-        claims: Claims::new(&Plan { views, ..plan }, config.frames, &moved, config.window),
-        done: AtomicU64::new(0),
-        on_frame: &on_frame,
-        open: &open,
-        seek: &seek,
-    };
-    let failure = Mutex::new(None);
-    let guard = |result: Result<Worker<T>>| match result {
-        Ok(worker) => Some(worker),
-        Err(error) => {
-            failure.lock().unwrap().get_or_insert(error);
-            shared.claims.cancel();
-            aborter.abort();
-            None
+    thread::scope(|opens| {
+        let (ready, opened) = mpsc::channel();
+        for _ in 0..views {
+            let (ready, open) = (ready.clone(), &open);
+            opens.spawn(move || {
+                let _ = ready.send(open());
+            });
         }
-    };
-    let workers: Vec<Option<Worker<T>>> = thread::scope(|scope| {
-        let handles: Vec<_> = specs
-            .into_iter()
-            .map(|spec| {
-                scope.spawn(|| guard(spec.open().and_then(|mut lane| work(&mut lane, &shared))))
-            })
-            .collect();
-        let mut workers = vec![guard(work(&mut pipeline, &shared))];
-        workers.extend(
-            handles
+        let step = Instant::now();
+        let mut pipeline = Pipeline::new(&config, out, warm)?;
+        let pipeline_s = step.elapsed();
+        tl(format_args!("pipeline {pipeline_s:?}"));
+        let specs: Vec<LaneSpec> = (1..views).map(|_| pipeline.spec()).collect();
+        let aborter = pipeline.producer.clone();
+        let shared = Shared {
+            first,
+            plan,
+            watchdog: config.watchdog,
+            skip: config.skip.as_ref(),
+            claims: Claims::new(&Plan { views, ..plan }, config.frames, &moved, config.window),
+            done: AtomicU64::new(0),
+            on_frame: &on_frame,
+            opened: Mutex::new(opened),
+            spare: &spare,
+            seek: &seek,
+        };
+        let failure = Mutex::new(None);
+        let guard = |result: Result<Worker<T>>| match result {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                failure.lock().unwrap().get_or_insert(error);
+                shared.claims.cancel();
+                aborter.abort();
+                None
+            }
+        };
+        let workers: Vec<Option<Worker<T>>> = thread::scope(|scope| {
+            let handles: Vec<_> = specs
                 .into_iter()
-                .map(|h| h.join().expect("view thread panicked")),
+                .map(|spec| {
+                    scope.spawn(|| guard(spec.open().and_then(|mut lane| work(&mut lane, &shared))))
+                })
+                .collect();
+            let mut workers = vec![guard(work(&mut pipeline, &shared))];
+            workers.extend(
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("view thread panicked")),
+            );
+            workers
+        });
+        drop(aborter);
+        tl(format_args!("workers joined"));
+        let finished = pipeline.finish();
+        tl(format_args!("finished"));
+        if let Some(error) = failure.into_inner().unwrap() {
+            return Err(error);
+        }
+        let (muxer, encode) = finished?;
+        let mut stats = Stats {
+            elapsed: started.elapsed(),
+            pipeline: pipeline_s,
+            encode,
+            ..Stats::default()
+        };
+        let mut frames = Vec::new();
+        let mut lead_in_frames = 0;
+        for worker in workers.into_iter().flatten() {
+            frames.extend(worker.frames);
+            lead_in_frames += worker.lead_in;
+            stats.repeats += worker.repeats;
+            stats.skipped += worker.skipped;
+            stats.retries += worker.capture.retries;
+            stats.seek.extend(worker.seek);
+            stats.runs.extend(worker.runs);
+            stats.begin_to_paint.extend(worker.capture.begin_to_paint);
+            stats.convert.extend(worker.convert);
+        }
+        frames.sort_by_key(|(index, _)| *index);
+        ensure!(
+            frames.len() as u64 == config.frames,
+            "{} frames rendered, expected {}",
+            frames.len(),
+            config.frames
         );
-        workers
-    });
-    drop(aborter);
-    tl(format_args!("workers joined"));
-    let finished = pipeline.finish();
-    tl(format_args!("finished"));
-    if let Some(error) = failure.into_inner().unwrap() {
-        return Err(error);
-    }
-    let (muxer, encode) = finished?;
-    let mut stats = Stats {
-        elapsed: started.elapsed(),
-        pipeline: pipeline_s,
-        encode,
-        ..Stats::default()
-    };
-    let mut frames = Vec::new();
-    let mut lead_in_frames = 0;
-    for worker in workers.into_iter().flatten() {
-        frames.extend(worker.frames);
-        lead_in_frames += worker.lead_in;
-        stats.repeats += worker.repeats;
-        stats.skipped += worker.skipped;
-        stats.retries += worker.capture.retries;
-        stats.seek.extend(worker.seek);
-        stats.runs.extend(worker.runs);
-        stats.begin_to_paint.extend(worker.capture.begin_to_paint);
-        stats.convert.extend(worker.convert);
-    }
-    frames.sort_by_key(|(index, _)| *index);
-    ensure!(
-        frames.len() as u64 == config.frames,
-        "{} frames rendered, expected {}",
-        frames.len(),
-        config.frames
-    );
-    Ok(Runs {
-        plan: Plan { views, ..plan },
-        muxer,
-        frames: frames.into_iter().map(|(_, value)| value).collect(),
-        stats,
-        lead_in_frames,
+        Ok(Runs {
+            plan: Plan { views, ..plan },
+            muxer,
+            frames: frames.into_iter().map(|(_, value)| value).collect(),
+            stats,
+            lead_in_frames,
+        })
     })
 }
 
