@@ -15,8 +15,10 @@ use vrf::gpu::metal::PoolTargets;
 use vrf::mux::{Container, Muxer};
 use vrf::sched::{self, Consumer, Producer, Submission};
 use vrf::sink::Sink;
+use vrf_encode::turbo::{TurboEncoder, TurboOptions};
 use vrf_encode::videotoolbox::pool::{PixelFormat, PixelPool, PoolBuffer};
 use vrf_encode::videotoolbox::{self, VideoToolboxEncoder};
+use vrf_encode::x264;
 use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
 
 use crate::{Paint, View};
@@ -36,9 +38,15 @@ pub struct Config {
     pub frames: u64,
     pub watchdog: Duration,
     pub window: usize,
+    pub turbo: bool,
 }
 
 impl Config {
+    fn turbo_options(&self) -> Option<TurboOptions> {
+        self.turbo
+            .then(|| TurboOptions::for_frame(self.width, self.height))
+    }
+
     pub fn new(width: u32, height: u32, frame_rate: Rational, codec: Codec, frames: u64) -> Self {
         Config {
             width,
@@ -48,6 +56,7 @@ impl Config {
             frames,
             watchdog: Duration::from_millis(500),
             window: WINDOW,
+            turbo: codec == Codec::H264 && x264::available().is_ok(),
         }
     }
 }
@@ -125,7 +134,9 @@ impl Warm {
 
     /// Allocates the pixel pool for frames of `width` x `height` if no render has yet.
     pub fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
-        let key = (width, height, PixelFormat::Nv12, WINDOW + POOL_MARGIN);
+        let config = Config::new(width, height, Rational::new(30, 1), Codec::H264, 0);
+        let encoder_config = EncoderConfig::new(config.codec, width, height, config.frame_rate);
+        let key = pool_key(&config, &encoder_config, config.turbo_options())?;
         self.slot(key).map(|_| ())
     }
 
@@ -192,8 +203,25 @@ impl Converting {
     }
 }
 
+fn pool_key(
+    config: &Config,
+    encoder_config: &EncoderConfig,
+    turbo: Option<TurboOptions>,
+) -> Result<PoolKey> {
+    let lane_buffers = match &turbo {
+        Some(options) => TurboEncoder::lane_buffers(encoder_config, options)?,
+        None => 0,
+    };
+    Ok((
+        config.width,
+        config.height,
+        videotoolbox::pixel_format(encoder_config),
+        config.window + POOL_MARGIN + lane_buffers,
+    ))
+}
+
 fn submit_loop(
-    mut encoder: VideoToolboxEncoder,
+    mut encoder: impl Encoder,
     mut consumer: Consumer<PoolBuffer>,
     mut sink: Sink,
     frame_rate: Rational,
@@ -372,18 +400,13 @@ impl<'w> Pipeline<'w> {
     pub fn new(config: &Config, out: &Path, warm: &'w mut Warm) -> Result<Pipeline<'w>> {
         let encoder_config =
             EncoderConfig::new(config.codec, config.width, config.height, config.frame_rate);
-        let key = (
-            config.width,
-            config.height,
-            videotoolbox::pixel_format(&encoder_config),
-            config.window + POOL_MARGIN,
-        );
+        let turbo = config.turbo_options();
+        let key = pool_key(config, &encoder_config, turbo)?;
         let gpu = warm.gpu.clone();
         let converter = warm.converter.clone();
         let slot = warm.slot(key)?;
         let pool = slot.pool.clone();
         let targets = std::mem::take(&mut slot.targets);
-        let encoder = VideoToolboxEncoder::with_pool(encoder_config, pool.clone(), None)?;
         let (producer, consumer) = sched::ordered::<PoolBuffer>(config.window);
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
@@ -399,7 +422,7 @@ impl<'w> Pipeline<'w> {
                 converter,
                 targets,
                 imports: HashMap::new(),
-                pool,
+                pool: pool.clone(),
             },
             producer,
             width: config.width,
@@ -408,7 +431,16 @@ impl<'w> Pipeline<'w> {
             convert: Vec::new(),
         };
         let frame_rate = config.frame_rate;
-        let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
+        let submit = match turbo {
+            Some(options) => {
+                let encoder = TurboEncoder::with_pool(encoder_config, options, pool)?;
+                thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate))
+            }
+            None => {
+                let encoder = VideoToolboxEncoder::with_pool(encoder_config, pool, None)?;
+                thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate))
+            }
+        };
         Ok(Pipeline {
             lane,
             submit,
@@ -491,6 +523,12 @@ pub struct Plan {
     pub views: usize,
     pub run: u64,
     pub lead_in: u64,
+    #[serde(default = "enabled")]
+    pub turbo: bool,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 impl Plan {
@@ -499,6 +537,7 @@ impl Plan {
             views: 1,
             run: u64::MAX,
             lead_in: LEAD_IN,
+            turbo: true,
         }
     }
 
@@ -507,6 +546,7 @@ impl Plan {
             views: views.max(1),
             run: run.max(1),
             lead_in: LEAD_IN,
+            turbo: true,
         }
     }
 
@@ -639,6 +679,7 @@ pub fn render_runs<T: Send>(
     let plan = plan.fit(frame_bytes);
     let mut config = config.clone();
     config.window = config.window.max(plan.window());
+    config.turbo &= plan.turbo;
     let step = Instant::now();
     let mut pipeline = Pipeline::new(&config, out, warm)?;
     let pipeline_s = step.elapsed();

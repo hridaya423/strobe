@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::ptr::{NonNull, null, null_mut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result, bail, ensure};
 use objc2_core_foundation::{
@@ -185,10 +185,17 @@ fn create_session(
 }
 
 pub fn capabilities(codec: Codec) -> Result<Capabilities> {
+    static KNOWN: Mutex<Vec<(Codec, Capabilities)>> = Mutex::new(Vec::new());
+    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, capabilities)) = known.iter().find(|(c, _)| *c == codec) {
+        return Ok(*capabilities);
+    }
     let session = create_session(codec, 1920, 1080, None)?;
     let capabilities = read_capabilities(&session);
     unsafe { session.invalidate() };
-    capabilities
+    let capabilities = capabilities?;
+    known.push((codec, capabilities));
+    Ok(capabilities)
 }
 
 fn configure(session: &VTCompressionSession, config: &EncoderConfig) -> Result<()> {
