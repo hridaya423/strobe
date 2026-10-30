@@ -387,7 +387,8 @@
     if (!native) throw new Error(`video "${id}" has no native decode parameters`);
     const video = globalThis.__vrf.video;
     if (!native.opened) {
-      native.opened = video.open(`${native.params.path}#${id}`).then((clip) => {
+      const jpeg = { bt709: String(native.params.matrix) === '709', full: Boolean(native.params.full) };
+      native.opened = video.open(`${native.params.path}#${id}`, jpeg).then((clip) => {
         if (!clip) throw new Error(`video "${id}" (${native.params.path}) cannot be decoded natively: ${video.refusal()}`);
         native.slots = extractionSlots(clip.pts, clip.timescale, native.params);
         return clip;
@@ -396,24 +397,50 @@
     return native;
   };
 
-  const showNativeFrame = async (id, slot) => {
-    const native = nativeClip(id);
-    const clip = await native.opened;
-    const config = { matrix: native.params.matrix, full: native.params.full };
-    const frame = (k) => async () => ({ picture: await globalThis.__vrf.video.frame(clip, k), config });
-    const surface = nativeSurface(id);
-    const k = sourceFrameAtSlot(native.slots, slot);
-    await surface.show(k, frame(k));
-    const next = sourceFrameAtSlot(native.slots, slot + 1);
-    if (next !== k) surface.prefetch(next, frame(next));
-    return surface;
+  const decodedFrame = async (clip, k) => {
+    const { jpeg } = await globalThis.__vrf.video.frame(clip, k);
+    const url = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
+    const image = new Image();
+    image.decoding = 'sync';
+    image.src = url;
+    try {
+      await image.decode();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+    return image;
   };
 
   const nativeSurface = (id) => {
     let surface = nativeSurfaces.get(id);
     if (!surface) {
-      surface = globalThis.__vrf.video.createJpegSurface();
+      surface = { image: null, shown: null, images: new Map() };
       nativeSurfaces.set(id, surface);
+    }
+    return surface;
+  };
+
+  const prefetchFrame = (surface, clip, k) => {
+    if (surface.images.has(k)) return;
+    const image = decodedFrame(clip, k);
+    image.catch(() => {});
+    surface.images.set(k, image);
+  };
+
+  const showNativeFrame = async (id, slot) => {
+    const native = nativeClip(id);
+    const clip = await native.opened;
+    const surface = nativeSurface(id);
+    const k = sourceFrameAtSlot(native.slots, slot);
+    prefetchFrame(surface, clip, k);
+    const image = await surface.images.get(k);
+    for (const other of surface.images.keys()) if (other < k) surface.images.delete(other);
+    if (surface.shown !== k && surface.image) surface.image.remove();
+    surface.shown = k;
+    surface.image = image;
+    for (const ahead of [1, 2]) {
+      const next = sourceFrameAtSlot(native.slots, slot + ahead);
+      if (next !== k) prefetchFrame(surface, clip, next);
     }
     return surface;
   };

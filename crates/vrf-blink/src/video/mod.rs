@@ -1,6 +1,7 @@
 #[cfg_attr(windows, path = "decoder_win.rs")]
 mod decoder;
 mod hyperframes;
+mod jpeg;
 mod link;
 mod renderer;
 mod stream;

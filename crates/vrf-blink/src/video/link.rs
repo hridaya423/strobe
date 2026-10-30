@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -19,6 +19,7 @@ const HEADER: usize = 32;
 const FRAME: u32 = 1;
 const META: u32 = 2;
 const FAILURE: u32 = 3;
+const JPEG: u32 = 4;
 const LOOK_AHEAD: usize = 3;
 const MAX_STRIDE: usize = 8;
 const KEEP_BEHIND: usize = 2;
@@ -62,6 +63,13 @@ impl Pusher {
         self.send(HEADER + len, |buffer| {
             Self::header(buffer, FRAME, clip, index as u32, width, height);
             frame.write_nv12(&mut buffer[HEADER..]);
+        })
+    }
+
+    fn jpeg(&self, clip: u32, index: usize, file: &[u8]) -> Result<()> {
+        self.send(HEADER + file.len(), |buffer| {
+            Self::header(buffer, JPEG, clip, index as u32, file.len() as u32, 0);
+            buffer[HEADER..].copy_from_slice(file);
         })
     }
 
@@ -114,13 +122,42 @@ pub type Resolve = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Message {
-    Open { req: u32, src: String },
+    Open(Open),
     Want { clip: u32, k: usize, hit: bool },
+}
+
+#[derive(Deserialize)]
+struct Open {
+    req: u32,
+    src: String,
+    jpeg: Option<Jpeg>,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+struct Jpeg {
+    bt709: bool,
+    full: bool,
+}
+
+struct Window {
+    from: usize,
+    stride: usize,
+    pushed: BTreeSet<usize>,
+    requested: BTreeSet<usize>,
+    closed: bool,
+}
+
+/// Keeps a clip's next frames encoded as HyperFrames' JPEGs and pushed, on a thread of its own,
+/// so that the page's messages never wait for a decode or an encode.
+struct Producer {
+    window: Mutex<Window>,
+    changed: Condvar,
 }
 
 struct Playing {
     clip: Arc<Clip>,
-    stream: Stream,
+    producer: Option<Arc<Producer>>,
+    stream: Arc<Stream>,
     pushed: BTreeSet<usize>,
     last: Option<usize>,
 }
@@ -167,15 +204,9 @@ fn serve(
         let result = serde_json::from_str::<Message>(&text)
             .context("the page sent a message the host does not know")
             .and_then(|message| match message {
-                Message::Open { req, src } => open(
-                    &pusher,
-                    &resolve,
-                    &clips,
-                    &fallback,
-                    &mut playing,
-                    req,
-                    &src,
-                ),
+                Message::Open(request) => {
+                    open(&pusher, &resolve, &clips, &fallback, &mut playing, request)
+                }
                 Message::Want { clip, k, hit } => match playing.get_mut(clip as usize) {
                     Some(playing) => want(&pusher, clip, playing, k, hit),
                     None => Ok(()),
@@ -193,11 +224,10 @@ fn open(
     clips: &Clips,
     fallback: &StartFallback,
     playing: &mut Vec<Playing>,
-    req: u32,
-    src: &str,
+    Open { req, src, jpeg }: Open,
 ) -> Result<()> {
     let id = playing.len() as u32;
-    let clip = resolve(src)
+    let clip = resolve(&src)
         .context("not a file in the project")
         .and_then(|path| clips.open(&path))
         .map_err(|error| format!("{error:#}"))
@@ -226,13 +256,95 @@ fn open(
         "full": clip.full_range,
     });
     pusher.text(META, id, clip.pts.len() as u32, 0, &meta, &clip.pts)?;
+    let stream = Arc::new(Stream::new(clip.clone()));
+    let producer = jpeg.map(|jpeg| produce(pusher.clone(), id, clip.clone(), stream.clone(), jpeg));
     playing.push(Playing {
-        stream: Stream::new(clip.clone()),
+        stream,
+        producer,
         clip,
         pushed: BTreeSet::new(),
         last: None,
     });
     Ok(())
+}
+
+impl Drop for Playing {
+    fn drop(&mut self) {
+        if let Some(producer) = &self.producer {
+            producer.window.lock().unwrap().closed = true;
+            producer.changed.notify_all();
+            self.stream.close();
+        }
+    }
+}
+
+fn produce(
+    pusher: Pusher,
+    id: u32,
+    clip: Arc<Clip>,
+    stream: Arc<Stream>,
+    jpeg: Jpeg,
+) -> Arc<Producer> {
+    let producer = Arc::new(Producer {
+        window: Mutex::new(Window {
+            from: 0,
+            stride: 1,
+            pushed: BTreeSet::new(),
+            requested: BTreeSet::new(),
+            closed: false,
+        }),
+        changed: Condvar::new(),
+    });
+    let shared = producer.clone();
+    thread::spawn(move || {
+        let count = clip.pts.len();
+        let mut nv12 = vec![0; Frame::nv12_len(clip.width, clip.height)];
+        loop {
+            let index = {
+                let mut window = shared.window.lock().unwrap();
+                loop {
+                    if window.closed {
+                        return;
+                    }
+                    let ahead = (0..=LOOK_AHEAD)
+                        .map(|step| window.from + step * window.stride)
+                        .take_while(|index| *index < count);
+                    let next = window
+                        .requested
+                        .iter()
+                        .copied()
+                        .chain(ahead)
+                        .find(|index| !window.pushed.contains(index));
+                    if let Some(index) = next {
+                        window.pushed.insert(index);
+                        break index;
+                    }
+                    window = shared.changed.wait(window).unwrap();
+                }
+            };
+            let result = match stream.wait_wanted(index) {
+                Ok(Some(frame)) => {
+                    frame.write_nv12(&mut nv12);
+                    let file =
+                        super::jpeg::encode(&nv12, clip.width, clip.height, jpeg.bt709, jpeg.full);
+                    shared.window.lock().unwrap().requested.remove(&index);
+                    pusher.jpeg(id, index, &file)
+                }
+                Ok(None) => {
+                    shared.window.lock().unwrap().pushed.remove(&index);
+                    Ok(())
+                }
+                Err(error) => {
+                    let failure = json!({"error": format!("{error:#}")});
+                    pusher.text(FAILURE, id, 0, index as u32, &failure, &[])
+                }
+            };
+            if let Err(error) = result {
+                eprintln!("video: {error:#}");
+            }
+        }
+    });
+    producer
 }
 
 fn want(pusher: &Pusher, id: u32, playing: &mut Playing, k: usize, hit: bool) -> Result<()> {
@@ -245,10 +357,26 @@ fn want(pusher: &Pusher, id: u32, playing: &mut Playing, k: usize, hit: bool) ->
         _ => 1,
     };
     playing.last = Some(k);
+    if let Some(producer) = &playing.producer {
+        let mut window = producer.window.lock().unwrap();
+        window.from = k;
+        window.stride = stride;
+        if !hit {
+            window.pushed.remove(&k);
+            window.requested.insert(k);
+        }
+        window
+            .pushed
+            .retain(|index| *index + KEEP_BEHIND >= k && *index <= k + KEEP_AHEAD);
+        let low = window.requested.first().map_or(k, |first| (*first).min(k));
+        playing.stream.want(low, k - low + LOOK_AHEAD * stride);
+        producer.changed.notify_all();
+        return Ok(());
+    }
+    playing.stream.want(k, LOOK_AHEAD * stride);
     if !hit {
         playing.pushed.remove(&k);
     }
-    playing.stream.want(k, LOOK_AHEAD * stride);
     let wanted = (0..=LOOK_AHEAD)
         .map(|step| k + step * stride)
         .take_while(|index| *index < count);

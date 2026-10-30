@@ -26,7 +26,6 @@ use crate::{Mode, Project, Ui, View};
 const HYPERFRAMES_JS: &str = include_str!("../../js/hyperframes.js");
 const CLOCK_JS: &str = include_str!("../../js/clock.js");
 const VIDEO_JS: &str = include_str!("../../js/video.js");
-const HOP_JS: &str = include_str!("../../js/hyperframes-hop.js");
 const PREPARE_JS: &str = include_str!("../../js/hyperframes-prepare.mjs");
 const NATIVE_JS: &str = include_str!("../../js/hyperframes-native.mjs");
 
@@ -286,9 +285,8 @@ impl Page {
         Ok(Page {
             project,
             script: format!(
-                "{early_stub}\n{}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}\n{}",
+                "{early_stub}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}\n{}",
                 if native.is_empty() { "" } else { VIDEO_JS },
-                if native.is_empty() { "" } else { HOP_JS },
                 if options.skip { TRACK_JS } else { "" }
             ),
             init: json!({ "fps": [options.fps, 1], "videoMetadataHints": hints, "nativeVideos": native.params() })

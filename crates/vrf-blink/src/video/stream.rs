@@ -96,6 +96,30 @@ impl Stream {
         }
     }
 
+    /// Waits for frame `index` while it lies in the window, and gives `None` once it has left the
+    /// window or the stream is closed.
+    pub fn wait_wanted(&self, index: usize) -> Result<Option<Arc<Frame>>> {
+        let mut state = self.shared.state.lock().unwrap();
+        loop {
+            if let Some(frame) = state.cache.get(&index) {
+                return Ok(Some(frame.clone()));
+            }
+            if let Some(error) = &state.error {
+                bail!("{error}");
+            }
+            if state.closed || index < state.low || index > state.high {
+                return Ok(None);
+            }
+            state = self.shared.changed.wait(state).unwrap();
+        }
+    }
+
+    /// Stops the decoder and wakes every waiter.
+    pub fn close(&self) {
+        self.shared.state.lock().unwrap().closed = true;
+        self.shared.changed.notify_all();
+    }
+
     /// The frame if it is already decoded.
     pub fn peek(&self, index: usize) -> Option<Arc<Frame>> {
         self.shared.state.lock().unwrap().cache.get(&index).cloned()
@@ -110,8 +134,7 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.shared.state.lock().unwrap().closed = true;
-        self.shared.changed.notify_all();
+        self.close();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
