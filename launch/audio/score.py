@@ -234,7 +234,7 @@ def pen(d):
     return x / (np.abs(x).max() + 1e-9)
 
 
-for b0, b1 in ((16, 16.9), (24.2, 24.9)):
+for b0, b1 in ((24.2, 24.9),):
     sfx.add(pen(B(b1 - b0)), B(b0), 0.16, pan=0.3)
 for b in (17, 17.5, 18, 18.2):
     sfx.add(sx_("tick_b"), B(b), 0.3)
@@ -295,7 +295,7 @@ mixd.astype(np.float32).tofile(tmp)
 pre = ["-f", "f32le", "-ar", str(SR), "-ac", "2", "-i", tmp]
 r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats"] + pre + ["-af", "ebur128", "-f", "null", "-"], capture_output=True, text=True).stderr
 I = float(re.findall(r"I:\s+(-?[\d.]+) LUFS", r)[-1])
-subprocess.check_call(["ffmpeg", "-v", "error", "-y"] + pre + ["-af", f"volume={-9.5 - I:.2f}dB,alimiter=limit=0.84:attack=1:release=60:level=false",
+subprocess.check_call(["ffmpeg", "-v", "error", "-y"] + pre + ["-af", f"volume={-14 - I:.2f}dB,alimiter=limit=0.84:attack=1:release=60:level=false",
                                                        "-ar", "48000", os.path.join(HERE, "score.wav")])
 os.remove(tmp)
 print("wrote score.wav")

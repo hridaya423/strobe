@@ -673,7 +673,6 @@ function setup() {
       ctx.fillStyle = q.flash ? HEX.ice : HEX.core;
       ctx.fillRect(q.x - sz / 2, q.y - sz / 2, sz, sz);
     }
-    brush(loopPts(W / 2 + 10, NUM_Y - 10, HERO.width / 2 + 130, 220, 2), E.cio(seg(t, b(16), b(16.9))), 14, HEX.ice);
 
     const capY = 900;
     const parts = [["faster than ", GEIST(600, 64), HEX.ice, b(17)], ["Remotion", SERIF(96), HEX.core, b(17.5)], [" & ", GEIST(600, 64), HEX.ice, b(18)], ["HyperFrames", SERIF(96), HEX.core, b(18.2)]];
