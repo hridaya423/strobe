@@ -453,6 +453,7 @@ pub fn render(
         count,
     );
     config.skip = static_frames.map(Skip::planned);
+    config.jpeg_capture = matches!(codec, Codec::H264 | Codec::Hevc);
     let (width, height) = (composition.width as i32, composition.height as i32);
     let progress = Progress::new(progress, count, command_start);
     let first_ready = OnceLock::new();

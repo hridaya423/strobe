@@ -49,6 +49,7 @@ pub struct Config {
     pub sessions: usize,
     pub skip: Option<Skip>,
     pub colour: ColourSpace,
+    pub jpeg_capture: bool,
 }
 
 impl Config {
@@ -65,6 +66,7 @@ impl Config {
             sessions: 1,
             skip: None,
             colour: ColourSpace::BT709,
+            jpeg_capture: false,
         }
     }
 
@@ -75,7 +77,9 @@ impl Config {
     }
 
     pub(crate) fn chroma(&self) -> Chroma {
-        if self.colour == ColourSpace::BT709 {
+        if self.jpeg_capture {
+            Chroma::Jpeg
+        } else if self.colour == ColourSpace::BT709 {
             Chroma::Swscale
         } else {
             Chroma::Exact(self.colour)

@@ -19,6 +19,9 @@ impl Format {
 pub enum Chroma {
     Swscale,
     Spec,
+    /// HyperFrames' delivered pixels: a quality-100 4:2:0 JPEG capture, expanded to RGB with
+    /// nearest chroma and converted to BT.709 limited range by ffmpeg with `flags=neighbor`.
+    Jpeg,
     Exact(ColourSpace),
 }
 
@@ -132,6 +135,35 @@ fn chroma_swscale(block: [[Rgb; 2]; 2], bits: u32) -> [i64; 2] {
     ]
 }
 
+fn jpeg_block(block: [[Rgb; 2]; 2], column: u32) -> [[Rgb; 2]; 2] {
+    let mut sum = [0i64; 2];
+    for c in block.iter().flatten() {
+        sum[0] += (-11059 * c[0] - 21709 * c[1] + 32768 * c[2] + (128 << 16) + 32767) >> 16;
+        sum[1] += (32768 * c[0] - 27439 * c[1] - 5329 * c[2] + (128 << 16) + 32767) >> 16;
+    }
+    let bias = if column.is_multiple_of(2) { 1 } else { 2 };
+    let u = (((sum[0] + bias) >> 2) - 128) << 9;
+    let v = (((sum[1] + bias) >> 2) - 128) << 9;
+    block.map(|row| {
+        row.map(|c| {
+            let y = (19595 * c[0] + 38470 * c[1] + 7471 * c[2] + 32768) >> 16;
+            let base = (y << 9) * 8192 + 2_097_152;
+            [
+                ((base + v * 11485) >> 22).clamp(0, 255),
+                ((base - v * 5850 - u * 2819) >> 22).clamp(0, 255),
+                ((base + u * 14516) >> 22).clamp(0, 255),
+            ]
+        })
+    })
+}
+
+fn chroma_jpeg(block: [[Rgb; 2]; 2], bits: u32) -> [i64; 2] {
+    let pair = chroma_pair_swscale(block[1][0], block[1][1]);
+    let shift = 14 - bits;
+    let round = 1 << (shift - 1);
+    [(pair[0] + round) >> shift, (pair[1] + round) >> shift]
+}
+
 fn chroma_spec(rows: [[Rgb; 3]; 2], bits: u32) -> [i64; 2] {
     let m = 1 << (bits - 8);
     let mut acc = [0i64; 2];
@@ -170,13 +202,42 @@ pub fn convert(rgba: &[u8], stride: u32, rect: Rect, chroma: Chroma, format: For
             plane.extend(((v as u16) << 6).to_le_bytes());
         }
     };
+    if chroma == Chroma::Jpeg {
+        let mut luma = vec![0i64; (rect.width * rect.height) as usize];
+        for cy in 0..rect.height / 2 {
+            for cx in 0..rect.width / 2 {
+                let (x0, y0) = (cx * 2, cy * 2);
+                let block = jpeg_block(
+                    [
+                        [pixel(x0, y0), pixel(x0 + 1, y0)],
+                        [pixel(x0, y0 + 1), pixel(x0 + 1, y0 + 1)],
+                    ],
+                    cx,
+                );
+                for (dy, row) in block.iter().enumerate() {
+                    for (dx, &c) in row.iter().enumerate() {
+                        luma[((y0 + dy as u32) * rect.width + x0 + dx as u32) as usize] =
+                            luma_swscale(c, bits);
+                    }
+                }
+                let [cb, cr] = chroma_jpeg(block, bits);
+                put(&mut cbcr_plane, cb);
+                put(&mut cbcr_plane, cr);
+            }
+        }
+        for v in luma {
+            put(&mut y_plane, v);
+        }
+        y_plane.extend(cbcr_plane);
+        return y_plane;
+    }
     for y in 0..rect.height {
         for x in 0..rect.width {
             let c = pixel(x, y);
             put(
                 &mut y_plane,
                 match chroma {
-                    Chroma::Swscale => luma_swscale(c, bits),
+                    Chroma::Swscale | Chroma::Jpeg => luma_swscale(c, bits),
                     Chroma::Spec => luma_spec(c, bits),
                     Chroma::Exact(space) => luma_exact(c, space),
                 },
@@ -187,7 +248,7 @@ pub fn convert(rgba: &[u8], stride: u32, rect: Rect, chroma: Chroma, format: For
         for cx in 0..rect.width / 2 {
             let (x0, y0) = (cx * 2, cy * 2);
             let [cb, cr] = match chroma {
-                Chroma::Swscale => chroma_swscale(
+                Chroma::Swscale | Chroma::Jpeg => chroma_swscale(
                     [
                         [pixel(x0, y0), pixel(x0 + 1, y0)],
                         [pixel(x0, y0 + 1), pixel(x0 + 1, y0 + 1)],

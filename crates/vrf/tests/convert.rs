@@ -354,7 +354,7 @@ fn bgra_input_gives_the_same_bytes_as_rgba() {
         height: 400,
     };
     for format in FORMATS {
-        for chroma in [Chroma::Swscale, Chroma::Spec] {
+        for chroma in [Chroma::Swscale, Chroma::Spec, Chroma::Jpeg] {
             let rgba = gpu_convert(&gpu, &image, rect, chroma, format, false);
             let bgra = gpu_convert(&gpu, &image, rect, chroma, format, true);
             assert_same(&format!("{format:?} {chroma:?}"), &bgra, &rgba);
@@ -404,6 +404,31 @@ const SPACES: [ColourSpace; 4] = [
         range: Range::Full,
     },
 ];
+
+#[test]
+fn jpeg_gpu_matches_oracle() {
+    let gpu = Gpu::new().unwrap();
+    for image in [noise(), extremes(), all_colours()] {
+        for format in FORMATS {
+            for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let rect = Rect {
+                    x,
+                    y,
+                    width: image.width - 2,
+                    height: image.height - 2,
+                };
+                let want = colour::convert(&image.rgba, image.width, rect, Chroma::Jpeg, format);
+                let got = gpu_convert(&gpu, &image, rect, Chroma::Jpeg, format, false);
+                assert_same(
+                    &format!("{} {format:?} crop {x},{y}", image.name),
+                    &got,
+                    &want,
+                );
+            }
+        }
+    }
+}
+
 
 #[test]
 fn exact_gpu_matches_oracle() {
@@ -928,7 +953,7 @@ fn gpu_time_per_convert() {
         };
         let src = input_texture(&gpu, &image, true);
         for format in FORMATS {
-            for chroma in [Chroma::Swscale, Chroma::Spec] {
+            for chroma in [Chroma::Swscale, Chroma::Spec, Chroma::Jpeg] {
                 let converter = Converter::new(&gpu, format);
                 let (yf, cf) = Converter::plane_formats(format);
                 let y = plane_texture(&gpu, yf, width, height);

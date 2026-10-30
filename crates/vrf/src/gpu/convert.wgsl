@@ -105,6 +105,36 @@ fn chroma_exact(x0: u32, y0: u32) -> vec2<u32> {
     );
 }
 
+fn jpeg_block(cx: u32, cy: u32) -> array<vec3<i32>, 4> {
+    var c: array<vec3<i32>, 4>;
+    var sum = vec2<i32>(0);
+    for (var i = 0u; i < 4u; i++) {
+        c[i] = vec3<i32>(load(cx * 2u + (i & 1u), cy * 2u + (i >> 1u)));
+        sum += vec2<i32>(
+            (-11059 * c[i].x - 21709 * c[i].y + 32768 * c[i].z + (128 << 16u) + 32767) >> 16u,
+            (32768 * c[i].x - 27439 * c[i].y - 5329 * c[i].z + (128 << 16u) + 32767) >> 16u,
+        );
+    }
+    let bias = select(2, 1, (cx & 1u) == 0u);
+    let uv = (((sum + bias) >> vec2<u32>(2u)) - 128) << vec2<u32>(9u);
+    for (var i = 0u; i < 4u; i++) {
+        let y = (19595 * c[i].x + 38470 * c[i].y + 7471 * c[i].z + 32768) >> 16u;
+        let base = (y << 9u) * 8192 + 2097152;
+        c[i] = clamp(
+            vec3<i32>(base + uv.y * 11485, base - uv.y * 5850 - uv.x * 2819, base + uv.x * 14516) >> vec3<u32>(22u),
+            vec3<i32>(0),
+            vec3<i32>(255),
+        );
+    }
+    return c;
+}
+
+fn chroma_jpeg(c: array<vec3<i32>, 4>) -> vec2<u32> {
+    let pair = pair_swscale(vec3<u32>(c[2]), vec3<u32>(c[3]));
+    let shift = 14u - p.bits;
+    return vec2<u32>((pair + vec2<i32>(i32(1u << (shift - 1u)))) >> vec2<u32>(shift));
+}
+
 fn luma_at(x: u32, y: u32) -> u32 {
     let c = load(x, y);
     switch p.mode {
@@ -127,6 +157,15 @@ fn convert8(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x * 2u >= p.width || id.y * 2u >= p.height {
         return;
     }
+    if p.mode == 3u {
+        let c = jpeg_block(id.x, id.y);
+        for (var i = 0u; i < 4u; i++) {
+            let at = vec2<u32>(id.x * 2u + (i & 1u), id.y * 2u + (i >> 1u));
+            textureStore(y8, at, vec4<u32>(luma_swscale(vec3<u32>(c[i])), 0u, 0u, 0u));
+        }
+        textureStore(c8, id.xy, vec4<u32>(chroma_jpeg(c), 0u, 0u));
+        return;
+    }
     for (var dy = 0u; dy < 2u; dy++) {
         for (var dx = 0u; dx < 2u; dx++) {
             let at = vec2<u32>(id.x * 2u + dx, id.y * 2u + dy);
@@ -139,6 +178,15 @@ fn convert8(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(16, 16)
 fn convert16(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x * 2u >= p.width || id.y * 2u >= p.height {
+        return;
+    }
+    if p.mode == 3u {
+        let c = jpeg_block(id.x, id.y);
+        for (var i = 0u; i < 4u; i++) {
+            let at = vec2<u32>(id.x * 2u + (i & 1u), id.y * 2u + (i >> 1u));
+            textureStore(y16, at, vec4<u32>(luma_swscale(vec3<u32>(c[i])) << 6u, 0u, 0u, 0u));
+        }
+        textureStore(c16, id.xy, vec4<u32>(chroma_jpeg(c) << vec2<u32>(6u), 0u, 0u));
         return;
     }
     for (var dy = 0u; dy < 2u; dy++) {

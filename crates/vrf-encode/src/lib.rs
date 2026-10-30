@@ -82,7 +82,7 @@ impl Quality {
     pub fn value(self) -> f32 {
         match self {
             Quality::Draft => 0.50,
-            Quality::Balanced => 0.85,
+            Quality::Balanced => 0.90,
             Quality::High => 0.90,
         }
     }

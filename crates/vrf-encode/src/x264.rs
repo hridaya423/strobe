@@ -194,6 +194,8 @@ impl X264Encoder {
             ("keyint", config.keyframe_interval.to_string()),
             ("bframes", "0".to_string()),
             ("no-deblock", "1".to_string()),
+            ("aq-mode", "3".to_string()),
+            ("aq-strength", "0.8".to_string()),
             ("open-gop", "0".to_string()),
             ("stitchable", "1".to_string()),
             ("repeat-headers", "0".to_string()),
