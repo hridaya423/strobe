@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -60,20 +62,173 @@ impl Volume {
 /// are reproduced exactly; reimplementing them is where a mix would drift from REF. Delay,
 /// volume and the sum are done here.
 pub fn mix(clips: &[Clip], length: u64) -> Result<Vec<f32>> {
-    let mut out = vec![0.0f32; length as usize * 2];
+    mix_with(&Predecoder::default(), clips, length)
+}
+
+/// [`mix`] with sources decoded by `decoder`, which may already hold some of them. The sources
+/// still missing are decoded in parallel, and the sum runs in clip order, so the result does not
+/// depend on which were ready.
+pub fn mix_with(decoder: &Predecoder, clips: &[Clip], length: u64) -> Result<Vec<f32>> {
     for clip in clips {
-        let pcm = decode(clip).with_context(|| format!("decoding {:?}", clip.src))?;
-        for (n, frame) in pcm.as_chunks::<2>().0.iter().enumerate() {
-            let at = clip.start as usize + n;
-            if at >= length as usize {
+        decoder.prefetch(clip);
+    }
+    mix_range(decoder, clips, 0, length)
+}
+
+/// The timeline samples `from..to` of the sum of `clips`, as [`mix`] would hold them.
+pub fn mix_range(decoder: &Predecoder, clips: &[Clip], from: u64, to: u64) -> Result<Vec<f32>> {
+    let mut out = vec![0.0f32; (to - from) as usize * 2];
+    for clip in clips {
+        if clip.start >= to || clip.start + clip.length <= from {
+            continue;
+        }
+        let pcm = decoder
+            .pcm(clip)
+            .with_context(|| format!("decoding {:?}", clip.src))?;
+        let frames = pcm.as_chunks::<2>().0;
+        let first = from.saturating_sub(clip.start) as usize;
+        for (n, frame) in frames
+            .iter()
+            .enumerate()
+            .take(clip.length as usize)
+            .skip(first)
+        {
+            let at = clip.start + n as u64;
+            if at >= to {
                 break;
             }
+            let at = (at - from) as usize;
             let gain = clip.volume.at(n as u64);
             out[at * 2] += frame[0] * gain;
             out[at * 2 + 1] += frame[1] * gain;
         }
     }
     Ok(out)
+}
+
+const DECODES_AT_ONCE: usize = 3;
+
+#[derive(Clone, PartialEq)]
+struct Source {
+    src: PathBuf,
+    source_start: u64,
+    playback_rate: u64,
+    looped: bool,
+    mono_copy: bool,
+}
+
+impl Source {
+    fn of(clip: &Clip) -> Source {
+        Source {
+            src: clip.src.clone(),
+            source_start: clip.source_start.to_bits(),
+            playback_rate: clip.playback_rate.to_bits(),
+            looped: clip.looped,
+            mono_copy: clip.mono_copy,
+        }
+    }
+}
+
+type Decoded = Option<std::result::Result<Arc<Vec<f32>>, String>>;
+
+struct Slot {
+    source: Source,
+    length: u64,
+    pcm: Mutex<Decoded>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct Pending {
+    slots: Vec<Arc<Slot>>,
+    running: usize,
+}
+
+#[derive(Default)]
+struct Shared {
+    pending: Mutex<Pending>,
+    freed: Condvar,
+}
+
+/// Decodes sources on background threads, a few at a time, before the mix needs them. A decode is
+/// shared by every clip that reads the same source the same way, whatever its place on the
+/// timeline. At tempo 1 a decode that is longer than a clip's length serves it too: the filters
+/// before the trim work sample by sample, so the first `length` samples do not depend on where
+/// the decode ends.
+#[derive(Default, Clone)]
+pub struct Predecoder {
+    shared: Arc<Shared>,
+}
+
+impl Predecoder {
+    fn usable(slot: &Slot, clip: &Clip) -> bool {
+        slot.source == Source::of(clip)
+            && (slot.length == clip.length
+                || (slot.length > clip.length && clip.playback_rate == 1.0 && !clip.looped))
+    }
+
+    /// Starts decoding `clip` unless a decode that can serve it exists.
+    pub fn prefetch(&self, clip: &Clip) {
+        let slot = {
+            let mut pending = self.shared.pending.lock().unwrap();
+            if pending.slots.iter().any(|slot| Self::usable(slot, clip)) {
+                return;
+            }
+            let slot = Arc::new(Slot {
+                source: Source::of(clip),
+                length: clip.length,
+                pcm: Mutex::new(None),
+                ready: Condvar::new(),
+            });
+            pending.slots.push(slot.clone());
+            slot
+        };
+        let shared = self.shared.clone();
+        let clip = clip.clone();
+        thread::spawn(move || {
+            {
+                let mut pending = shared.pending.lock().unwrap();
+                while pending.running >= DECODES_AT_ONCE {
+                    pending = shared.freed.wait(pending).unwrap();
+                }
+                pending.running += 1;
+            }
+            let result = decode(&clip)
+                .map(Arc::new)
+                .map_err(|error| format!("{error:#}"));
+            *slot.pcm.lock().unwrap() = Some(result);
+            slot.ready.notify_all();
+            shared.pending.lock().unwrap().running -= 1;
+            shared.freed.notify_one();
+        });
+    }
+
+    /// The decoded samples of `clip`, at least `clip.length` of them unless the source is shorter.
+    pub fn pcm(&self, clip: &Clip) -> Result<Arc<Vec<f32>>> {
+        let slot = {
+            let pending = self.shared.pending.lock().unwrap();
+            pending
+                .slots
+                .iter()
+                .find(|slot| Self::usable(slot, clip))
+                .cloned()
+        };
+        let slot = match slot {
+            Some(slot) => slot,
+            None => {
+                self.prefetch(clip);
+                return self.pcm(clip);
+            }
+        };
+        let mut pcm = slot.pcm.lock().unwrap();
+        while pcm.is_none() {
+            pcm = slot.ready.wait(pcm).unwrap();
+        }
+        match pcm.as_ref().unwrap() {
+            Ok(pcm) => Ok(pcm.clone()),
+            Err(error) => Err(anyhow::anyhow!("{error}")),
+        }
+    }
 }
 
 /// Clips to full scale. Remotion mixes through 16-bit files, so its sum saturates; HyperFrames
@@ -221,6 +376,25 @@ pub fn remotion_clips(
     fps: f64,
     resolve: impl Fn(&str) -> Result<PathBuf>,
 ) -> Result<Vec<Clip>> {
+    Ok(remotion_clip_states(frames, fps, resolve)?
+        .into_iter()
+        .map(|(clip, _)| clip)
+        .collect())
+}
+
+/// The timeline sample where a clip that starts at `frame` begins.
+pub fn remotion_start(frame: u64, fps: f64) -> u64 {
+    let delay_ms = (frame as f64 / fps * 1000.0 + 0.5).floor() as u64;
+    delay_ms * u64::from(SAMPLE_RATE) / 1000
+}
+
+/// [`remotion_clips`] for the first frames of a composition: each clip comes with whether it is
+/// still running at the last frame given, which means a later frame may lengthen it.
+pub fn remotion_clip_states(
+    frames: &[Vec<RemotionAsset>],
+    fps: f64,
+    resolve: impl Fn(&str) -> Result<PathBuf>,
+) -> Result<Vec<(Clip, bool)>> {
     let mut sources: HashMap<String, &str> = HashMap::new();
     for asset in frames.iter().flatten() {
         if !asset.src.starts_with("same-as") {
@@ -231,7 +405,7 @@ pub fn remotion_clips(
     }
 
     let mut open: HashMap<&str, Run> = HashMap::new();
-    let mut done: Vec<(Run, u32)> = Vec::new();
+    let mut done: Vec<(Run, u32, bool)> = Vec::new();
     for (index, assets) in frames.iter().enumerate() {
         let frame = index as u32;
         let mut current: Vec<&RemotionAsset> = Vec::new();
@@ -251,7 +425,7 @@ pub fn remotion_clips(
         for id in ended {
             let run = open.remove(id).unwrap();
             let duration = frame - run.start;
-            done.push((run, duration));
+            done.push((run, duration, false));
         }
         for asset in current {
             ensure!(
@@ -279,16 +453,15 @@ pub fn remotion_clips(
     let end = frames.len() as u32;
     for (_, run) in open {
         let duration = end - run.start;
-        done.push((run, duration));
+        done.push((run, duration, true));
     }
     done.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.src.cmp(b.0.src)));
 
     done.into_iter()
-        .map(|(run, duration)| {
+        .map(|(run, duration, open)| {
             let rate = run.playback_rate;
             let tempo_start = run.audio_start_frame / fps / rate
                 + (run.media_frame - run.audio_start_frame) / fps;
-            let delay_ms = (f64::from(run.start) / fps * 1000.0 + 0.5).floor() as u64;
             let volume = if run.volumes.iter().all(|v| *v == run.volumes[0]) {
                 Volume::Constant(run.volumes[0])
             } else {
@@ -297,16 +470,17 @@ pub fn remotion_clips(
                     values: run.volumes.iter().map(|v| round_volume(*v)).collect(),
                 }
             };
-            Ok(Clip {
+            let clip = Clip {
                 src: resolve(run.src)?,
-                start: delay_ms * u64::from(SAMPLE_RATE) / 1000,
+                start: remotion_start(u64::from(run.start), fps),
                 source_start: tempo_start * rate,
                 length: (f64::from(duration) / fps * f64::from(SAMPLE_RATE)).round() as u64,
                 playback_rate: rate,
                 volume,
                 looped: false,
                 mono_copy: false,
-            })
+            };
+            Ok((clip, open))
         })
         .collect()
 }

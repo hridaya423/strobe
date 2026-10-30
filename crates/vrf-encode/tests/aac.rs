@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use vrf_encode::audiotoolbox::{AAC_FRAME_SAMPLES, AacConfig, encode_aac};
+use vrf_encode::audiotoolbox::{AAC_FRAME_SAMPLES, AacConfig, encode_aac, encode_aac_chunks};
 
 fn tone(frames: usize, channels: usize) -> Vec<f32> {
     (0..frames)
@@ -54,4 +54,23 @@ fn input_that_is_not_whole_frames_is_rejected() {
         bit_rate: 128_000,
     };
     assert!(encode_aac(&[0.0; 3], config).is_err());
+}
+
+#[test]
+fn chunks_of_any_size_encode_to_the_same_stream_as_one_buffer() {
+    let config = AacConfig {
+        sample_rate: 48_000,
+        channels: 2,
+        bit_rate: 128_000,
+    };
+    let samples = tone(100_000, 2);
+    let whole = encode_aac(&samples, config).unwrap();
+    for size in [2, 1_000, 2_046, 48_000, 199_998] {
+        let chunks = samples.chunks(size).map(<[f32]>::to_vec);
+        assert_eq!(
+            encode_aac_chunks(chunks, config).unwrap(),
+            whole,
+            "chunks of {size}"
+        );
+    }
 }

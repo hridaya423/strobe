@@ -14,15 +14,16 @@ use percent_encoding::percent_decode_str;
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use vrf::audio::{RemotionAsset, mix, remotion_clips, saturate};
+use vrf::audio::{RemotionAsset, remotion_clips};
 use vrf_encode::{Codec, Rational};
 
 use super::hyperframes;
 use super::{
-    PerFrame, Progress, StageStats, add_audio, audio_samples, cache_dir, hash_tree, short_hex,
+    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, hash_tree, short_hex,
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
+use crate::adapters::audio::LiveAudio;
 use crate::skip::{self, Skip, TRACK_JS};
 use crate::video::{Clips, Link, StartFallback};
 use crate::{Mode, Project, Ui, View};
@@ -513,6 +514,14 @@ fn project_file(url: &str, roots: &[&Path]) -> Result<PathBuf> {
         .with_context(|| format!("audio source {url} is not in the project or its bundle"))
 }
 
+fn audio_assets(assets: &[Value]) -> Result<Vec<RemotionAsset>, serde_json::Error> {
+    assets
+        .iter()
+        .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
+        .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
+        .collect()
+}
+
 fn resolve_references(frames: &mut [FrameAssets]) {
     let sources: HashMap<(String, u64), String> = frames
         .iter()
@@ -774,6 +783,16 @@ impl Renderer {
         config.skip = options.skip.then(Skip::tracked);
         let (width, height) = (composition.width as i32, composition.height as i32);
         let page = &loaded.page;
+        let live = options.audio.then(|| {
+            let (bundle_dir, project) = (bundle.dir.clone(), loaded.key.project.clone());
+            LiveAudio::start(
+                count as usize,
+                composition.fps,
+                audio_samples(count, config.frame_rate),
+                AUDIO_BIT_RATE,
+                move |url| project_file(url, &[&bundle_dir, &project]),
+            )
+        });
         let seek_retries = AtomicU64::new(0);
         let first_ready = OnceLock::new();
         let progress = Progress::new(progress, count, command_start);
@@ -808,6 +827,12 @@ impl Renderer {
                     loop {
                         match Page::seek(view, frame, attempt, ask) {
                             Ok((assets, unchanged)) => {
+                                if let Some(live) = &live {
+                                    live.report(
+                                        (frame - first) as usize,
+                                        audio_assets(&assets).unwrap_or_default(),
+                                    );
+                                }
                                 return Ok((FrameAssets { frame, assets }, unchanged));
                             }
                             Err(error) if error.to_string().contains(RETRY_MARK) => {
@@ -839,23 +864,15 @@ impl Renderer {
 
         resolve_references(&mut collected);
         let step = Instant::now();
-        if options.audio {
+        if let Some(live) = live {
             let per_frame_assets = collected
                 .iter()
-                .map(|f| {
-                    f.assets
-                        .iter()
-                        .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
-                        .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
-                        .collect::<Result<Vec<_>, _>>()
-                })
+                .map(|f| audio_assets(&f.assets))
                 .collect::<Result<Vec<_>, _>>()?;
             let clips = remotion_clips(&per_frame_assets, composition.fps, |url| {
                 project_file(url, &[&bundle.dir, &loaded.key.project])
             })?;
-            let mut pcm = mix(&clips, audio_samples(count, config.frame_rate))?;
-            saturate(&mut pcm);
-            add_audio(&mut muxer, &pcm, AUDIO_BIT_RATE)?;
+            add_track(&mut muxer, live.finish(&clips)?)?;
         }
         let audio_s = step.elapsed();
         let step = Instant::now();
