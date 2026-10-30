@@ -220,8 +220,10 @@
       int cb = fancy(uU, p) - 128;
       int cr = fancy(uV, p) - 128;
       ivec3 c = ivec3(y + ((91881 * cr + 32768) >> 16), y + ((-22554 * cb - 46802 * cr + 32768) >> 16), y + ((116130 * cb + 32768) >> 16));
-      outColor = vec4(vec3(clamp(c, 0, 255)) / 255.0, 1.0);
+      outColor = vec4(vec3(clamp(c, 0, 255).bgr) / 255.0, 1.0);
     }`;
+
+  const BMP_HEADER = 54;
 
   const createSurface = () => {
     const canvas = document.createElement('canvas');
@@ -268,6 +270,9 @@
     const padded = (n) => (n + 7) & ~7;
 
     let resources = null;
+    let pixels = null;
+    let bmpHeader = null;
+    let url = null;
     const allocate = (w, h) => {
       const cw = w >> 1;
       const ch = h >> 1;
@@ -288,6 +293,18 @@
       };
       canvas.width = w;
       canvas.height = h;
+      pixels = new Uint8Array(w * h * 4);
+      const head = new DataView(new ArrayBuffer(BMP_HEADER));
+      head.setUint16(0, 0x4d42, true);
+      head.setUint32(2, BMP_HEADER + pixels.length, true);
+      head.setUint32(10, BMP_HEADER, true);
+      head.setUint32(14, 40, true);
+      head.setInt32(18, w, true);
+      head.setInt32(22, h, true);
+      head.setUint16(26, 1, true);
+      head.setUint16(28, 32, true);
+      head.setUint32(34, pixels.length, true);
+      bmpHeader = head.buffer;
     };
 
     const bind = (unit, name, program, source) => {
@@ -323,9 +340,10 @@
       render(programs.horizontal, [plane.result], w8, h8, [['uColumns', plane.columns]]);
     };
 
+    const image = new Image();
     return {
-      canvas,
-      draw(picture, { matrix, full }) {
+      image,
+      async draw(picture, { matrix, full }) {
         const { width: w, height: h } = picture;
         if (!resources || resources.w !== w || resources.h !== h) allocate(w, h);
         const cw = w >> 1;
@@ -360,6 +378,11 @@
           [['uY', planes.y.result], ['uU', planes.u.result], ['uV', planes.v.result]],
           (p) => gl.uniform2i(gl.getUniformLocation(p, 'uSize'), w, h),
         );
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        if (url) URL.revokeObjectURL(url);
+        url = URL.createObjectURL(new Blob([bmpHeader, pixels], { type: 'image/bmp' }));
+        image.src = url;
+        await image.decode();
       },
     };
   };

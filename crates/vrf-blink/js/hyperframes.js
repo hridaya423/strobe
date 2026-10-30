@@ -409,7 +409,7 @@
   const releaseNativeSurfaces = (active) => {
     for (const [id, surface] of nativeSurfaces) {
       if (active.has(id)) continue;
-      surface.canvas.remove();
+      surface.image.remove();
       nativeSurfaces.delete(id);
     }
   };
@@ -474,13 +474,13 @@
       if (entry.slot !== undefined) {
         const { picture, config } = await nativePicture(entry.id, entry.slot);
         const surface = nativeSurface(entry.id);
-        surface.draw(picture, config);
+        await surface.draw(picture, config);
         img.style.opacity = String(Number.isNaN(opacity) ? 1 : opacity);
-        surface.canvas.className = img.className;
-        surface.canvas.style.cssText = img.style.cssText;
-        surface.canvas.style.setProperty('visibility', 'hidden', 'important');
-        if (surface.canvas.previousElementSibling !== img) img.after(surface.canvas);
-        published.push(surface.canvas);
+        surface.image.className = img.className;
+        surface.image.style.cssText = img.style.cssText;
+        surface.image.style.setProperty('visibility', 'hidden', 'important');
+        if (surface.image.previousElementSibling !== img) img.after(surface.image);
+        published.push(surface.image);
         continue;
       }
       if (entry.src !== undefined && img.getAttribute('src') !== entry.src) {

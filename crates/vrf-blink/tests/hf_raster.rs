@@ -85,6 +85,48 @@ fn project() -> Result<PathBuf> {
     Ok(dir)
 }
 
+fn image_project() -> Result<PathBuf> {
+    let dir = work_dir().join("halftone");
+    if dir.join("index.html").exists() {
+        return Ok(dir);
+    }
+    fs::create_dir_all(&dir)?;
+    fs::copy(
+        hyperframes_package().join("dist/vendor/npm/gsap@3.15.0/dist/gsap.min.js"),
+        dir.join("gsap.min.js"),
+    )?;
+    let made = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=978x550", "-vf"])
+        .arg(
+            "geq=r='150+100*sin(X*0.9)*sin(Y*0.9)+60*sin(X/150)':\
+             g='120+90*sin(X*0.9)*sin(Y*0.9)-50*sin(Y/90)':b='110+80*sin(X*0.9)*sin(Y*0.9)+40*sin((X+Y)/200)',format=rgb24",
+        )
+        .args(["-frames:v", "1"])
+        .arg(dir.join("bg.png"))
+        .status()?;
+    ensure!(made.success(), "ffmpeg could not make the image");
+    fs::write(
+        dir.join("index.html"),
+        format!(
+            "<!doctype html>\n<html><head><meta charset=\"utf-8\"><style>\
+             html,body{{margin:0;background:#123}}\
+             #root{{position:relative;width:{WIDTH}px;height:{HEIGHT}px;overflow:hidden;background:#fbc24a}}\
+             #bg{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}}\
+             #t{{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font:700 90px Arial,sans-serif;\
+             color:#0a0a0a;will-change:transform,opacity}}</style></head><body>\n\
+             <div id=\"root\" data-composition-id=\"main\" data-width=\"{WIDTH}\" data-height=\"{HEIGHT}\" \
+             data-duration=\"{}\" data-start=\"0\" data-fps=\"{FPS}\"><img id=\"bg\" src=\"bg.png\">\
+             <div id=\"t\">Three</div></div>\n\
+             <script src=\"gsap.min.js\"></script>\n\
+             <script>const tl = gsap.timeline({{paused: true}}); \
+             tl.from('#t', {{opacity: 0, scale: 1.35, duration: .45, ease: 'expo.out'}}, .1); \
+             window.__timelines = {{main: tl}};</script></body></html>\n",
+            FRAMES / FPS
+        ),
+    )?;
+    Ok(dir)
+}
+
 fn options(project: &Path, plan: Plan) -> Options {
     Options {
         project: project.to_owned(),
@@ -236,6 +278,25 @@ fn the_scale_tween_equals_headless_shell(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn a_downscaled_image_equals_headless_shell(ui: &Ui) -> Result<()> {
+    let project = image_project()?;
+    let reference = headless_frames(&project, 1)?;
+    let frames: Vec<u64> = vec![0, 6, 12, 20];
+    let worst = against(&Ours::new(ui, &project)?.run(0, 20, &frames)?, &reference)?;
+    println!(
+        "downscaled image: worst FLIP mean {:.6}, max delta {}, at frame {}",
+        worst.flip, worst.delta, worst.frame
+    );
+    ensure!(
+        worst.flip <= TWEEN_FLIP && worst.delta <= 2,
+        "frame {}: FLIP mean {}, max delta {}",
+        worst.frame,
+        worst.flip,
+        worst.delta
+    );
+    Ok(())
+}
+
 fn a_view_that_started_later_paints_will_change_layers_differently(ui: &Ui) -> Result<()> {
     let project = project()?;
     let ours = Ours::new(ui, &project)?;
@@ -360,6 +421,7 @@ fn main() -> std::process::ExitCode {
     vrf_blink::set_cpu_raster(cpu);
     support::run(&[
         ("hf_raster_scale_tween_equals_headless_shell", the_scale_tween_equals_headless_shell),
+        ("hf_raster_downscaled_image_equals_headless_shell", a_downscaled_image_equals_headless_shell),
         (
             "hf_raster_started_later_paints_differently",
             a_view_that_started_later_paints_will_change_layers_differently,
