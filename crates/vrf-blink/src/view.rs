@@ -19,7 +19,7 @@ use crate::app::{OnUi, Ui};
 #[cfg(target_os = "macos")]
 use crate::bitmap::Bitmaps;
 use crate::scheme::Project;
-use crate::video::{self, Pusher};
+use crate::video::{self, INIT, Pusher};
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -411,17 +411,13 @@ impl View {
         };
         let target = url.to_owned();
         let init_script = init_script.map(|script| format!("{TICK_JS}\n{script}"));
-        let url = if init_script.is_some() {
-            "about:blank".to_owned()
-        } else {
-            target.clone()
-        };
         let size = Arc::new(Size {
             width: AtomicI32::new(width),
             height: AtomicI32::new(height),
         });
         let bound = project.clone();
         let render_size = size.clone();
+        let init = init_script.clone();
         let (host, observer) = ui.call(move || -> Result<_> {
             let (mut context, request_handler) =
                 bound.map(|project| project.bind()).transpose()?.unzip();
@@ -453,12 +449,17 @@ impl View {
                 request_handler,
                 channels.pages,
             );
+            let mut extra_info = init.and_then(|script| {
+                let info = dictionary_value_create()?;
+                info.set_string(Some(&INIT.into()), Some(&script.as_str().into()));
+                Some(info)
+            });
             let browser = browser_host_create_browser_sync(
                 Some(&window_info),
                 Some(&mut client),
-                Some(&url.as_str().into()),
+                Some(&target.as_str().into()),
                 Some(&browser_settings),
-                None,
+                extra_info.as_mut(),
                 context.as_mut(),
             )
             .context("CEF did not create the browser")?;
@@ -487,18 +488,7 @@ impl View {
             resized: Cell::new(false),
             closing: false,
         };
-        if let Some(source) = init_script.as_deref() {
-            view.execute("Page.enable", serde_json::json!({}))?;
-            view.execute(
-                "Page.addScriptToEvaluateOnNewDocument",
-                serde_json::json!({"source": source}),
-            )?;
-            view.execute("Page.navigate", serde_json::json!({"url": target}))?;
-            while view.evaluate("location.href")? != target.as_str() {
-                loaded
-                    .recv_timeout(LOAD_TIMEOUT)
-                    .context("the page did not finish loading")?;
-            }
+        if view.ticking {
             view.evaluate(
                 "document.readyState === 'complete' || new Promise((resolve) => addEventListener('load', () => resolve(true), { once: true }))",
             )?;
