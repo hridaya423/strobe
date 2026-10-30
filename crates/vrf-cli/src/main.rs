@@ -101,6 +101,9 @@ struct RenderArgs {
     /// Encode H.264 on VideoToolbox alone, without the libx264 lane.
     #[arg(long)]
     no_turbo: bool,
+    /// NVENC sessions that share the encoding, a chunk of frames each in turn (Windows only).
+    #[arg(long, default_value_t = 1)]
+    encoder_sessions: usize,
 }
 
 #[derive(Args)]
@@ -202,6 +205,7 @@ impl RenderArgs {
         };
         let plan = Plan {
             turbo: !self.no_turbo,
+            sessions: self.encoder_sessions,
             ..plan
         };
         let output = std::path::absolute(&self.output)?;

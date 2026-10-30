@@ -199,7 +199,7 @@ impl Converting {
         }
     }
 
-    pub fn convert(&mut self, paint: &Paint) -> Result<Frame> {
+    pub fn convert(&mut self, _index: u64, paint: &Paint) -> Result<Frame> {
         let id = paint.surface.id();
         if !self.imports.contains_key(&id) {
             if self.imports.len() >= MAX_IMPORTS {

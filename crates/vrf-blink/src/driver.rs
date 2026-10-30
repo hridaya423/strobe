@@ -40,6 +40,7 @@ pub struct Config {
     pub watchdog: Duration,
     pub window: usize,
     pub turbo: bool,
+    pub sessions: usize,
 }
 
 impl Config {
@@ -53,6 +54,7 @@ impl Config {
             watchdog: Duration::from_millis(500),
             window: WINDOW,
             turbo: turbo_default(codec),
+            sessions: 1,
         }
     }
 }
@@ -219,7 +221,7 @@ impl Lane {
             self.height
         );
         let step = Instant::now();
-        let buffer = self.converting.convert(paint)?;
+        let buffer = self.converting.convert(index, paint)?;
         self.convert.push(step.elapsed());
         self.producer.submit(index, Submission::Frame(buffer))
     }
@@ -368,10 +370,16 @@ pub struct Plan {
     pub lead_in: u64,
     #[serde(default = "enabled")]
     pub turbo: bool,
+    #[serde(default = "one")]
+    pub sessions: usize,
 }
 
 fn enabled() -> bool {
     true
+}
+
+fn one() -> usize {
+    1
 }
 
 impl Plan {
@@ -381,6 +389,7 @@ impl Plan {
             run: u64::MAX,
             lead_in: LEAD_IN,
             turbo: true,
+            sessions: 1,
         }
     }
 
@@ -390,6 +399,7 @@ impl Plan {
             run: run.max(1),
             lead_in: LEAD_IN,
             turbo: true,
+            sessions: 1,
         }
     }
 
@@ -521,6 +531,7 @@ pub fn render_runs<T: Send>(
     let mut config = config.clone();
     config.window = config.window.max(plan.window());
     config.turbo &= plan.turbo;
+    config.sessions = plan.sessions.max(1);
     let step = Instant::now();
     let mut pipeline = Pipeline::new(&config, out, warm)?;
     let pipeline_s = step.elapsed();

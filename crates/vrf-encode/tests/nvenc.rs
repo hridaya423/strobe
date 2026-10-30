@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use vrf_encode::nvenc::{
-    NvencEncoder, Options, POOL_SIZE, PixelFormat, PoolFrame, Preset, RateControl, Ready, Tuning,
-    capabilities, nvidia_device,
+    NvencEncoder, NvencSessions, Options, POOL_SIZE, PixelFormat, PoolFrame, Preset, RateControl,
+    Ready, Tuning, capabilities, nvidia_device,
 };
 use vrf_encode::{
     Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Quality, Rational, StreamInfo,
@@ -187,6 +187,86 @@ fn hevc_with_b_frames_keeps_presentation_order_and_valid_dts() {
 #[test]
 fn av1_with_b_frames_emits_temporal_units_in_presentation_order() {
     check_mp4(Codec::Av1, false, 2, "nv-av1-b", "av1");
+}
+
+fn check_sessions(count: usize, chunk: u64, repeats: &[usize], name: &str) {
+    let _engine = engine();
+    let frames = 80;
+    let frame_rate = Rational::new(30, 1);
+    let config = config(Codec::H264, frame_rate);
+    let device = nvidia_device().unwrap();
+    let mut encoder = NvencSessions::new(&device, config.clone(), options(0), count, 48).unwrap();
+    let pools = encoder.pools();
+    let mut uploader = Uploader::new(&device, config.width, config.height, pools[0].format());
+    let mut packets = Vec::new();
+    let mut previous: Option<PoolFrame> = None;
+    let mut expected = Vec::new();
+    for index in 0..frames {
+        let frame = match (&previous, repeats.contains(&index)) {
+            (Some(previous), true) => {
+                expected.push(*expected.last().unwrap());
+                previous.clone()
+            }
+            _ => {
+                let session = NvencSessions::session_of(index as u64, chunk, count);
+                let mut frame = pools[session].acquire();
+                uploader.write(&mut frame, flat(index));
+                expected.push(index as i64);
+                frame
+            }
+        };
+        previous = Some(frame.clone());
+        encoder
+            .submit(EncoderFrame::D3d12(frame), pts_of(index, frame_rate))
+            .unwrap();
+        packets.extend(encoder.drain().unwrap());
+    }
+    packets.extend(encoder.flush().unwrap());
+    let info = encoder.finish().unwrap();
+
+    assert_eq!(packets.len(), frames);
+    for (index, packet) in packets.iter().enumerate() {
+        assert!(same(packet.pts, pts_of(index, frame_rate)), "frame {index}");
+        assert!(same(packet.dts, packet.pts), "frame {index} dts");
+    }
+    assert!(packets[0].keyframe);
+    assert!(
+        packets.iter().filter(|p| p.keyframe).count() > frames / 30,
+        "every chunk starts on a keyframe"
+    );
+    let scratch = Scratch::new(name);
+    let file = scratch.path("out.mp4");
+    write_mp4(&file, packets, &info, frame_rate);
+    assert_eq!(decoded_indexes(&file, false), expected);
+}
+
+#[test]
+fn two_sessions_write_one_stream_in_order() {
+    check_sessions(2, 10, &[], "nv-two-sessions");
+}
+
+#[test]
+fn three_sessions_write_one_stream_in_order() {
+    check_sessions(3, 7, &[], "nv-three-sessions");
+}
+
+#[test]
+fn a_repeated_frame_at_a_chunk_boundary_stays_in_its_own_session() {
+    check_sessions(2, 10, &[20, 30, 31], "nv-two-sessions-repeat");
+}
+
+#[test]
+fn sessions_reject_b_frames() {
+    let _engine = engine();
+    let device = nvidia_device().unwrap();
+    let result = NvencSessions::new(
+        &device,
+        config(Codec::H264, Rational::new(30, 1)),
+        options(2),
+        2,
+        8,
+    );
+    assert!(result.is_err());
 }
 
 fn check_late_drain(codec: Codec) {

@@ -24,12 +24,14 @@ mod api;
 #[allow(dead_code)]
 mod guid;
 mod pool;
+mod sessions;
 #[allow(dead_code)]
 mod version;
 
 use api::{Event, Session, zeroed};
 
 pub use pool::{InputPool, POOL_SIZE, PixelFormat, PoolFrame, Ready};
+pub use sessions::NvencSessions;
 
 const NVIDIA: u32 = 0x10DE;
 
@@ -771,8 +773,14 @@ impl NvencEncoder {
     }
 }
 
-impl Encoder for NvencEncoder {
-    fn submit(&mut self, frame: EncoderFrame, pts: Rational) -> Result<()> {
+impl NvencEncoder {
+    /// Submits a frame, as an IDR frame if `keyframe` is set.
+    pub fn submit_keyframe(
+        &mut self,
+        frame: EncoderFrame,
+        pts: Rational,
+        keyframe: bool,
+    ) -> Result<()> {
         let EncoderFrame::D3d12(frame) = frame;
         ensure!(
             frame.pool_is(&self.pool),
@@ -815,6 +823,9 @@ impl Encoder for NvencEncoder {
         pic.bufferFmt = self.pool.format().buffer_format();
         pic.pictureStruct = nv::NV_ENC_PIC_STRUCT::NV_ENC_PIC_STRUCT_FRAME;
         pic.inputTimeStamp = index;
+        if keyframe {
+            pic.encodePicFlags = nv::NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_FORCEIDR as u32;
+        }
         let status = {
             let _guard = session.guard();
             unsafe { (session.functions.nvEncEncodePicture.unwrap())(session.handle, &mut pic) }
@@ -836,6 +847,12 @@ impl Encoder for NvencEncoder {
         self.submitted += 1;
         self.last_pts = Some(pts);
         Ok(())
+    }
+}
+
+impl Encoder for NvencEncoder {
+    fn submit(&mut self, frame: EncoderFrame, pts: Rational) -> Result<()> {
+        self.submit_keyframe(frame, pts, false)
     }
 
     fn drain(&mut self) -> Result<Vec<Packet>> {

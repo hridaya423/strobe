@@ -307,6 +307,51 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn encoder_sessions_write_every_frame_in_order(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let frames = 200;
+    let mut colours = Vec::new();
+    let mut warm = Warm::new()?;
+    for sessions in [1, 2, 3] {
+        let mut config = Config::new(640, 360, FRAME_RATE, DETERMINISTIC.0, frames);
+        config.sessions = sessions;
+        let out =
+            std::env::temp_dir().join(format!("vrf-blink-sessions-{sessions}.{}", DETERMINISTIC.1));
+        let runs = render_runs(
+            &config,
+            Plan {
+                sessions,
+                ..Plan::new(2, 7)
+            },
+            0,
+            &out,
+            &mut warm,
+            || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
+            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |_| Ok(()),
+        )?;
+        runs.muxer.finish()?;
+        ensure!(runs.stats.repeats == 0, "{} repeats", runs.stats.repeats);
+        colours.push((sessions, centre_colours(&out)?));
+        std::fs::remove_file(&out)?;
+    }
+    for (sessions, got) in &colours[1..] {
+        ensure!(
+            got.len() == colours[0].1.len(),
+            "{sessions} sessions: {} frames",
+            got.len()
+        );
+        for (index, (a, b)) in got.iter().zip(&colours[0].1).enumerate() {
+            let error = a.iter().zip(b).map(|(a, b)| (a - b).abs()).max().unwrap();
+            ensure!(
+                error <= TOLERANCE,
+                "{sessions} sessions: frame {index} is {a:?}, one session wrote {b:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::H264, 96);
@@ -401,6 +446,10 @@ fn main() -> ExitCode {
         (
             "driver_parallel_views_write_the_same_bytes_as_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "driver_encoder_sessions_write_every_frame_in_order",
+            encoder_sessions_write_every_frame_in_order,
         ),
         (
             "driver_back_to_back_begin_frames_are_all_delivered",

@@ -10,13 +10,21 @@ use vrf::gpu::d3d12::{PoolTarget, Releaser};
 use vrf::mux::Muxer;
 use vrf::sched::Consumer;
 use vrf::sink::Sink;
-use vrf_encode::nvenc::{InputPool, NvencEncoder, Options, PoolFrame};
+use vrf_encode::nvenc::{InputPool, NvencEncoder, NvencSessions, Options, PoolFrame};
 use vrf_encode::{Codec, EncoderConfig};
 
 use crate::Paint;
 use crate::driver::{Config, submit_loop};
 
 pub const POOL_MARGIN: usize = 32;
+
+fn chunk_frames(width: u32, height: u32) -> u64 {
+    if u64::from(width) * u64::from(height) > 1920 * 1088 {
+        30
+    } else {
+        60
+    }
+}
 
 pub type Frame = PoolFrame;
 pub type Keep = ();
@@ -67,19 +75,32 @@ pub fn start(
     let encoder_config =
         EncoderConfig::new(config.codec, config.width, config.height, config.frame_rate);
     let options = Options::from(encoder_config.quality);
-    let encoder = NvencEncoder::with_pool_size(
-        &warm.gpu.d3d12_device()?,
-        encoder_config,
-        options,
-        config.window + POOL_MARGIN,
-    )?;
-    let converting = Converting::new(
-        warm.gpu.clone(),
-        warm.converter.clone(),
-        encoder.pool().clone(),
-    )?;
+    let device = warm.gpu.d3d12_device()?;
+    let pool_size = config.window + POOL_MARGIN;
     let frame_rate = config.frame_rate;
-    let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
+    let chunk = chunk_frames(config.width, config.height);
+    let (converting, submit) = if config.sessions > 1 {
+        let encoder =
+            NvencSessions::new(&device, encoder_config, options, config.sessions, pool_size)?;
+        let converting = Converting::new(
+            warm.gpu.clone(),
+            warm.converter.clone(),
+            encoder.pools(),
+            chunk,
+        )?;
+        let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
+        (converting, submit)
+    } else {
+        let encoder = NvencEncoder::with_pool_size(&device, encoder_config, options, pool_size)?;
+        let converting = Converting::new(
+            warm.gpu.clone(),
+            warm.converter.clone(),
+            vec![encoder.pool().clone()],
+            chunk,
+        )?;
+        let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
+        (converting, submit)
+    };
     Ok(Started {
         converting,
         keep: (),
@@ -90,12 +111,13 @@ pub fn start(
 pub struct ConvertingSpec {
     gpu: Gpu,
     converter: Arc<Converter>,
-    pool: InputPool,
+    pools: Vec<InputPool>,
+    chunk_frames: u64,
 }
 
 impl ConvertingSpec {
     pub fn open(self) -> Result<Converting> {
-        Converting::new(self.gpu, self.converter, self.pool)
+        Converting::new(self.gpu, self.converter, self.pools, self.chunk_frames)
     }
 }
 
@@ -103,17 +125,24 @@ pub struct Converting {
     gpu: Gpu,
     converter: Arc<Converter>,
     releaser: Releaser,
-    pool: InputPool,
+    pools: Vec<InputPool>,
+    chunk_frames: u64,
 }
 
 impl Converting {
-    fn new(gpu: Gpu, converter: Arc<Converter>, pool: InputPool) -> Result<Converting> {
+    fn new(
+        gpu: Gpu,
+        converter: Arc<Converter>,
+        pools: Vec<InputPool>,
+        chunk_frames: u64,
+    ) -> Result<Converting> {
         let releaser = Releaser::new(&gpu)?;
         Ok(Converting {
             gpu,
             converter,
             releaser,
-            pool,
+            pools,
+            chunk_frames,
         })
     }
 
@@ -121,11 +150,12 @@ impl Converting {
         ConvertingSpec {
             gpu: self.gpu.clone(),
             converter: self.converter.clone(),
-            pool: self.pool.clone(),
+            pools: self.pools.clone(),
+            chunk_frames: self.chunk_frames,
         }
     }
 
-    pub fn convert(&mut self, paint: &Paint) -> Result<Frame> {
+    pub fn convert(&mut self, index: u64, paint: &Paint) -> Result<Frame> {
         let texture = self.gpu.import_shared_handle(
             &paint.surface,
             wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -133,7 +163,8 @@ impl Converting {
         let source = self
             .converter
             .source(&texture.create_view(&Default::default()));
-        let frame = self.pool.acquire();
+        let session = NvencSessions::session_of(index, self.chunk_frames, self.pools.len());
+        let frame = self.pools[session].acquire();
         let planes = PoolTarget::new(&self.gpu, &self.converter, &frame)?;
         let mut commands = self.gpu.device.create_command_encoder(&Default::default());
         {
