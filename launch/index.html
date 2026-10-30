@@ -4,8 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=1920, height=1080" />
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
-    <script src="assets/dither.js"></script>
     <style>
+      @font-face {
+        font-family: "Departure Mono";
+        src: url("assets/fonts/DepartureMono-Regular.woff2") format("woff2");
+        font-display: block;
+      }
+      @font-face {
+        font-family: "Instrument Serif";
+        font-style: italic;
+        font-weight: 400;
+        src: url("assets/fonts/InstrumentSerif-Italic.woff2") format("woff2");
+        font-display: block;
+      }
+      @font-face {
+        font-family: "Geist";
+        font-weight: 100 900;
+        src: url("assets/fonts/Geist.woff2") format("woff2");
+        font-display: block;
+      }
       * {
         margin: 0;
         padding: 0;
@@ -13,51 +30,73 @@
       }
       html,
       body {
-        margin: 0;
         width: 1920px;
         height: 1080px;
         overflow: hidden;
         background: #04060d;
+        font-family: "Geist", sans-serif;
+      }
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #04060d;
+      }
+      #film {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+      }
+      #stills {
+        display: none;
+      }
+      .warm {
+        position: absolute;
+        opacity: 0;
+        font-weight: 800;
       }
     </style>
   </head>
   <body>
-    <div
-      id="root"
-      data-composition-id="main"
-      data-start="0"
-      data-duration="10"
-      data-width="1920"
-      data-height="1080"
-     
-    >
-      <div id="spark" data-composition-id="spark" data-composition-src="compositions/spark.html" data-start="0" data-duration="2.8" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
-      <div id="fast" data-composition-id="fast" data-composition-src="compositions/fast.html" data-start="2.8" data-duration="1.6" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
-      <div id="remotion" data-composition-id="remotion" data-composition-src="compositions/remotion.html" data-start="4.4" data-duration="1.8" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
-      <div id="hyperframes" data-composition-id="hyperframes" data-composition-src="compositions/hyperframes.html" data-start="6.2" data-duration="1.6" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
-      <div id="launch" data-composition-id="launch" data-composition-src="compositions/launch.html" data-start="7.8" data-duration="2.2" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
-
-      <audio id="sfx-tick1" src="assets/sfx/tick.wav" data-start="0.11" data-duration="0.072" data-track-index="2" data-volume="0.5"></audio>
-      <audio id="sfx-tick2" src="assets/sfx/tick.wav" data-start="0.28" data-duration="0.072" data-track-index="3" data-volume="0.4"></audio>
-      <audio id="sfx-tick3" src="assets/sfx/tick.wav" data-start="0.41" data-duration="0.072" data-track-index="4" data-volume="0.6"></audio>
-      <audio id="sfx-tick4" src="assets/sfx/tick.wav" data-start="0.53" data-duration="0.072" data-track-index="2" data-volume="0.4"></audio>
-      <audio id="sfx-tick5" src="assets/sfx/tick.wav" data-start="0.58" data-duration="0.072" data-track-index="3" data-volume="0.6"></audio>
-      <audio id="sfx-strike" src="assets/sfx/strike.wav" data-start="0.761" data-duration="0.96" data-track-index="4" data-volume="0.7"></audio>
-      <audio id="sfx-charge" src="assets/sfx/charge.wav" data-start="1.623" data-duration="1.2" data-track-index="2" data-volume="0.45"></audio>
-      <audio id="sfx-flash" src="assets/sfx/flash.wav" data-start="2.804" data-duration="0.325" data-track-index="3" data-volume="0.6"></audio>
-      <audio id="sfx-whip" src="assets/sfx/whip.wav" data-start="3.417" data-duration="0.5" data-track-index="4" data-volume="0.8"></audio>
-      <audio id="sfx-stretch" src="assets/sfx/stretch.wav" data-start="3.737" data-duration="0.35" data-track-index="2" data-volume="0.9"></audio>
-      <audio id="sfx-exit" src="assets/sfx/exit.wav" data-start="4.297" data-duration="0.3" data-track-index="3" data-volume="0.8"></audio>
-      <audio id="sfx-race1" src="assets/sfx/race1.wav" data-start="4.463" data-duration="0.46" data-track-index="4" data-volume="0.5"></audio>
-      <audio id="sfx-land1" src="assets/sfx/land1.wav" data-start="4.736" data-duration="0.667" data-track-index="2" data-volume="0.7"></audio>
-      <audio id="sfx-race2" src="assets/sfx/race2.wav" data-start="6.263" data-duration="0.38" data-track-index="3" data-volume="0.45"></audio>
-      <audio id="sfx-land2" src="assets/sfx/land2.wav" data-start="6.465" data-duration="0.848" data-track-index="4" data-volume="0.6"></audio>
-      <audio id="sfx-drop" src="assets/sfx/drop.wav" data-start="7.814" data-duration="0.915" data-track-index="2" data-volume="0.8"></audio>
-      <audio id="sfx-sting" src="assets/sfx/sting.wav" data-start="8.206" data-duration="1.79" data-track-index="3" data-volume="0.8"></audio>
-      <audio id="sfx-end" src="assets/sfx/end.wav" data-start="9.826" data-duration="0.17" data-track-index="4" data-volume="0.8"></audio>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="16" data-fps="60" data-width="1920" data-height="1080">
+      <canvas id="film" width="1920" height="1080" data-layout-allow-overflow></canvas>
+      <div id="stills">
+        <img src="assets/frames/f00.png" alt="" />
+        <img src="assets/frames/f01.png" alt="" />
+        <img src="assets/frames/f02.png" alt="" />
+        <img src="assets/frames/f03.png" alt="" />
+        <img src="assets/frames/f04.png" alt="" />
+        <img src="assets/frames/f05.png" alt="" />
+        <img src="assets/frames/f06.png" alt="" />
+        <img src="assets/frames/f07.png" alt="" />
+        <img src="assets/frames/f08.png" alt="" />
+        <img src="assets/frames/f09.png" alt="" />
+        <img src="assets/frames/f10.png" alt="" />
+        <img src="assets/frames/f11.png" alt="" />
+        <img src="assets/frames/f12.png" alt="" />
+        <img src="assets/frames/f13.png" alt="" />
+        <img src="assets/frames/f14.png" alt="" />
+        <img src="assets/frames/f15.png" alt="" />
+        <img src="assets/frames/f16.png" alt="" />
+        <img src="assets/frames/f17.png" alt="" />
+        <img src="assets/frames/f18.png" alt="" />
+        <img src="assets/frames/f19.png" alt="" />
+      </div>
+      <span class="warm" style="font-family: 'Departure Mono'">.</span>
+      <span class="warm" style="font-family: 'Geist'">.</span>
+      <span class="warm" style="font-family: 'Instrument Serif'; font-style: italic; font-weight: 400">.</span>
     </div>
+    <script src="assets/bluenoise.js"></script>
+    <script src="js/engine.js"></script>
+    <script src="js/film.js"></script>
     <script>
-      window.__timelines["main"] = gsap.timeline({ paused: true });
+      window.__timelines = window.__timelines || {};
+      window.SX_BUILD.then(({ tl }) => {
+        window.__timelines["main"] = tl;
+        if (window.__hfForceTimelineRebind) window.__hfForceTimelineRebind();
+      });
     </script>
   </body>
 </html>

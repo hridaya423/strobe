@@ -3,7 +3,7 @@ use std::fs;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Instant, SystemTime};
 
@@ -44,34 +44,6 @@ pub const CPU_RASTER: bool = false;
 pub const WORKERS: u64 = 10;
 const AUDIO_BIT_RATE: u32 = 192_000;
 
-/// Views that open at once. Opening contends on one browser thread, so a view opened alone is
-/// ready in a third of the time and starts rendering while the others open.
-const OPENING: usize = 3;
-
-struct Limit {
-    free: Mutex<usize>,
-    changed: Condvar,
-}
-
-impl Limit {
-    fn new(count: usize) -> Limit {
-        Limit {
-            free: Mutex::new(count),
-            changed: Condvar::new(),
-        }
-    }
-
-    fn run<T>(&self, f: impl FnOnce() -> T) -> T {
-        *self
-            .changed
-            .wait_while(self.free.lock().unwrap(), |free| *free == 0)
-            .unwrap() -= 1;
-        let result = f();
-        *self.free.lock().unwrap() += 1;
-        self.changed.notify_one();
-        result
-    }
-}
 const FRAMES_URL: &str = "/__hyperframes_video_frames/";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -561,7 +533,6 @@ pub fn render(
             }))
         })
         .transpose()?;
-    let opening = Limit::new(OPENING);
     let render_started = Instant::now();
     let plan = options.plan.ranged(options.plan.ranges.unwrap_or(WORKERS), count);
     let runs = render_runs(
@@ -571,7 +542,7 @@ pub fn render(
         out,
         warm,
         || {
-            let view = opening.run(|| page.open(ui, width, height))?.0;
+            let view = page.open(ui, width, height)?.0;
             first_ready.get_or_init(|| since(command_start));
             Ok(view)
         },

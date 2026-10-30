@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: "Geist";
+        font-weight: 100 900;
+        src: url("../assets/fonts/Geist.woff2") format("woff2");
+      }
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      svg {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="out"></div>
+    <script>
+      const dark = new URLSearchParams(location.search).get("theme") === "dark";
+      const T = dark
+        ? { ink: "#E6EDF3", sub: "#8B949E", paper: "#0D1117", rivalLine: "#6E7681", rivalNode: "#3D444D", accent: "#4C8DFF", tint: "rgba(76,141,255,0.14)", cpu: "rgba(139,148,158,0.16)" }
+        : { ink: "#1F2328", sub: "#59636E", paper: "#FFFFFF", rivalLine: "#8C959F", rivalNode: "#D1D9E0", accent: "#2F7BFF", tint: "rgba(47,123,255,0.09)", cpu: "rgba(89,99,110,0.10)" };
+      const W = 1600, NW = 264, NH = 96, GAP = 52;
+      const X = [0, 1, 2, 3, 4].map((i) => 40 + i * (NW + GAP));
+      const R1 = 72, R2 = 300, H = R2 + NH + 92;
+
+      const chip = (x, y, text, gpu) => `<rect x="${x}" y="${y}" width="52" height="26" rx="6" fill="${gpu ? T.tint : T.cpu}"/>
+        <text x="${x + 26}" y="${y + 18}" text-anchor="middle" font-family="Geist" font-weight="600" font-size="14" letter-spacing="0.6" fill="${gpu ? T.accent : T.sub}">${text}</text>`;
+
+      const node = (i, y, name, sub, tag, strobe) => `
+        <rect x="${X[i]}" y="${y}" width="${NW}" height="${NH}" rx="10" fill="${T.paper}" stroke="${strobe ? T.accent : T.rivalNode}" stroke-width="${strobe ? 1.8 : 1.4}"/>
+        <text x="${X[i] + 22}" y="${y + 42}" font-family="Geist" font-weight="600" font-size="24" fill="${T.ink}">${name}</text>
+        <text x="${X[i] + 22}" y="${y + 72}" font-family="Geist" font-size="18" fill="${T.sub}">${sub}</text>
+        ${tag ? chip(X[i] + NW - 70, y + 18, tag, tag === "GPU") : ""}`;
+
+      const arrow = (i, j, y, strobe) => `<line x1="${X[i] + NW}" y1="${y}" x2="${X[j] - 4}" y2="${y}" stroke="${strobe ? T.accent : T.rivalLine}" stroke-width="${strobe ? 2.6 : 2}" ${strobe ? "" : 'stroke-dasharray="7,6"'} marker-end="url(#${strobe ? "s" : "r"})"/>`;
+
+      const lane = (y, label, color) => `<text x="${X[0]}" y="${y - 22}" font-family="Geist" font-weight="600" font-size="20" fill="${color}">${label}</text>`;
+
+      const c1 = R1 + NH / 2, c2 = R2 + NH / 2;
+      const bx = X[1] - 18, bw = X[3] + NW + 18 - bx, by = R2 + NH + 18;
+
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="t d">
+        <title id="t">How a frame reaches the file</title>
+        <desc id="d">Remotion and HyperFrames screenshot each frame from the GPU into a JPEG or PNG on the CPU, then FFmpeg decodes and encodes it. Strobe keeps each frame on the GPU: CEF view, IOSurface, a wgpu shader, VideoToolbox, then the MP4.</desc>
+        <defs>
+          <marker id="s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.accent}"/></marker>
+          <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.rivalLine}"/></marker>
+        </defs>
+        <rect width="${W}" height="${H}" rx="16" fill="${T.paper}"/>
+        ${lane(R1, "Remotion, HyperFrames", T.sub)}
+        ${arrow(0, 1, c1, false)}
+        ${arrow(1, 2, c1, false)}
+        ${arrow(2, 4, c1, false)}
+        ${node(0, R1, "Chrome", "headless, paints the frame", "GPU")}
+        ${node(1, R1, "JPEG or PNG", "screenshot, read back", "CPU")}
+        ${node(2, R1, "FFmpeg", "decodes, then encodes", "CPU")}
+        ${node(4, R1, "MP4", "with AAC audio", "", false)}
+
+        ${lane(R2, "Strobe", T.accent)}
+        ${arrow(0, 1, c2, true)}
+        ${arrow(1, 2, c2, true)}
+        ${arrow(2, 3, c2, true)}
+        ${arrow(3, 4, c2, true)}
+        ${node(0, R2, "CEF 156 view", "one begin frame", "GPU", true)}
+        ${node(1, R2, "IOSurface", "D3D12 on Windows", "GPU", true)}
+        ${node(2, R2, "wgpu shader", "BGRA to NV12", "GPU", true)}
+        ${node(3, R2, "VideoToolbox", "NVENC on Windows", "GPU", true)}
+        ${node(4, R2, "MP4", "with AAC audio", "", true)}
+        <path d="M${bx} ${by - 8} V${by} H${bx + bw} V${by - 8}" fill="none" stroke="${T.accent}" stroke-width="1.6"/>
+        <text x="${bx + bw / 2}" y="${by + 32}" text-anchor="middle" font-family="Geist" font-weight="600" font-size="19" fill="${T.accent}">No copy to the CPU</text>
+      </svg>`;
+      document.fonts.load('600 24px "Geist"').then(() => {
+        document.getElementById("out").innerHTML = svg;
+        document.title = "ready";
+      });
+    </script>
+  </body>
+</html>

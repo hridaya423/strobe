@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -414,7 +414,7 @@ pub fn render(
     Ok(stats)
 }
 
-pub const LEAD_IN: u64 = 20;
+pub const LEAD_IN: u64 = 0;
 
 #[cfg(target_os = "macos")]
 fn physical_memory() -> Option<u64> {
@@ -663,6 +663,35 @@ pub struct Runs<T> {
     pub lead_in_frames: u64,
 }
 
+/// Views that open at once. Opening contends on one browser thread, so a view opened alone is
+/// ready in a third of the time and starts rendering while the others open.
+const OPENING: usize = 3;
+
+struct Limit {
+    free: Mutex<usize>,
+    changed: Condvar,
+}
+
+impl Limit {
+    fn new(count: usize) -> Limit {
+        Limit {
+            free: Mutex::new(count),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+        *self
+            .changed
+            .wait_while(self.free.lock().unwrap(), |free| *free == 0)
+            .unwrap() -= 1;
+        let result = f();
+        *self.free.lock().unwrap() += 1;
+        self.changed.notify_one();
+        result
+    }
+}
+
 struct Shared<'a, T> {
     first: u64,
     plan: Plan,
@@ -864,6 +893,8 @@ pub fn render_runs<T: Send>(
     on_frame: impl Fn(u64, u64, &T) -> Result<()> + Sync,
 ) -> Result<Runs<T>> {
     let started = Instant::now();
+    let opening = Limit::new(OPENING);
+    let open = || opening.run(&open);
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
     let plan = plan.fit(frame_bytes).sized(config.frames);
     let mut config = config.clone();
@@ -984,7 +1015,10 @@ mod tests {
 
     #[test]
     fn claims_shrink_towards_the_end_so_no_view_idles() {
-        let plan = Plan::new(4, 200);
+        let plan = Plan {
+            lead_in: 20,
+            ..Plan::new(4, 200)
+        };
         let long = sizes(plan, 1692);
         assert_eq!(long[0], 200);
         assert!(long.windows(2).all(|pair| pair[0] >= pair[1]));
@@ -997,9 +1031,17 @@ mod tests {
 
     #[test]
     fn a_fixed_run_stays_fixed_and_a_short_render_is_one_claim_per_view() {
-        assert_eq!(sizes(Plan::new(4, 7), 96), [vec![7; 13], vec![5]].concat());
+        let plan = Plan {
+            lead_in: 20,
+            ..Plan::new(4, 7)
+        };
+        assert_eq!(sizes(plan, 96), [vec![7; 13], vec![5]].concat());
         assert_eq!(sizes(Plan::single(), 300), vec![300]);
-        assert_eq!(sizes(Plan::new(4, 200).sized(300), 300), vec![80, 80, 80, 60]);
+        let plan = Plan {
+            lead_in: 20,
+            ..Plan::new(4, 200)
+        };
+        assert_eq!(sizes(plan.sized(300), 300), vec![80, 80, 80, 60]);
     }
 
     #[test]
