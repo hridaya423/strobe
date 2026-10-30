@@ -55,6 +55,7 @@ fn fixture_project(name: &str) -> Result<PathBuf> {
         let reference = std::env::var_os("VRF_BENCH_DIR")
             .map_or_else(bench_dir, PathBuf::from)
             .join("corpus/external/github-unwrapped/node_modules");
+        let _ = fs::remove_file(&modules);
         symlink(reference, &modules)?;
     }
     let src = project.join("src");
@@ -64,6 +65,35 @@ fn fixture_project(name: &str) -> Result<PathBuf> {
         src.join("index.jsx"),
     )?;
     Ok(project)
+}
+
+fn hyperframes_package() -> PathBuf {
+    bench_dir().join("engines/node_modules/hyperframes")
+}
+
+fn hyperframes_project() -> Result<PathBuf> {
+    let dir = work_dir().join("hyperframes-box");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir)?;
+    fs::copy(
+        hyperframes_package().join("dist/vendor/npm/gsap@3.15.0/dist/gsap.min.js"),
+        dir.join("gsap.min.js"),
+    )?;
+    fs::write(
+        dir.join("index.html"),
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><style>\
+         html,body{margin:0;background:#123}\
+         #root{position:relative;width:320px;height:180px;overflow:hidden;background:#123}\
+         </style></head><body>\n\
+         <div id=\"root\" data-composition-id=\"main\" data-width=\"320\" data-height=\"180\" \
+         data-duration=\"1\" data-start=\"0\" data-fps=\"30\">\
+         <div id=\"box\" style=\"position:absolute;left:0;top:60px;width:60px;height:60px;background:#f84\"></div></div>\n\
+         <script src=\"gsap.min.js\"></script>\n\
+         <script>const tl = gsap.timeline({paused: true}); \
+         tl.to('#box', {x: 240, duration: 1, ease: 'none'}); \
+         window.__timelines = {main: tl};</script></body></html>\n",
+    )?;
+    Ok(dir)
 }
 
 fn socket_dir() -> PathBuf {
@@ -129,6 +159,38 @@ fn render(
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn render_hyperframes(
+    socket: &Path,
+    project: &Path,
+    out: &Path,
+    extra: &[&str],
+) -> Result<(Value, String)> {
+    let output = vrf(socket)
+        .args(["render", project.to_str().unwrap(), "--hyperframes"])
+        .arg(hyperframes_package())
+        .args([
+            "--views",
+            "1",
+            "--run",
+            "1000",
+            "--no-turbo",
+            "--json",
+            "-o",
+        ])
+        .arg(out)
+        .args(extra)
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "vrf render failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok((
+        serde_json::from_slice(&output.stdout)?,
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 fn frames_hash(path: &Path) -> Result<String> {
@@ -317,6 +379,93 @@ fn two_clients_queue_and_both_finish() -> Result<()> {
     daemon.stop()
 }
 
+fn one_daemon_serves_remotion_then_hyperframes() -> Result<()> {
+    let gray = fixture_project("gray")?;
+    let boxes = hyperframes_project()?;
+    let socket = socket();
+    let fast_socket = PathBuf::from(format!("{}-fast", socket.display()));
+    let daemon = Running::start(&socket, "mixed", &["--idle-timeout", "300"])?;
+    let work = work_dir();
+
+    let remotion = render(
+        &socket,
+        &gray,
+        "Gray",
+        &work.join("mixed-remotion.mp4"),
+        &[],
+    )?;
+    ensure!(remotion["frames"] == 60);
+    ensure!(
+        daemon::connect(&fast_socket).is_none(),
+        "a Remotion render started the GPU-raster daemon"
+    );
+
+    let (first, first_note) =
+        render_hyperframes(&socket, &boxes, &work.join("mixed-hf-first.mp4"), &[])?;
+    ensure!(first["frames"] == 30);
+    ensure!(
+        first_note.contains("starting a fast daemon"),
+        "no daemon was started for HyperFrames:\n{first_note}"
+    );
+    ensure!(
+        daemon::connect(&fast_socket).is_some(),
+        "no GPU-raster daemon listens on {}",
+        fast_socket.display()
+    );
+
+    let (warm, warm_note) =
+        render_hyperframes(&socket, &boxes, &work.join("mixed-hf-warm.mp4"), &[])?;
+    let (local, _) = render_hyperframes(
+        &socket,
+        &boxes,
+        &work.join("mixed-hf-local.mp4"),
+        &["--no-daemon"],
+    )?;
+    println!(
+        "mixed: HyperFrames first_frame_ms daemon cold {:.0}, daemon warm {:.0}, in process {:.0}",
+        first["first_frame_ms"].as_f64().unwrap(),
+        warm["first_frame_ms"].as_f64().unwrap(),
+        local["first_frame_ms"].as_f64().unwrap()
+    );
+    ensure!(!warm_note.contains("starting"), "{warm_note}");
+    ensure!(
+        warm["first_frame_ms"].as_f64().unwrap() < local["first_frame_ms"].as_f64().unwrap(),
+        "the second HyperFrames render did not start faster than an in-process one"
+    );
+    let expected = frames_hash(&work.join("mixed-hf-local.mp4"))?;
+    ensure!(expected.split(',').count() == 30);
+    ensure!(frames_hash(&work.join("mixed-hf-first.mp4"))? == expected);
+    ensure!(frames_hash(&work.join("mixed-hf-warm.mp4"))? == expected);
+
+    let again = render(
+        &socket,
+        &gray,
+        "Gray",
+        &work.join("mixed-remotion-2.mp4"),
+        &[],
+    )?;
+    ensure!(
+        again["stages"]["warm"]["view"] == true,
+        "{}",
+        again["stages"]
+    );
+    ensure!(
+        frames_hash(&work.join("mixed-remotion-2.mp4"))?
+            == frames_hash(&work.join("mixed-remotion.mp4"))?
+    );
+
+    daemon.stop()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fast_socket.exists() {
+        ensure!(
+            Instant::now() < deadline,
+            "--stop left the GPU-raster daemon running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
 fn failed_render_leaves_the_daemon_serving() -> Result<()> {
     let boom = fixture_project("throws")?;
     let gray = fixture_project("gray")?;
@@ -357,7 +506,7 @@ fn idle_daemon_exits_by_itself() -> Result<()> {
 }
 
 fn main() -> ExitCode {
-    let cases: [Case; 5] = [
+    let cases: [Case; 6] = [
         ("cli_falls_back_without_a_daemon", fallback_without_a_daemon),
         (
             "cli_warm_daemon_is_fast_and_matches_the_fallback",
@@ -366,6 +515,10 @@ fn main() -> ExitCode {
         (
             "cli_two_clients_queue_and_both_finish",
             two_clients_queue_and_both_finish,
+        ),
+        (
+            "cli_one_daemon_serves_remotion_then_hyperframes",
+            one_daemon_serves_remotion_then_hyperframes,
         ),
         (
             "cli_failed_render_leaves_the_daemon_serving",

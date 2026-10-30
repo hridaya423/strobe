@@ -1,14 +1,14 @@
 use std::io::{IsTerminal, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::{Command as Process, ExitCode};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use vrf_blink::adapters::hyperframes;
 use vrf_blink::adapters::remotion::{self, Options, RenderJob, Renderer, VideoDecoder};
-use vrf_blink::daemon::{self, Job, Reply, Request};
+use vrf_blink::daemon::{self, Job, Reply, Request, Stream};
 use vrf_blink::driver::{self, Plan};
 use vrf_blink::{Mode, Ui, calibration};
 use vrf_encode::Codec;
@@ -28,8 +28,9 @@ enum Command {
     /// Render a Remotion or HyperFrames project to a video file.
     Render(RenderArgs),
     /// Keep the renderer warm between renders. `vrf render` uses a running daemon and falls
-    /// back to rendering in its own process when there is none. Projects that use WebGL render
-    /// on SwiftShader, which needs a daemon of its own: start it with `VRF_SOFTWARE_WEBGL=1`.
+    /// back to rendering in its own process when there is none. Rasterising on the GPU and
+    /// WebGL on SwiftShader are fixed for a running CEF, so each has a daemon of its own. With
+    /// one running, a render that needs another starts it and waits for it.
     Daemon(DaemonArgs),
 }
 
@@ -87,14 +88,11 @@ struct RenderArgs {
     /// Leave the audio out of the file.
     #[arg(long)]
     no_audio: bool,
-    /// What decodes embedded video: `native` (VideoToolbox, macOS only, falling back to the
-    /// framework's own decoding for clips it cannot reproduce exactly) or `remotion` (the
-    /// framework's own for all: Remotion's frame server, HyperFrames' ffmpeg extraction).
-    #[cfg_attr(target_os = "macos", arg(long, value_enum, default_value = "native"))]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        arg(long, value_enum, default_value = "remotion")
-    )]
+    /// What decodes embedded video: `native` (VideoToolbox on macOS, Media Foundation on
+    /// Windows, falling back to the framework's own decoding for clips it cannot reproduce
+    /// exactly) or `remotion` (the framework's own for all: Remotion's frame server,
+    /// HyperFrames' ffmpeg extraction).
+    #[arg(long, value_enum, default_value = "native")]
     video: VideoArg,
     /// Render every frame, even those the page proves unchanged.
     #[arg(long)]
@@ -118,14 +116,14 @@ struct DaemonArgs {
     /// Seconds with nothing to do before the daemon exits.
     #[arg(long, default_value_t = 600)]
     idle_timeout: u64,
-    /// The rasterisation the daemon renders with. A request for the other mode renders in its
-    /// own process.
+    /// The rasterisation this daemon renders with, `reference` for Remotion projects and `fast`
+    /// for HyperFrames projects by default. A render in the other mode gets a daemon of its own.
     #[arg(long, value_enum, default_value = "reference")]
     mode: ModeArg,
     /// Projects whose bundle, frame server and views stay loaded.
     #[arg(long, default_value_t = 2)]
     projects: usize,
-    /// Stop the running daemon after its current renders.
+    /// Stop every running daemon after its current renders.
     #[arg(long)]
     stop: bool,
 }
@@ -344,15 +342,40 @@ impl From<hyperframes::Report> for Rendered {
     }
 }
 
+fn start_daemon(cpu_raster: bool, socket: &Path) -> Option<Stream> {
+    if !daemon::all_sockets().any(|other| daemon::connect(&other).is_some()) {
+        return None;
+    }
+    let mode = if cpu_raster { "reference" } else { "fast" };
+    eprintln!(
+        "vrf: starting a {mode} daemon beside the running one; this render waits for it, later ones start warm"
+    );
+    let mut command = Process::new(std::env::current_exe().ok()?);
+    command.args(["daemon", "--mode", mode]);
+    let mut child = daemon::spawn_detached(&mut command).ok()?;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(stream) = daemon::connect(socket) {
+            return Some(stream);
+        }
+        if child.try_wait().ok()?.is_some() || Instant::now() > deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn render_remote(
     args: &RenderArgs,
     cpu_raster: bool,
     command_start: SystemTime,
 ) -> Result<Option<Rendered>> {
-    let Some(stream) = daemon::connect(&daemon::socket_path()) else {
+    let Some(plan) = calibration::cached_plan(args.views, args.run, args.lead_in)? else {
         return Ok(None);
     };
-    let Some(plan) = calibration::cached_plan(args.views, args.run, args.lead_in)? else {
+    let socket = daemon::socket_path();
+    let Some(stream) = daemon::connect(&socket).or_else(|| start_daemon(cpu_raster, &socket))
+    else {
         return Ok(None);
     };
     let job = match args.work(plan)? {
@@ -417,14 +440,20 @@ fn print_report(rendered: &Rendered, args: &RenderArgs) {
     }
 }
 
-fn stop_daemon() -> Result<()> {
-    let Some(stream) = daemon::connect(&daemon::socket_path()) else {
-        println!("no daemon is running");
-        return Ok(());
-    };
+fn stop_daemons() -> Result<()> {
     let request = Request::new(false, SystemTime::now(), Job::Stop)?;
-    daemon::call(stream, &request, &mut |_| {}, &mut |_, _| {})?;
-    println!("daemon stopped");
+    let mut stopped = 0;
+    for socket in daemon::all_sockets() {
+        if let Some(stream) = daemon::connect(&socket) {
+            daemon::call(stream, &request, &mut |_| {}, &mut |_, _| {})?;
+            stopped += 1;
+        }
+    }
+    match stopped {
+        0 => println!("no daemon is running"),
+        1 => println!("daemon stopped"),
+        count => println!("{count} daemons stopped"),
+    }
     Ok(())
 }
 
@@ -486,10 +515,7 @@ fn main() -> ExitCode {
             );
             run_render(args, cpu_raster, command_start)
         }
-        Command::Daemon(args) if args.stop => {
-            vrf_blink::set_software_webgl(std::env::var_os(SOFTWARE_WEBGL).is_some());
-            stop_daemon()
-        }
+        Command::Daemon(args) if args.stop => stop_daemons(),
         Command::Daemon(args) => {
             vrf_blink::set_software_webgl(std::env::var_os(SOFTWARE_WEBGL).is_some());
             let cpu_raster = args.mode == ModeArg::Reference;
@@ -546,7 +572,10 @@ mod tests {
     fn mode_overrides_the_framework_default() {
         let hyperframes = project("hyperframes-mode", None);
         assert!(render_args(&hyperframes, &["--mode", "reference"]).cpu_raster());
-        let remotion = project("remotion-mode", Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#));
+        let remotion = project(
+            "remotion-mode",
+            Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#),
+        );
         assert!(!render_args(&remotion, &["--mode", "fast"]).cpu_raster());
     }
 }

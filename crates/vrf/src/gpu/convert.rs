@@ -156,6 +156,7 @@ impl Converter {
         let (mode, weights, full) = match chroma {
             Chroma::Swscale => (0, Weights::of(Matrix::Bt709), false),
             Chroma::Spec => (1, Weights::of(Matrix::Bt709), false),
+            Chroma::Jpeg => (3, Weights::of(Matrix::Bt709), false),
             Chroma::Exact(space) => (2, Weights::of(space.matrix), space.range == Range::Full),
         };
         let params = [

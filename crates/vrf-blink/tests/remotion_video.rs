@@ -16,7 +16,6 @@ use vrf_bench::score;
 use vrf_blink::adapters::remotion::{self, Fallback, Offthread, Options, Page, VideoDecoder};
 use vrf_blink::driver::Plan;
 use vrf_blink::{Mode, Project, Ui};
-use vrf_encode::Codec;
 
 const CLIPS: [&str; 6] = [
     "cfr1080.mp4",
@@ -26,6 +25,8 @@ const CLIPS: [&str; 6] = [
     "cfr1080-601.mp4",
     "cfr1080-full.mp4",
 ];
+const COMPOSITOR_DELTA: u8 = if cfg!(windows) { 3 } else { 1 };
+const TRANSFORM_FLIP: f64 = if cfg!(windows) { 0.02 } else { 0.01 };
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/js/test/remotion/fixtures/video/index.jsx"
@@ -196,7 +197,7 @@ fn colours_equal_remotions_own_frames(ui: &Ui) -> Result<()> {
                 diff.over_1 * 100.0
             );
             ensure!(
-                diff.max <= 1,
+                diff.max <= COMPOSITOR_DELTA,
                 "{composition} frame {frame} differs by up to {} from Remotion's own frame",
                 diff.max
             );
@@ -243,7 +244,9 @@ fn two_videos_with_transforms_match_remotions_frame_server(ui: &Ui) -> Result<()
                 scored.ssim
             );
             ensure!(
-                scored.flip_mean <= 0.01 && scored.frac_over_32 <= 0.01 && scored.ssim >= 0.99,
+                scored.flip_mean <= TRANSFORM_FLIP
+                    && scored.frac_over_32 <= 0.01
+                    && scored.ssim >= 0.99,
                 "{composition} frame {frame} is too far from Remotion's frame server"
             );
         }
@@ -257,11 +260,12 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
         let mut files = Vec::new();
         for views in [1, 2, 4] {
             let out = std::env::temp_dir().join(format!(
-                "vrf-remotion-video-tests/{composition}-views-{views}.mov"
+                "vrf-remotion-video-tests/{composition}-views-{views}.{}",
+                support::DETERMINISTIC.1
             ));
             let mut options = options(&project, composition, VideoDecoder::Native);
             options.plan = Plan::new(views, 13);
-            let report = support::render(ui, &options, None, Codec::ProRes422, &out)?;
+            let report = support::render(ui, &options, None, support::DETERMINISTIC.0, &out)?;
             ensure!(
                 report.views == views && report.repeats == 0,
                 "{composition}: {} views, {} repeats",
@@ -301,9 +305,5 @@ const CASES: &[support::Case] = &[
 ];
 
 fn main() -> ExitCode {
-    if cfg!(windows) {
-        println!("native video decoding is macOS only; skipped");
-        return ExitCode::SUCCESS;
-    }
     support::run(CASES)
 }

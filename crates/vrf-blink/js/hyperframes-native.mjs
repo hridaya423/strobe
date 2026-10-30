@@ -68,7 +68,7 @@ export const installNative = ({ chunk, extract, enabled, registry }) => {
   globalThis.__vrfNative = async (videoPath, startTime, duration, options, directory, videoId, helpers) => {
     if (!enabled) return null;
     if (options.finalFrameOnly || options.frameRanges || options.tailProbe || options.sdrToHdrTransfer || options.toneMapHdrToSdr) return null;
-    const inside = videoPath.lastIndexOf(COMPILED);
+    const inside = videoPath.replaceAll('\\', '/').lastIndexOf(COMPILED);
     if (inside < 0 || forced.has(videoPath.slice(inside + COMPILED.length))) return null;
     if (!CONTAINERS.has(extname(videoPath).toLowerCase())) return null;
     const metadata = await helpers.extractMediaMetadata(videoPath);

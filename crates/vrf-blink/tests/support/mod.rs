@@ -76,7 +76,10 @@ pub fn link_dir(
     link: impl AsRef<std::path::Path>,
 ) -> Result<()> {
     #[cfg(unix)]
-    std::os::unix::fs::symlink(target, link)?;
+    {
+        let _ = fs::remove_file(link.as_ref());
+        std::os::unix::fs::symlink(target, link)?;
+    }
     #[cfg(windows)]
     {
         let target = std::fs::canonicalize(target)?;

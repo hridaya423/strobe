@@ -26,7 +26,6 @@ use crate::{Mode, Project, Ui, View};
 const HYPERFRAMES_JS: &str = include_str!("../../js/hyperframes.js");
 const CLOCK_JS: &str = include_str!("../../js/clock.js");
 const VIDEO_JS: &str = include_str!("../../js/video.js");
-const HOP_JS: &str = include_str!("../../js/hyperframes-hop.js");
 const PREPARE_JS: &str = include_str!("../../js/hyperframes-prepare.mjs");
 const NATIVE_JS: &str = include_str!("../../js/hyperframes-native.mjs");
 
@@ -37,12 +36,13 @@ const PROBE_SIZE: (i32, i32) = (640, 360);
 /// its CPU raster in blended fills and glyph edges, so frames only equal HyperFrames' on the GPU.
 pub const CPU_RASTER: bool = false;
 
-/// The ranges a render is cut into when its plan names none: HyperFrames' worker count on the
-/// machines its references come from. HyperFrames renders each worker's range in a browser of
-/// its own, and Chromium keeps raster state of `will-change` layers from the frame where each
-/// first painted, so a frame's pixels depend on where its range began.
-pub const WORKERS: u64 = 8;
+/// The ranges a render is cut into when its plan names none: the most workers HyperFrames' bar
+/// spans (1 to 10). HyperFrames renders each worker's range in a browser of its own, and
+/// Chromium keeps raster state of `will-change` layers from the frame where each first painted,
+/// so a frame's pixels depend on where its range began.
+pub const WORKERS: u64 = 10;
 const AUDIO_BIT_RATE: u32 = 192_000;
+
 const FRAMES_URL: &str = "/__hyperframes_video_frames/";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,6 +262,14 @@ pub struct Page {
     native: NativeVideos,
     tracks: Vec<HyperframesTrack>,
     frames: u64,
+    probed: PathBuf,
+}
+
+/// What a probe view learns about a composition.
+#[derive(Serialize, Deserialize)]
+struct Probe {
+    composition: Composition,
+    static_frames: Option<Vec<u64>>,
 }
 
 impl Page {
@@ -283,16 +291,22 @@ impl Page {
             .iter()
             .map(|v| json!({ "id": v.id, "width": v.width, "height": v.height }))
             .collect();
+        let script = format!(
+            "{early_stub}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}\n{}",
+            if native.is_empty() { "" } else { VIDEO_JS },
+            if options.skip { TRACK_JS } else { "" }
+        );
+        let init = json!({ "fps": [options.fps, 1], "videoMetadataHints": hints, "nativeVideos": native.params() })
+            .to_string();
+        let mut context = digest::Context::new(&digest::SHA256);
+        context.update(script.as_bytes());
+        context.update(init.as_bytes());
+        let probed = dir.join(format!("probe-{}.json", short_hex(context)));
         Ok(Page {
             project,
-            script: format!(
-                "{early_stub}\n{}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}\n{}",
-                if native.is_empty() { "" } else { VIDEO_JS },
-                if native.is_empty() { "" } else { HOP_JS },
-                if options.skip { TRACK_JS } else { "" }
-            ),
-            init: json!({ "fps": [options.fps, 1], "videoMetadataHints": hints, "nativeVideos": native.params() })
-                .to_string(),
+            script,
+            init,
+            probed,
             native,
             video: VideoFrames {
                 table: prepared.frames,
@@ -321,6 +335,31 @@ impl Page {
             .evaluate(&format!("__vrf.hf.init({})", self.init))
             .context("the composition did not initialise")?;
         Ok((view, serde_json::from_value(meta)?))
+    }
+
+    /// The composition's size and length, and the frames it plans to leave unchanged when `skip`
+    /// is on. They depend only on the prepared files and the injected script, so they are kept
+    /// beside the prepared project and a later render skips the probe view.
+    fn probe(&self, ui: &Ui, skip: bool) -> Result<Probe> {
+        if let Some(probe) = fs::read(&self.probed)
+            .ok()
+            .and_then(|text| serde_json::from_slice(&text).ok())
+        {
+            return Ok(probe);
+        }
+        let (mut view, composition) = self.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
+        let static_frames = skip.then(|| static_frames(&mut view)).transpose()?;
+        view.close()?;
+        let probe = Probe {
+            composition,
+            static_frames,
+        };
+        let partial = self
+            .probed
+            .with_extension(format!("partial-{}", std::process::id()));
+        fs::write(&partial, serde_json::to_vec(&probe)?)?;
+        fs::rename(&partial, &self.probed)?;
+        Ok(probe)
     }
 
     /// Leaves the view showing `frame`.
@@ -416,12 +455,10 @@ pub fn render(
     let page = Page::new(prepare, options)?;
 
     let step = Instant::now();
-    let (mut probe, composition) = page.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
-    let static_frames = options
-        .skip
-        .then(|| static_frames(&mut probe))
-        .transpose()?;
-    probe.close()?;
+    let Probe {
+        composition,
+        static_frames,
+    } = page.probe(ui, options.skip)?;
     let probe_s = step.elapsed();
     ensure!(
         composition.frames == page.frames,
@@ -453,6 +490,7 @@ pub fn render(
         count,
     );
     config.skip = static_frames.map(Skip::planned);
+    config.jpeg_capture = matches!(codec, Codec::H264 | Codec::Hevc);
     let (width, height) = (composition.width as i32, composition.height as i32);
     let progress = Progress::new(progress, count, command_start);
     let first_ready = OnceLock::new();

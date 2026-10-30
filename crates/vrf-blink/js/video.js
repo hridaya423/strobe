@@ -61,11 +61,11 @@
     for (const key of clip.frames.keys()) if (key < k - BEHIND_KEEP || key > k + AHEAD_KEEP) clip.frames.delete(key);
   };
 
-  const open = (src) => {
+  const open = (src, jpeg) => {
     if (!opening.has(src)) {
       const req = nextRequest++;
       opening.set(src, new Promise((resolve) => pendingOpen.set(req, resolve)));
-      send({ t: 'open', req, src });
+      send({ t: 'open', req, src, jpeg });
     }
     return opening.get(src);
   };
@@ -136,6 +136,19 @@
     }
   };
 
+  const onJpeg = (buffer) => {
+    const head = new DataView(buffer);
+    const clip = clips.get(head.getUint32(4, true));
+    const k = head.getUint32(8, true);
+    const picture = { jpeg: new Uint8Array(buffer, HEADER, head.getUint32(12, true)) };
+    clip.frames.set(k, picture);
+    const waiting = clip.waiters.get(k);
+    if (waiting) {
+      clip.waiters.delete(k);
+      for (const { resolve } of waiting) resolve(picture);
+    }
+  };
+
   const onFailure = (buffer) => {
     const head = new DataView(buffer);
     const clip = clips.get(head.getUint32(4, true));
@@ -150,6 +163,7 @@
     const kind = new DataView(buffer).getUint32(0, true);
     if (kind === 1) onFrame(buffer);
     else if (kind === 3) onFailure(buffer);
+    else if (kind === 4) onJpeg(buffer);
     else onMeta(buffer);
   };
 

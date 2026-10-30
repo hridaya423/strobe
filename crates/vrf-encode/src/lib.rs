@@ -82,7 +82,7 @@ impl Quality {
     pub fn value(self) -> f32 {
         match self {
             Quality::Draft => 0.50,
-            Quality::Balanced => 0.85,
+            Quality::Balanced => 0.90,
             Quality::High => 0.90,
         }
     }
@@ -92,8 +92,8 @@ impl Quality {
     pub fn x264_crf(self) -> u32 {
         match self {
             Quality::Draft => 25,
-            Quality::Balanced => 16,
-            Quality::High => 12,
+            Quality::Balanced => 10,
+            Quality::High => 8,
         }
     }
 }
