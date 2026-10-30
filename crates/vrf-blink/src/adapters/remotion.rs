@@ -23,6 +23,7 @@ use super::{
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
+use crate::skip::{Skip, TRACK_JS};
 use crate::video::{Clips, Link, StartFallback};
 use crate::{Mode, Project, Ui, View};
 
@@ -80,6 +81,7 @@ pub struct Options {
     /// Mix the composition's audio into the file. Off leaves a video-only file.
     pub audio: bool,
     pub video: VideoDecoder,
+    pub skip: bool,
 }
 
 /// One render: what to render, which frames of it, the codec, and where the file goes.
@@ -161,6 +163,7 @@ pub struct Report {
     pub stages: Stages,
     pub per_frame: PerFrame,
     pub repeats: u64,
+    pub skipped: u64,
     pub capture_retries: u64,
     pub seek_retries: u64,
     #[serde(skip)]
@@ -371,6 +374,7 @@ struct Native {
 pub struct Page {
     project: Project,
     config: Value,
+    track: bool,
     composition: String,
     native: Option<Native>,
 }
@@ -389,6 +393,7 @@ impl Page {
         Ok(Page {
             project,
             config,
+            track: options.skip,
             composition: serde_json::to_string(&options.composition)?,
             native: None,
         })
@@ -407,8 +412,9 @@ impl Page {
 
     fn script(&self) -> String {
         let video = if self.native.is_some() { VIDEO_JS } else { "" };
+        let track = if self.track { TRACK_JS } else { "" };
         format!(
-            "globalThis.__vrf_rm_config = {};\n{video}\n{REMOTION_JS}\n{CLOCK_JS}",
+            "globalThis.__vrf_rm_config = {};\n{video}\n{REMOTION_JS}\n{CLOCK_JS}\n{track}",
             self.config
         )
     }
@@ -537,6 +543,7 @@ struct Key {
     timeout: Duration,
     mode: Mode,
     video: VideoDecoder,
+    skip: bool,
 }
 
 struct Loaded {
@@ -679,6 +686,7 @@ impl Renderer {
             timeout: options.timeout,
             mode: options.mode,
             video: options.video,
+            skip: options.skip,
         };
         let kept = self
             .loaded
@@ -747,13 +755,14 @@ impl Renderer {
                 .insert(task.join().map_err(|_| anyhow!("GPU setup panicked"))??),
             None => self.warm.as_mut().context("the GPU state is missing")?,
         };
-        let config = Config::new(
+        let mut config = Config::new(
             composition.width,
             composition.height,
             composition.frame_rate()?,
             codec,
             count,
         );
+        config.skip = options.skip.then(Skip::tracked);
         let (width, height) = (composition.width as i32, composition.height as i32);
         let page = &loaded.page;
         let seek_retries = AtomicU64::new(0);
@@ -884,6 +893,7 @@ impl Renderer {
                 encode: StageStats::of(&stats.encode),
             },
             repeats: stats.repeats,
+            skipped: stats.skipped,
             capture_retries: stats.retries,
             seek_retries: seek_retries.into_inner(),
             assets: collected,

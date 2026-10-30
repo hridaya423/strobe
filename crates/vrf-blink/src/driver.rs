@@ -21,6 +21,7 @@ use vrf_encode::videotoolbox::{self, VideoToolboxEncoder};
 use vrf_encode::x264;
 use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
 
+use crate::skip::Skip;
 use crate::{Paint, View};
 
 const WINDOW: usize = 32;
@@ -39,6 +40,7 @@ pub struct Config {
     pub watchdog: Duration,
     pub window: usize,
     pub turbo: bool,
+    pub skip: Option<Skip>,
 }
 
 impl Config {
@@ -57,6 +59,7 @@ impl Config {
             watchdog: Duration::from_millis(500),
             window: WINDOW,
             turbo: codec == Codec::H264 && x264::available().is_ok(),
+            skip: None,
         }
     }
 }
@@ -67,6 +70,7 @@ pub struct Stats {
     pub pipeline: Duration,
     pub finish: Duration,
     pub repeats: u64,
+    pub skipped: u64,
     pub retries: u64,
     pub seek: Vec<Duration>,
     pub begin_to_paint: Vec<Duration>,
@@ -324,6 +328,7 @@ impl LaneSpec {
             width: self.width,
             height: self.height,
             repeats: 0,
+            skipped: 0,
             convert: Vec::new(),
         })
     }
@@ -337,6 +342,7 @@ pub struct Lane {
     width: u32,
     height: u32,
     pub repeats: u64,
+    pub skipped: u64,
     pub convert: Vec<Duration>,
 }
 
@@ -360,6 +366,13 @@ impl Lane {
     /// Queues frame `index` as a copy of the one before it.
     pub fn repeat(&mut self, index: u64) -> Result<()> {
         self.repeats += 1;
+        self.producer.submit(index, Submission::Repeat)
+    }
+
+    /// Queues frame `index` as a copy of the one before it, because the page proved it did not
+    /// change and no begin frame was sent.
+    pub fn skip(&mut self, index: u64) -> Result<()> {
+        self.skipped += 1;
         self.producer.submit(index, Submission::Repeat)
     }
 
@@ -428,6 +441,7 @@ impl<'w> Pipeline<'w> {
             width: config.width,
             height: config.height,
             repeats: 0,
+            skipped: 0,
             convert: Vec::new(),
         };
         let frame_rate = config.frame_rate;
@@ -584,6 +598,7 @@ struct Shared<'a, T> {
     count: u64,
     plan: Plan,
     watchdog: Duration,
+    skip: Option<&'a Skip>,
     next_run: AtomicU64,
     done: AtomicU64,
     on_frame: &'a (dyn Fn(u64) -> Result<()> + Sync),
@@ -597,6 +612,7 @@ struct Worker<T> {
     lead_in: u64,
     capture: Capture,
     repeats: u64,
+    skipped: u64,
     convert: Vec<Duration>,
 }
 
@@ -607,6 +623,7 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
         lead_in: 0,
         capture: Capture::default(),
         repeats: 0,
+        skipped: 0,
         convert: Vec::new(),
     };
     let mut view = (shared.open)()?;
@@ -636,13 +653,20 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
             let value = (shared.seek)(&mut view, frame)
                 .with_context(|| format!("seek to frame {frame}"))?;
             worker.seek.push(step.elapsed());
-            match worker
-                .capture
-                .next(&view, shared.watchdog)
-                .with_context(|| format!("capture frame {frame}"))?
-            {
-                Some(paint) => lane.frame(index, &paint)?,
-                None => lane.repeat(index)?,
+            let unchanged = shared
+                .skip
+                .map_or(Ok(false), |skip| skip.unchanged(&mut view, frame))?;
+            if unchanged && index > from {
+                lane.skip(index)?;
+            } else {
+                match worker
+                    .capture
+                    .next(&view, shared.watchdog)
+                    .with_context(|| format!("capture frame {frame}"))?
+                {
+                    Some(paint) => lane.frame(index, &paint)?,
+                    None => lane.repeat(index)?,
+                }
             }
             worker.frames.push((index, value));
             let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -653,6 +677,7 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
     view.check_project()?;
     view.close()?;
     worker.repeats = lane.repeats;
+    worker.skipped = lane.skipped;
     worker.convert = std::mem::take(&mut lane.convert);
     Ok(worker)
 }
@@ -691,6 +716,7 @@ pub fn render_runs<T: Send>(
         count: config.frames,
         plan,
         watchdog: config.watchdog,
+        skip: config.skip.as_ref(),
         next_run: AtomicU64::new(0),
         done: AtomicU64::new(0),
         on_frame: &on_frame,
@@ -739,6 +765,7 @@ pub fn render_runs<T: Send>(
         frames.extend(worker.frames);
         lead_in_frames += worker.lead_in;
         stats.repeats += worker.repeats;
+        stats.skipped += worker.skipped;
         stats.retries += worker.capture.retries;
         stats.seek.extend(worker.seek);
         stats.begin_to_paint.extend(worker.capture.begin_to_paint);

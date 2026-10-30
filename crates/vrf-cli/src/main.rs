@@ -85,6 +85,9 @@ struct RenderArgs {
     /// server for clips it cannot reproduce exactly) or `remotion` (its frame server for all).
     #[arg(long, value_enum, default_value = "native")]
     video: VideoArg,
+    /// Render every frame, even those the page proves unchanged.
+    #[arg(long)]
+    no_skip: bool,
     /// Print a JSON report on stdout instead of the summary line.
     #[arg(long)]
     json: bool,
@@ -211,6 +214,7 @@ impl RenderArgs {
                     VideoArg::Native => VideoDecoder::Native,
                     VideoArg::Remotion => VideoDecoder::Remotion,
                 },
+                skip: !self.no_skip,
             };
             Work::Remotion(RenderJob {
                 options,
@@ -226,6 +230,7 @@ impl RenderArgs {
                 mode,
                 plan,
                 audio: !self.no_audio,
+                skip: !self.no_skip,
             };
             Work::Hyperframes(hyperframes::RenderJob {
                 options,

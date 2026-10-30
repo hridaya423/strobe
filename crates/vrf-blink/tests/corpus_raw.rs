@@ -34,6 +34,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
                 plan: Plan::single(),
                 audio: false,
                 video: VideoDecoder::Remotion,
+                skip: false,
             };
             let bundle = remotion::bundle(&options.project, options.entry.as_deref())?;
             let server = remotion::Offthread::start(&options.project.canonicalize()?, &bundle.dir)?;
@@ -57,6 +58,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
                 mode: Mode::Online,
                 plan: Plan::single(),
                 audio: false,
+                skip: false,
             };
             let prepare = hyperframes::prepare(
                 &options.project,

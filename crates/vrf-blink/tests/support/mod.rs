@@ -51,6 +51,7 @@ pub fn options(project: &Path, composition: &str) -> Options {
         plan: Plan::single(),
         audio: true,
         video: VideoDecoder::Native,
+        skip: false,
     }
 }
 

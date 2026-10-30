@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<style>html, body { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<script>
+function seek(i) {
+  document.documentElement.style.background = i % 2 ? 'rgb(200, 40, 40)' : 'rgb(40, 40, 200)';
+  return Promise.resolve(i);
+}
+</script>
+</body>
+</html>

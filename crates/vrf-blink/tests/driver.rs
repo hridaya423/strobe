@@ -12,6 +12,7 @@ use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_av
 use vrf_blink::driver::{
     Capture, Config, Pipeline, Plan, Stats, Summary, Warm, render, render_runs,
 };
+use vrf_blink::skip::{Skip, TRACK_JS};
 use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
 use vrf_encode::{Codec, Rational};
 
@@ -315,6 +316,106 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let mut warm = Warm::new()?;
+    let mut render = |page: &str, skip: Option<Skip>, views: usize| -> Result<(Vec<u8>, u64)> {
+        let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+        config.skip = skip;
+        let out = std::env::temp_dir().join(format!("vrf-blink-skip-{views}.mov"));
+        let runs = render_runs(
+            &config,
+            Plan::new(views, 7),
+            0,
+            &out,
+            &mut warm,
+            || View::open_project(ui, &project, page, 640, 360, Some(TRACK_JS)),
+            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |_| Ok(()),
+        )?;
+        runs.muxer.finish()?;
+        let bytes = std::fs::read(&out)?;
+        std::fs::remove_file(&out)?;
+        Ok((bytes, runs.stats.skipped))
+    };
+    for views in [1, 3] {
+        let (plain, none) = render("hold.html", None, views)?;
+        let (skipping, skipped) = render("hold.html", Some(Skip::tracked()), views)?;
+        ensure!(none == 0, "{none} frames skipped with skipping off");
+        ensure!(
+            skipped >= 48,
+            "{views} views skipped only {skipped} of 96 frames"
+        );
+        ensure!(
+            plain == skipping,
+            "{views} views wrote different bytes with skipping on"
+        );
+        println!("skip, {views} views: {skipped} of 96 frames skipped");
+
+        let (planned, none) = render("hold.html", Some(Skip::planned([])), views)?;
+        ensure!(none == 0, "{none} frames skipped outside the plan");
+        ensure!(
+            plain == planned,
+            "{views} views: an empty plan changed the bytes"
+        );
+        let (planned, some) = render("hold.html", Some(Skip::planned(0..96)), views)?;
+        ensure!(some >= 48, "a full plan skipped only {some} of 96 frames");
+        ensure!(
+            plain == planned,
+            "{views} views: a full plan changed the bytes"
+        );
+
+        let (every, none) = render("colour.html", None, views)?;
+        let (changing, skipped) = render("colour.html", Some(Skip::tracked()), views)?;
+        ensure!(
+            skipped == 0,
+            "{skipped} frames skipped on a page that changes every frame"
+        );
+        ensure!(
+            none == 0 && every == changing,
+            "{views} views: changing frames differ"
+        );
+    }
+    Ok(())
+}
+
+fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let mut warm = Warm::new()?;
+    let mut render = |skip: Option<Skip>| -> Result<(Vec<u8>, u64)> {
+        let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
+        config.skip = skip;
+        let out = std::env::temp_dir().join("vrf-blink-skip-flip.mov");
+        let runs = render_runs(
+            &config,
+            Plan::new(3, 7),
+            0,
+            &out,
+            &mut warm,
+            || View::open_project(ui, &project, "flip.html", 640, 360, Some(TRACK_JS)),
+            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |_| Ok(()),
+        )?;
+        runs.muxer.finish()?;
+        let bytes = std::fs::read(&out)?;
+        std::fs::remove_file(&out)?;
+        Ok((bytes, runs.stats.skipped))
+    };
+    let (plain, _) = render(None)?;
+    for skip in [Skip::tracked(), Skip::planned(0..96)] {
+        let (skipping, skipped) = render(Some(skip))?;
+        ensure!(
+            skipped == 0,
+            "{skipped} frames skipped on a page that flips every frame"
+        );
+        ensure!(
+            plain == skipping,
+            "run starts were skipped against another run's frame"
+        );
+    }
+    Ok(())
+}
+
 fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::H264, 96);
@@ -417,6 +518,14 @@ fn main() -> ExitCode {
         (
             "driver_calibration_is_cached_and_flags_override_it",
             calibration_is_measured_once_and_flags_override_it,
+        ),
+        (
+            "driver_skipped_frames_write_the_same_bytes",
+            unchanged_frames_are_skipped_and_the_bytes_do_not_change,
+        ),
+        (
+            "driver_run_starts_are_never_skipped",
+            a_frame_is_never_skipped_against_another_runs_frame,
         ),
         (
             "driver_failing_view_stops_the_others",

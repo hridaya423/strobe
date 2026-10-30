@@ -147,6 +147,7 @@ fn options(project: &Path) -> Options {
         mode: Mode::Offline,
         plan: Plan::single(),
         audio: true,
+        skip: false,
     }
 }
 
@@ -361,6 +362,44 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<()> {
+    let project = fixture(
+        "skip",
+        3,
+        BOX,
+        "const tl = gsap.timeline({paused: true}); \
+         tl.to('#box', {x: 240, duration: 1, ease: 'none'}); \
+         tl.set('#box', {x: 240}, 2.9); \
+         window.__timelines = {main: tl};",
+    )?;
+    for views in [1, 3] {
+        let mut render_with = |skip: bool| -> Result<(Vec<u8>, u64)> {
+            let out = work_dir().join(format!("skip-{views}-{skip}.mov"));
+            let options = Options {
+                skip,
+                plan: Plan::new(views, 7),
+                ..options(&project)
+            };
+            let report = render(ui, &options, None, Codec::ProRes422, &out)?;
+            ensure!(report.frames == 90 && report.views == views);
+            Ok((fs::read(&out)?, report.skipped))
+        };
+        let (plain, none) = render_with(false)?;
+        let (skipping, skipped) = render_with(true)?;
+        ensure!(none == 0, "{none} frames skipped with skipping off");
+        ensure!(
+            skipped >= 30,
+            "{views} views skipped only {skipped} of 90 frames"
+        );
+        ensure!(
+            plain == skipping,
+            "{views} views wrote different bytes with skipping on"
+        );
+        println!("hyperframes skip, {views} views: {skipped} of 90 frames skipped");
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     vrf_blink::set_cpu_raster(true);
     support::run(&[
@@ -380,6 +419,10 @@ fn main() -> ExitCode {
         (
             "hyperframes_parallel_views_match_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "hyperframes_skipped_frames_write_the_same_bytes",
+            unchanged_frames_are_skipped_and_the_bytes_do_not_change,
         ),
     ])
 }

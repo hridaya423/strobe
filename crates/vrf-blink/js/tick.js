@@ -3,6 +3,7 @@
   const raf = window.requestAnimationFrame.bind(window);
   let element = null;
   let phase = 0;
+  (globalThis.__vrf ??= {}).tick = () => element;
   const tick = () => {
     if (!element || !element.isConnected) {
       if (!document.documentElement) return raf(tick);
