@@ -1,0 +1,93 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+      background: #04060d;
+      overflow: hidden;
+    }
+    #spark-canvas {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+    }
+    #spark-white {
+      position: absolute;
+      inset: 0;
+      background: #f4fbff;
+      opacity: 0;
+    }
+  </style>
+  <div id="root" data-composition-id="spark" data-width="1920" data-height="1080">
+    <canvas id="spark-canvas" width="1920" height="1080"></canvas>
+    <div id="spark-white"></div>
+  </div>
+  <script>
+    (() => {
+      const D = window.StrobeDither;
+      const ctx = document.getElementById("spark-canvas").getContext("2d");
+      const easeIn2 = gsap.parseEase("power2.in");
+      const easeIn3 = gsap.parseEase("power3.in");
+      const easeOut = gsap.parseEase("expo.out");
+      const span = (t, a, b) => Math.max(0, Math.min(1, (t - a) / (b - a)));
+      const hash = (n) => {
+        const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+        return x - Math.floor(x);
+      };
+      const H = 440;
+      const CX = 960;
+      const CY = 540;
+      const sparkOn = [
+        [0.1, 0.14],
+        [0.27, 0.3],
+        [0.4, 0.47],
+        [0.52, 0.55],
+        [0.57, 0.62],
+      ];
+
+      function draw(t) {
+        const frame = Math.round(t * 60);
+        const strike = easeIn2(span(t, 0.6, 0.82));
+        const settle = easeOut(span(t, 0.82, 1.4));
+        const charge = span(t, 1.6, 2.8);
+        const scale = 1 + 17 * easeIn3(charge);
+        const cell = 6 + 66 * easeIn2(charge);
+        let energy = t < 0.82 ? 1 : 1.7 - 0.7 * settle;
+        if (t > 1.3 && t < 1.6) energy += (hash(frame) - 0.5) * 0.08;
+        energy += 0.6 * easeIn3(charge);
+        let ambient = t < 0.82 ? 0 : 0.24 * (1 - settle) + 0.03;
+        ambient += 0.35 * easeIn3(charge);
+        const lit = sparkOn.some(([a, b]) => t >= a && t < b);
+
+        D.render(
+          ctx,
+          cell,
+          (c, k) => {
+            if (t < 0.6) {
+              if (!lit) return;
+              const x = CX + (0.66 - 0.5) * H * 0.62;
+              const y = CY - H / 2;
+              c.fillStyle = "#fff";
+              c.fillRect(Math.floor(x * k), Math.floor(y * k), 2, 2);
+              c.filter = `blur(${2 + 2 * hash(frame)}px)`;
+              c.fillStyle = "rgba(255,255,255,0.35)";
+              c.fillRect(Math.floor(x * k) - 2, Math.floor(y * k) - 2, 5, 5);
+              c.filter = "none";
+              return;
+            }
+            D.bolt(c, k, { cx: CX, cy: CY, h: H * scale, energy, reveal: strike });
+          },
+          ambient,
+        );
+      }
+
+      const tl = gsap.timeline({ paused: true });
+      const clock = { t: 0 };
+      tl.to(clock, { t: 2.8, duration: 2.8, ease: "none", onUpdate: () => draw(clock.t) }, 0);
+      tl.fromTo("#spark-white", { opacity: 0 }, { opacity: 1, duration: 0.14, ease: "power2.in" }, 2.66);
+      draw(0);
+      window.__timelines["spark"] = tl;
+    })();
+  </script>
+</template>

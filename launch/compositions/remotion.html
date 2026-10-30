@@ -1,0 +1,184 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Departure Mono";
+      src: url("assets/fonts/DepartureMono-Regular.woff2") format("woff2");
+    }
+    #root {
+      position: absolute;
+      inset: 0;
+      background: #04060d;
+      overflow: hidden;
+      font-family: Inter, sans-serif;
+    }
+    #remotion-canvas {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+    }
+    #remotion-grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        repeating-linear-gradient(90deg, rgba(11, 42, 107, 0.5) 0 1px, transparent 1px 160px),
+        repeating-linear-gradient(0deg, rgba(11, 42, 107, 0.3) 0 1px, transparent 1px 135px);
+    }
+    #remotion-kicker {
+      position: absolute;
+      top: 64px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font: 28px/1 "Departure Mono", monospace;
+      letter-spacing: 0.06em;
+      color: #2f7bff;
+    }
+    #remotion-caption {
+      position: absolute;
+      top: 646px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 72px;
+      line-height: 84px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      color: #8fe3ff;
+    }
+    #remotion-caption span {
+      display: inline-block;
+    }
+    #remotion-caption .remotion-rival {
+      color: #f4fbff;
+    }
+    .remotion-row {
+      position: absolute;
+      left: 300px;
+      width: 1320px;
+      height: 40px;
+      font: 28px/40px "Departure Mono", monospace;
+      letter-spacing: 0.04em;
+    }
+    .remotion-name {
+      position: absolute;
+      left: 0;
+      width: 230px;
+    }
+    .remotion-track {
+      position: absolute;
+      left: 250px;
+      top: 9px;
+      width: 920px;
+      height: 22px;
+      background: rgba(11, 42, 107, 0.6);
+    }
+    .remotion-fill {
+      position: absolute;
+      inset: 0;
+      transform-origin: 0 50%;
+    }
+    .remotion-pct {
+      position: absolute;
+      right: 0;
+      width: 130px;
+      text-align: right;
+    }
+    #remotion-us {
+      top: 790px;
+      color: #f4fbff;
+    }
+    #remotion-us .remotion-fill {
+      background: #8fe3ff;
+    }
+    #remotion-them {
+      top: 858px;
+      color: #2f7bff;
+    }
+    #remotion-them .remotion-fill {
+      background: #2f7bff;
+    }
+  </style>
+  <div
+    id="root"
+    data-composition-id="remotion"
+    data-width="1920"
+    data-height="1080"
+  >
+    <canvas id="remotion-canvas" width="1920" height="1080"></canvas>
+    <div id="remotion-grid"></div>
+    <div id="remotion-kicker">MEAN OF 3 REMOTION LAUNCH VIDEOS</div>
+    <div id="remotion-caption"><span>faster</span> <span>than</span> <span class="remotion-rival">Remotion</span></div>
+    <div id="remotion-us" class="remotion-row">
+      <span class="remotion-name">strobe</span>
+      <div class="remotion-track"><div class="remotion-fill"></div></div>
+      <span class="remotion-pct">0%</span>
+    </div>
+    <div id="remotion-them" class="remotion-row">
+      <span class="remotion-name">remotion</span>
+      <div class="remotion-track"><div class="remotion-fill"></div></div>
+      <span class="remotion-pct">0%</span>
+    </div>
+  </div>
+  <script>
+    (() => {
+      const MULT = 3.9;
+      const RACE = 0.5;
+      const D = window.StrobeDither;
+      const ctx = document.getElementById("remotion-canvas").getContext("2d");
+      const easeOut = gsap.parseEase("expo.out");
+      const span = (t, a, b) => Math.max(0, Math.min(1, (t - a) / (b - a)));
+
+      const easeIn = gsap.parseEase("power2.in");
+
+      function draw(t) {
+        const p = span(t, 0.06, RACE);
+        const landed = easeOut(span(t, RACE, RACE + 0.5));
+        const value = 1 + (MULT - 1) * easeIn(p);
+        const cell = Math.round(44 - 30 * p - 7 * landed);
+        const energy = t < RACE ? 0.7 + 0.3 * p : 1.6 - 0.6 * landed;
+        D.render(ctx, cell, (c, k) => {
+          D.glowText(c, k, { text: `${value.toFixed(1)}×`, x: 960, y: 400, size: 430, font: "800", energy });
+        });
+      }
+
+      const tl = gsap.timeline({ paused: true });
+      const clock = { t: 0 };
+      tl.to(clock, { t: 1.8, duration: 1.8, ease: "none", onUpdate: () => draw(clock.t) }, 0);
+
+      tl.fromTo("#remotion-kicker", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.16, ease: "power4.out" }, 0);
+      tl.fromTo([".remotion-row"], { opacity: 0 }, { opacity: 1, duration: 0.08, ease: "none" }, 0);
+
+      const race = { us: 0, them: 0 };
+      tl.fromTo("#remotion-us .remotion-fill", { scaleX: 0 }, { scaleX: 1, duration: RACE - 0.06, ease: "none" }, 0.06);
+      tl.fromTo("#remotion-them .remotion-fill", { scaleX: 0 }, { scaleX: 1 / MULT, duration: RACE - 0.06, ease: "none" }, 0.06);
+      tl.fromTo(
+        race,
+        { us: 0, them: 0 },
+        {
+          us: 100,
+          them: 100 / MULT,
+          duration: RACE - 0.06,
+          ease: "none",
+          onUpdate: () => {
+            document.querySelector("#remotion-us .remotion-pct").textContent = `${Math.round(race.us)}%`;
+            document.querySelector("#remotion-them .remotion-pct").textContent = `${Math.round(race.them)}%`;
+          },
+        },
+        0.06,
+      );
+      tl.fromTo("#remotion-us .remotion-fill", { backgroundColor: "#8fe3ff" }, { backgroundColor: "#f4fbff", duration: 0.06, ease: "none" }, RACE);
+      tl.fromTo("#remotion-them", { opacity: 1 }, { opacity: 0.45, duration: 0.2, ease: "power2.out" }, RACE);
+
+      tl.fromTo(
+        "#remotion-caption span",
+        { opacity: 0, filter: "blur(6px)" },
+        { opacity: 1, filter: "blur(0px)", duration: 0.13, stagger: 0.067, ease: "power2.out" },
+        RACE + 0.12,
+      );
+
+      draw(0);
+      window.__timelines["remotion"] = tl;
+    })();
+  </script>
+</template>
