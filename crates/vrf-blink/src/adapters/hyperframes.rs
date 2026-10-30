@@ -31,6 +31,17 @@ const PREPARE_JS: &str = include_str!("../../js/hyperframes-prepare.mjs");
 const NATIVE_JS: &str = include_str!("../../js/hyperframes-native.mjs");
 
 const PROBE_SIZE: (i32, i32) = (640, 360);
+
+/// Whether a HyperFrames render rasterises in software. It does not: HyperFrames' own
+/// `chrome-headless-shell` rasterises on the GPU, and the pixels of Skia's GPU raster differ from
+/// its CPU raster in blended fills and glyph edges, so frames only equal HyperFrames' on the GPU.
+pub const CPU_RASTER: bool = false;
+
+/// The ranges a render is cut into when its plan names none: HyperFrames' worker count on the
+/// machines its references come from. HyperFrames renders each worker's range in a browser of
+/// its own, and Chromium keeps raster state of `will-change` layers from the frame where each
+/// first painted, so a frame's pixels depend on where its range began.
+pub const WORKERS: u64 = 8;
 const AUDIO_BIT_RATE: u32 = 192_000;
 const FRAMES_URL: &str = "/__hyperframes_video_frames/";
 
@@ -463,9 +474,10 @@ pub fn render(
         })
         .transpose()?;
     let render_started = Instant::now();
+    let plan = options.plan.ranged(options.plan.ranges.unwrap_or(WORKERS), count);
     let runs = render_runs(
         &config,
-        options.plan,
+        plan,
         first,
         out,
         warm,

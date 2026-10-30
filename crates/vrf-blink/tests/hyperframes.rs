@@ -520,7 +520,7 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
 }
 
 fn main() -> ExitCode {
-    vrf_blink::set_cpu_raster(true);
+    vrf_blink::set_cpu_raster(hyperframes::CPU_RASTER);
     support::run(&[
         (
             "hyperframes_frames_and_audio_match_hyperframes_own_render",

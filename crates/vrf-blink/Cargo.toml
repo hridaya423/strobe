@@ -66,3 +66,7 @@ harness = false
 [[test]]
 name = "webgl"
 harness = false
+
+[[test]]
+name = "hf_raster"
+harness = false

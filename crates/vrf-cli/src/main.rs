@@ -47,10 +47,12 @@ struct RenderArgs {
     codec: CodecArg,
     /// `reference` rasterises in software and gives the pixels of Remotion's own
     /// `chrome-headless-shell`, which the delivered-file fidelity rule needs. `fast` rasterises
-    /// on the GPU: up to 30% quicker on raster-bound pages, but blended fills and gradients land
-    /// a level off and `shape-rendering: crispEdges` is anti-aliased, so it fails the rule.
-    #[arg(long, value_enum, default_value = "reference")]
-    mode: ModeArg,
+    /// on the GPU, as HyperFrames' own `chrome-headless-shell` does: up to 30% quicker on
+    /// raster-bound pages, but blended fills and gradients land a level off Remotion's pixels
+    /// and `shape-rendering: crispEdges` is anti-aliased. Remotion projects default to
+    /// `reference` and HyperFrames projects to `fast`.
+    #[arg(long, value_enum)]
+    mode: Option<ModeArg>,
     /// The frames to render, as `first-last` (inclusive) or one frame.
     #[arg(long, value_parser = parse_frames)]
     frames: Option<RangeInclusive<u64>>,
@@ -185,6 +187,17 @@ fn is_remotion(project: &Path) -> bool {
 }
 
 impl RenderArgs {
+    fn is_remotion(&self) -> bool {
+        self.composition.is_some() || is_remotion(&self.project)
+    }
+
+    fn cpu_raster(&self) -> bool {
+        match self.mode {
+            Some(mode) => mode == ModeArg::Reference,
+            None => self.is_remotion() || hyperframes::CPU_RASTER,
+        }
+    }
+
     fn remembers_webgl(&self) -> bool {
         self.composition.as_deref().is_some_and(|composition| {
             remotion::known_webgl(&self.project, self.entry.as_deref(), composition)
@@ -208,7 +221,7 @@ impl RenderArgs {
             ..plan
         };
         let output = std::path::absolute(&self.output)?;
-        Ok(if self.composition.is_some() || is_remotion(&project) {
+        Ok(if self.is_remotion() {
             let options = Options {
                 project,
                 entry: self.entry.clone(),
@@ -454,7 +467,7 @@ fn main() -> ExitCode {
     let command_start = command_start();
     let outcome = match Cli::parse().command {
         Command::Render(args) => {
-            let cpu_raster = args.mode == ModeArg::Reference;
+            let cpu_raster = args.cpu_raster();
             vrf_blink::set_cpu_raster(cpu_raster);
             vrf_blink::set_software_webgl(
                 std::env::var_os(SOFTWARE_WEBGL).is_some() || args.remembers_webgl(),
@@ -484,5 +497,44 @@ fn main() -> ExitCode {
             eprintln!("error: {error:#}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_args(project: &Path, extra: &[&str]) -> RenderArgs {
+        let mut argv = vec!["vrf", "render", project.to_str().unwrap(), "-o", "out.mp4"];
+        argv.extend(extra);
+        match Cli::try_parse_from(argv).unwrap().command {
+            Command::Render(args) => args,
+            _ => unreachable!(),
+        }
+    }
+
+    fn project(name: &str, package: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vrf-cli-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(package) = package {
+            std::fs::write(dir.join("package.json"), package).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_hyperframes_project_rasterises_on_the_gpu_and_a_remotion_project_in_software() {
+        let hyperframes = project("hyperframes", None);
+        let remotion = project("remotion", Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#));
+        assert!(!render_args(&hyperframes, &[]).cpu_raster());
+        assert!(render_args(&remotion, &[]).cpu_raster());
+    }
+
+    #[test]
+    fn mode_overrides_the_framework_default() {
+        let hyperframes = project("hyperframes-mode", None);
+        assert!(render_args(&hyperframes, &["--mode", "reference"]).cpu_raster());
+        let remotion = project("remotion-mode", Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#));
+        assert!(!render_args(&remotion, &["--mode", "fast"]).cpu_raster());
     }
 }

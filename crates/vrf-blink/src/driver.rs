@@ -593,6 +593,12 @@ fn memory_budget() -> u64 {
 /// output can depend on the frames before it, and on their having been painted, not only seeked.
 /// Views must be ticking, since a repeat of the frame before a run would repeat another view's
 /// frame.
+///
+/// With `ranges` the render is cut into that many fixed ranges instead, each painted by a fresh
+/// view from its first frame with no lead-in, which is how HyperFrames' workers render. The
+/// compositor keeps raster state of `will-change` layers from the frame where each layer first
+/// painted, so a range's pixels depend on where its view started; fixed ranges make every
+/// output independent of the view count and equal to HyperFrames' with as many workers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     pub views: usize,
@@ -600,6 +606,8 @@ pub struct Plan {
     pub lead_in: u64,
     #[serde(default = "enabled")]
     pub turbo: bool,
+    #[serde(default)]
+    pub ranges: Option<u64>,
 }
 
 fn enabled() -> bool {
@@ -613,6 +621,7 @@ impl Plan {
             run: u64::MAX,
             lead_in: LEAD_IN,
             turbo: true,
+            ranges: None,
         }
     }
 
@@ -622,6 +631,18 @@ impl Plan {
             run: run.max(1),
             lead_in: LEAD_IN,
             turbo: true,
+            ranges: None,
+        }
+    }
+
+    /// Cuts `frames` into `ranges` equal ranges, the last one shorter, each for a fresh view.
+    pub fn ranged(self, ranges: u64, frames: u64) -> Plan {
+        let ranges = ranges.clamp(1, frames.max(1));
+        Plan {
+            run: frames.div_ceil(ranges).max(1),
+            lead_in: 0,
+            ranges: Some(ranges),
+            ..self
         }
     }
 
@@ -646,7 +667,7 @@ impl Plan {
     /// Cuts a long `run` to an even share of `frames`, but not below `MIN_RUN`, so a short
     /// render still spreads over its views.
     fn sized(mut self, frames: u64) -> Plan {
-        if self.run > MIN_RUN {
+        if self.ranges.is_none() && self.run > MIN_RUN {
             self.run = self
                 .run
                 .min(frames.div_ceil(self.views as u64).max(MIN_RUN));
@@ -658,7 +679,10 @@ impl Plan {
     fn fit(mut self, frame_bytes: u64) -> Plan {
         let buffers = (memory_budget() / frame_bytes) as usize;
         let allowed = buffers.saturating_sub(POOL_MARGIN).max(WINDOW);
-        if self.views > 1 {
+        if self.ranges.is_some() {
+            let fits = 1 + (allowed as u64).saturating_sub(1) / (self.run + 1);
+            self.views = self.views.min(fits as usize).max(1);
+        } else if self.views > 1 {
             let views = self.views as u64;
             self.run = self
                 .run
@@ -670,13 +694,15 @@ impl Plan {
 
 /// Hands out contiguous runs of frames. A claim takes about `remaining / (2 * views)` frames, at
 /// most `plan.run` (so long renders keep their long runs and little lead-in) and at least
-/// `plan.min_run()` (so the last claims are short and every view finishes together).
+/// `plan.min_run()` (so the last claims are short and every view finishes together). A plan with
+/// ranges hands out exactly `plan.run` frames each time.
 struct Claims {
     next: Mutex<u64>,
     count: u64,
     views: u64,
     max: u64,
     min: u64,
+    fixed: bool,
 }
 
 impl Claims {
@@ -684,6 +710,7 @@ impl Claims {
         Claims {
             next: Mutex::new(0),
             count,
+            fixed: plan.ranges.is_some(),
             views: plan.views as u64,
             max: plan.run,
             min: plan.min_run(),
@@ -691,7 +718,7 @@ impl Claims {
     }
 
     fn size(&self, remaining: u64) -> u64 {
-        if self.views == 1 {
+        if self.fixed || self.views == 1 {
             return remaining.min(self.max);
         }
         (remaining / (2 * self.views))
@@ -832,6 +859,11 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
         let Some((from, to)) = shared.claims.claim() else {
             break;
         };
+        if shared.plan.ranges.is_some() && last.is_some() {
+            handoff.wait()?;
+            std::mem::replace(&mut view, (shared.open)()?).close()?;
+            last = None;
+        }
         let start = shared.first + from;
         let resume = start
             .saturating_sub(shared.plan.lead_in)
@@ -1022,6 +1054,28 @@ mod tests {
         assert_eq!(sizes(Plan::new(4, 7), 96), [vec![7; 13], vec![5]].concat());
         assert_eq!(sizes(Plan::single(), 300), vec![300]);
         assert_eq!(sizes(Plan::new(4, 200).sized(300), 300), vec![80, 80, 80, 60]);
+    }
+
+    #[test]
+    fn ranges_are_fixed_whatever_the_view_count() {
+        for views in [1, 2, 8] {
+            let plan = Plan::new(views, 7).ranged(8, 1185);
+            assert_eq!((plan.run, plan.lead_in), (149, 0));
+            assert_eq!(sizes(plan, 1185), [vec![149; 7], vec![142]].concat());
+            assert_eq!(plan.sized(1185), plan);
+        }
+        assert_eq!(Plan::single().ranged(8, 5).run, 1);
+    }
+
+    #[test]
+    fn ranged_views_shrink_to_fit_the_memory_the_ranges_need() {
+        let plan = Plan::new(8, 7).ranged(8, 1185);
+        let frame_bytes = 1920 * 1080 * 3 / 2;
+        let fitted = plan.fit(frame_bytes);
+        assert_eq!(fitted.run, 149);
+        assert!(fitted.views >= 1 && fitted.views < 8);
+        let ahead = (fitted.views as u64 - 1) * fitted.run + fitted.views as u64;
+        assert!(ahead * frame_bytes <= memory_budget());
     }
 
     #[test]
