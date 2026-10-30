@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: "Departure Mono";
+        src: url("../assets/fonts/DepartureMono-Regular.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Geist";
+        font-weight: 100 900;
+        src: url("../assets/fonts/Geist.woff2") format("woff2");
+      }
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      svg {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="out"></div>
+    <script>
+      const dark = new URLSearchParams(location.search).get("theme") === "dark";
+      const T = dark
+        ? { ink: "#E6EDF3", muted: "#7D8590", soft: "#8B949E", node: "#161B22", stroke: "#30363D", zone: "rgba(230,237,243,0.025)", zoneStroke: "rgba(230,237,243,0.12)", paper: "#0D1117" }
+        : { ink: "#0B1220", muted: "#57606A", soft: "#57606A", node: "#FFFFFF", stroke: "#D0D7DE", zone: "rgba(11,18,32,0.025)", zoneStroke: "rgba(11,18,32,0.14)", paper: "#FFFFFF" };
+      const ACC = "#2F7BFF";
+      const NW = 240, NH = 80;
+      const TOP = 84, BOT = 316;
+
+      const node = (x, y, name, sub, focal) => `
+        <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="6" fill="${T.paper}"/>
+        <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="6" fill="${focal ? (dark ? "rgba(47,123,255,0.14)" : "rgba(47,123,255,0.08)") : T.node}" stroke="${focal ? ACC : T.stroke}" stroke-width="${focal ? 1.6 : 1.2}"/>
+        <text x="${x + 20}" y="${y + 34}" font-family="Geist" font-weight="600" font-size="21" fill="${T.ink}">${name}</text>
+        <text x="${x + 20}" y="${y + 60}" font-family="Departure Mono" font-size="15" fill="${T.muted}">${sub}</text>`;
+
+      const arrow = (x1, x2, y, color, label) => {
+        const line = `<line x1="${x1}" y1="${y}" x2="${x2 - 2}" y2="${y}" stroke="${color}" stroke-width="${color === ACC ? 2 : 1.4}" marker-end="url(#${color === ACC ? "a2" : "a1"})"/>`;
+        if (!label) return line;
+        const w = label.length * 9.4 + 16, cx = (x1 + x2) / 2;
+        return line + `<rect x="${cx - w / 2}" y="${y - 34}" width="${w}" height="20" fill="${T.paper}"/>
+          <text x="${cx}" y="${y - 19}" text-anchor="middle" font-family="Departure Mono" font-size="14" fill="${color === ACC ? ACC : T.soft}" letter-spacing="1">${label}</text>`;
+      };
+
+      const zone = (x, y, w, h, label, color, dashed) => {
+        const lw = label.length * 10.4 + 24;
+        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${dashed ? "none" : T.zone}" stroke="${color}" stroke-width="${dashed ? 1.4 : 1}" ${dashed ? 'stroke-dasharray="6,5"' : ""}/>
+          <rect x="${x + 16}" y="${y - 10}" width="${lw}" height="20" fill="${T.paper}"/>
+          <text x="${x + 26}" y="${y + 5}" font-family="Departure Mono" font-size="14" fill="${dashed ? ACC : T.soft}" letter-spacing="1.5">${label}</text>`;
+      };
+
+      const X = [48, 348, 648, 948, 1248];
+      const W = 1536, H = 468;
+      const cy1 = TOP + NH / 2, cy2 = BOT + NH / 2;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="arch-t arch-d">
+        <title id="arch-t">How a frame reaches the file</title>
+        <desc id="arch-d">Remotion and HyperFrames capture each frame as a JPEG or PNG and pipe it to FFmpeg. Strobe sends each painted GPU surface through a compute convert straight into the hardware encoder.</desc>
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.muted}"/></marker>
+          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${ACC}"/></marker>
+        </defs>
+        <rect width="${W}" height="${H}" rx="12" fill="${T.paper}"/>
+        ${zone(16, TOP - 44, W - 32, NH + 72, "REMOTION, HYPERFRAMES", T.zoneStroke)}
+        ${zone(16, BOT - 44, W - 32, NH + 104, "STROBE", T.zoneStroke)}
+        ${zone(X[1] - 20, BOT - 20, X[3] + NW - X[1] + 40, NH + 48, "STAYS ON THE GPU", ACC, true)}
+        ${arrow(X[0] + NW, X[1], cy1, T.muted, "")}
+        ${arrow(X[1] + NW, X[2], cy1, T.muted, "")}
+        ${arrow(X[2] + NW, X[4], cy1, T.muted, "")}
+        ${arrow(X[0] + NW, X[1], cy2, ACC, "")}
+        ${arrow(X[1] + NW, X[2], cy2, ACC, "")}
+        ${arrow(X[2] + NW, X[3], cy2, ACC, "")}
+        ${arrow(X[3] + NW, X[4], cy2, T.muted, "")}
+        ${node(X[0], TOP, "Headless Chrome", "screenshots a frame")}
+        ${node(X[1], TOP, "JPEG or PNG", "piped to FFmpeg")}
+        ${node(X[2], TOP, "FFmpeg", "decodes, then encodes")}
+        ${node(X[4], TOP, "MP4", "with AAC audio")}
+        ${node(X[0], BOT, "CEF 156 view", "one begin frame")}
+        ${node(X[1], BOT, "IOSurface", "D3D12 on Windows")}
+        ${node(X[2], BOT, "wgpu convert", "BGRA to NV12", true)}
+        ${node(X[3], BOT, "VideoToolbox", "NVENC on Windows")}
+        ${node(X[4], BOT, "MP4", "with AAC audio")}
+      </svg>`;
+      document.fonts.load('600 21px "Geist"').then(() => document.fonts.load('15px "Departure Mono"')).then(() => {
+        document.getElementById("out").innerHTML = svg;
+        document.title = "ready";
+      });
+    </script>
+  </body>
+</html>

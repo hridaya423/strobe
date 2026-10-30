@@ -1,0 +1,184 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: "Departure Mono";
+        src: url("../assets/fonts/DepartureMono-Regular.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Instrument Serif";
+        font-style: italic;
+        src: url("../assets/fonts/InstrumentSerif-Italic.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Geist";
+        font-weight: 100 900;
+        src: url("../assets/fonts/Geist.woff2") format("woff2");
+      }
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <script src="../assets/bluenoise.js"></script>
+    <script src="../js/engine.js"></script>
+    <script>
+      const { W, H, HEX, dither, light, boltPath } = SX;
+      const art = new URLSearchParams(location.search).get("art");
+      const RACE = [
+        ["github-unwrapped", "Remotion", 44.28, 8.49],
+        ["transitions-video", "Remotion", 13.79, 3.01],
+        ["spacex-launch", "HyperFrames", 15.9, 4.46],
+        ["figma-launch", "HyperFrames", 30.69, 8.71],
+        ["heygen-stripe", "HyperFrames", 23.02, 7.63],
+        ["hyperframes-launch", "HyperFrames", 26.18, 9.25],
+        ["4-0-trailer", "Remotion", 38.94, 16.28],
+      ];
+
+      function wordmark(ctx, size, cx, y, ink, bolt) {
+        ctx.font = `italic 400 ${size}px "Instrument Serif"`;
+        ctx.letterSpacing = `${-0.01 * size}px`;
+        ctx.textBaseline = "alphabetic";
+        const width = ctx.measureText("strobe").width;
+        const x0 = cx - width / 2;
+        const ox = x0 + ctx.measureText("str").width + ctx.measureText("o").width * 0.5;
+        const oh = ctx.measureText("o").actualBoundingBoxAscent;
+        ctx.fillStyle = ink;
+        ctx.fillText("strobe", x0, y);
+        ctx.letterSpacing = "0px";
+        ctx.save();
+        ctx.globalCompositeOperation = "destination-out";
+        boltPath(ctx, ox, y - oh * 0.5, oh * 1.55);
+        ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = bolt;
+        boltPath(ctx, ox, y - oh * 0.5, oh * 1.05);
+        ctx.fill();
+        return { ox, oy: y - oh * 0.5, oh, width };
+      }
+
+      function banner(c) {
+        c.width = W;
+        c.height = H;
+        const ctx = c.getContext("2d");
+        const Y = 610;
+        const m = document.createElement("canvas").getContext("2d");
+        m.font = `italic 400 330px "Instrument Serif"`;
+        m.letterSpacing = "-3.3px";
+        const ow = m.measureText("strobe").width;
+        const ox = W / 2 - ow / 2 + m.measureText("str").width + m.measureText("o").width * 0.5;
+        const oh = m.measureText("o").actualBoundingBoxAscent;
+        dither(ctx, 3, (f, k) => {
+          f.globalCompositeOperation = "lighter";
+          f.filter = `blur(${40}px)`;
+          light(f, 0.12);
+          boltPath(f, ox * k, (Y - oh * 0.5) * k, oh * 3.2 * k);
+          f.fill();
+          f.filter = `blur(${26}px)`;
+          light(f, 0.012);
+          f.fillRect(0, (Y - 230) * k, W * k, 300 * k);
+          f.filter = "none";
+        });
+        ctx.strokeStyle = "rgba(47,123,255,0.10)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let x = 0; x <= W; x += 120) {
+          ctx.moveTo(x + 0.5, 0);
+          ctx.lineTo(x + 0.5, H);
+        }
+        for (let y = 0; y <= H; y += 120) {
+          ctx.moveTo(0, y + 0.5);
+          ctx.lineTo(W, y + 0.5);
+        }
+        ctx.stroke();
+        const ink = document.createElement("canvas");
+        ink.width = W;
+        ink.height = H;
+        wordmark(ink.getContext("2d"), 330, W / 2, Y, HEX.core, HEX.electric);
+        ctx.drawImage(ink, 0, 0);
+        ctx.font = '30px "Departure Mono"';
+        ctx.textAlign = "center";
+        ctx.fillStyle = HEX.ice;
+        ctx.fillText("HTML to video, at the speed of light.", W / 2, Y + 110);
+        ctx.font = '22px "Departure Mono"';
+        ctx.fillStyle = HEX.electric;
+        ctx.textAlign = "left";
+        ctx.fillText("STROBE / RENDER ENGINE", 120, 300);
+        ctx.textAlign = "right";
+        ctx.fillText("REMOTION + HYPERFRAMES", W - 120, 300);
+      }
+
+      function chart(c, dark) {
+        const ink = dark ? "#E6EDF3" : "#0B1220";
+        const dim = dark ? "#7D8590" : "#57606A";
+        const track = dark ? "rgba(125,133,144,0.18)" : "rgba(87,96,106,0.12)";
+        const rival = dark ? "#3D4A5C" : "#C9D1D9";
+        const fast = HEX.electric;
+        const rowH = 92, top = 70, Wc = 1600, Hc = top + RACE.length * rowH + 30;
+        c.width = Wc;
+        c.height = Hc;
+        const ctx = c.getContext("2d");
+        const L = 0, nameW = 360, barX = L + nameW, barW = 860, max = Math.max(...RACE.map((r) => r[2]));
+        ctx.font = '20px "Departure Mono"';
+        ctx.fillStyle = dim;
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText("LAUNCH VIDEO", L, 30);
+        ctx.fillText("WALL TIME, SECONDS", barX, 30);
+        ctx.fillStyle = rival;
+        ctx.fillRect(barX + 300, 14, 18, 18);
+        ctx.fillStyle = dim;
+        ctx.fillText("REMOTION OR HYPERFRAMES", barX + 328, 30);
+        ctx.fillStyle = fast;
+        ctx.fillRect(barX + 640, 14, 18, 18);
+        ctx.fillStyle = dim;
+        ctx.fillText("STROBE", barX + 668, 30);
+        ctx.textAlign = "right";
+        ctx.fillText("SPEEDUP", Wc, 30);
+        ctx.textAlign = "left";
+        RACE.forEach(([name, who, slow, quick], i) => {
+          const y = top + i * rowH;
+          ctx.font = '26px "Departure Mono"';
+          ctx.fillStyle = ink;
+          ctx.fillText(name, L, y + 22);
+          ctx.font = '20px "Departure Mono"';
+          ctx.fillStyle = dim;
+          ctx.fillText(`vs ${who}`, L, y + 52);
+          ctx.fillStyle = track;
+          ctx.fillRect(barX, y, barW, 24);
+          ctx.fillStyle = rival;
+          ctx.fillRect(barX, y, (barW * slow) / max, 24);
+          ctx.fillStyle = fast;
+          ctx.fillRect(barX, y + 32, (barW * quick) / max, 24);
+          ctx.font = '18px "Departure Mono"';
+          ctx.fillStyle = dim;
+          ctx.fillText(`${slow.toFixed(1)} s`, barX + (barW * slow) / max + 12, y + 19);
+          ctx.fillStyle = ink;
+          ctx.fillText(`${quick.toFixed(1)} s`, barX + (barW * quick) / max + 12, y + 51);
+          ctx.font = '600 52px "Geist"';
+          ctx.textAlign = "right";
+          ctx.fillStyle = i === 0 ? fast : ink;
+          ctx.fillText(`${(slow / quick).toFixed(1)}×`, Wc, y + 50);
+          ctx.textAlign = "left";
+        });
+      }
+
+      document.fonts.load('italic 330px "Instrument Serif"').then(() =>
+        Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"')]).then(() => {
+          const c = document.getElementById("c");
+          if (art === "banner") banner(c);
+          else chart(c, art === "chart-dark");
+          document.title = "ready";
+        }),
+      );
+    </script>
+  </body>
+</html>
