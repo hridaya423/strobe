@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use vrf_blink::adapters::remotion::VideoDecoder;
 use vrf_blink::adapters::{hyperframes, remotion};
 use vrf_blink::driver;
 use vrf_blink::{Mode, Ui, calibration};
@@ -69,6 +70,10 @@ enum Command {
         /// Leave the audio out of the file.
         #[arg(long)]
         no_audio: bool,
+        /// What decodes <OffthreadVideo>: `native` (VideoToolbox, falling back to Remotion's frame
+        /// server for clips it cannot reproduce exactly) or `remotion` (its frame server for all).
+        #[arg(long, value_enum, default_value = "native")]
+        video: VideoArg,
         /// Print a JSON report on stdout instead of the summary line.
         #[arg(long)]
         json: bool,
@@ -79,6 +84,12 @@ enum Command {
 enum ModeArg {
     Fast,
     Reference,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum VideoArg {
+    Native,
+    Remotion,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -164,6 +175,7 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
         run,
         lead_in,
         no_audio,
+        video,
         json,
     } = cli.command;
     let mode = if offline { Mode::Offline } else { Mode::Online };
@@ -178,6 +190,10 @@ fn execute(ui: Ui, cli: Cli) -> Result<Rendered> {
             timeout: Duration::from_millis(timeout),
             plan,
             audio: !no_audio,
+            video: match video {
+                VideoArg::Native => VideoDecoder::Native,
+                VideoArg::Remotion => VideoDecoder::Remotion,
+            },
         };
         let report = remotion::render(&ui, &options, frames, codec.into(), &output)?;
         let line = summary(

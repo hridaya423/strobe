@@ -131,6 +131,13 @@ impl Project {
             .any(|origin| url.starts_with(origin.as_str()))
     }
 
+    /// The file behind a `vrf://project/` URL, if the URL names a file in the project.
+    pub(crate) fn file_for(&self, url: &str) -> Option<PathBuf> {
+        url_path(url)
+            .and_then(|path| safe_join(&self.0.root, &path))
+            .filter(|path| path.is_file())
+    }
+
     /// The `vrf://project/` URL of a file in the project.
     pub fn url(&self, path: &str) -> String {
         format!("{ORIGIN}/{path}")

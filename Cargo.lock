@@ -1954,10 +1954,12 @@ name = "vrf-blink"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cc",
  "cef",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
+ "objc2-core-video",
  "objc2-io-surface",
  "percent-encoding",
  "ring",

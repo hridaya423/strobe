@@ -12,7 +12,7 @@ use vrf::gpu::Gpu;
 use vrf_bench::corpus::bench_dir;
 use vrf_bench::engines::{headless_shell, node_bin};
 use vrf_bench::score::{self, Sampling};
-use vrf_blink::adapters::remotion::{self, Options, Page};
+use vrf_blink::adapters::remotion::{self, Options, Page, VideoDecoder};
 use vrf_blink::driver::Plan;
 use vrf_blink::{Mode, Project, Ui};
 use vrf_encode::Codec;
@@ -56,6 +56,7 @@ fn options(project: &Path, composition: &str) -> Options {
         timeout: Duration::from_millis(2500),
         plan: Plan::single(),
         audio: true,
+        video: VideoDecoder::Native,
     }
 }
 

@@ -9,6 +9,7 @@ globalThis.process.env.NODE_ENV = 'production';
     initialFrame: 0,
     proxyPort: 0,
     serveUrl: null,
+    nativeVideo: false,
     audioEnabled: true,
     videoEnabled: true,
     timeoutInMilliseconds: 30000,
@@ -24,15 +25,25 @@ globalThis.process.env.NODE_ENV = 'production';
   const nativeNow = performance.now.bind(performance);
   const PUMP_MS = 4;
 
-  if (config.serveUrl) {
+  if (config.serveUrl || config.nativeVideo) {
     const nativeFetch = globalThis.fetch.bind(globalThis);
-    const proxy = `http://localhost:${config.proxyPort}/proxy?`;
-    globalThis.fetch = (input, init) => {
-      if (typeof input === 'string' && input.startsWith(proxy)) {
+    const proxy = /^http:\/\/localhost:\d+\/proxy\?/;
+    globalThis.fetch = async (input, init) => {
+      if (typeof input === 'string' && proxy.test(input)) {
         const url = new URL(input);
+        const time = Math.max(0, Number(url.searchParams.get('time')));
+        url.searchParams.set('time', String(time));
+        let { serveUrl } = config;
+        if (config.nativeVideo) {
+          const response = await globalThis.__vrf.video.request(url.searchParams.get('src'), time);
+          if (response) return response;
+          const fallback = globalThis.__vrf.video.fallback();
+          if (!fallback) throw new Error(`cannot decode ${url.searchParams.get('src')}: ${globalThis.__vrf.video.refusal()}`);
+          url.port = String(fallback.port);
+          serveUrl = fallback.serveUrl;
+        }
         const src = url.searchParams.get('src');
-        if (src?.startsWith(`${location.origin}/`)) url.searchParams.set('src', config.serveUrl + src.slice(location.origin.length));
-        url.searchParams.set('time', String(Math.max(0, Number(url.searchParams.get('time')))));
+        if (src?.startsWith(`${location.origin}/`)) url.searchParams.set('src', serveUrl + src.slice(location.origin.length));
         input = url.toString();
       }
       return nativeFetch(input, init);
@@ -214,6 +225,7 @@ globalThis.process.env.NODE_ENV = 'production';
     await ready;
     await document.fonts.ready;
     await Promise.all(pendingImages().map((img) => img.decode().catch(() => {})));
+    globalThis.__vrf.video?.present();
     document.body.style.background = config.captureMode === 'png' ? 'transparent' : 'black';
     return { frame, assets: collectAssets() };
   };

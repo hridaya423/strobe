@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use cef::{args::Args, rc::Rc as _, *};
 
+use crate::video::VideoRenderHandler;
 use crate::{bundle, mac, scheme};
 
 const FLAGS: [&str; 14] = [
@@ -106,6 +107,10 @@ wrap_app! {
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
             Some(BlinkBrowserProcessHandler::new(self.wake.clone()))
+        }
+
+        fn render_process_handler(&self) -> Option<RenderProcessHandler> {
+            Some(VideoRenderHandler::new())
         }
     }
 }

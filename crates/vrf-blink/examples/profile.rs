@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use vrf_blink::adapters::remotion::{self, Offthread, Options, Page};
+use vrf_blink::adapters::remotion::{self, Offthread, Options, Page, VideoDecoder};
 use vrf_blink::driver::{Capture, Config, Pipeline, Plan};
 use vrf_blink::{Mode, Project, Ui};
 use vrf_encode::Codec;
@@ -126,6 +126,7 @@ fn run(ui: Ui) -> Result<()> {
         timeout: Duration::from_secs(30),
         plan: Plan::single(),
         audio: false,
+        video: VideoDecoder::Remotion,
     };
     let step = Instant::now();
     let bundle = remotion::bundle(&project, None)?;
