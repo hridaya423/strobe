@@ -19,7 +19,7 @@ use vrf_encode::turbo::{TurboEncoder, TurboOptions};
 use vrf_encode::videotoolbox::pool::{PixelFormat, PixelPool, PoolBuffer};
 use vrf_encode::videotoolbox::{self, VideoToolboxEncoder};
 use vrf_encode::x264;
-use vrf_encode::{Codec, Encoder, EncoderConfig, EncoderFrame, Rational};
+use vrf_encode::{Codec, ColourSpace, Encoder, EncoderConfig, EncoderFrame, Rational};
 
 use crate::skip::Skip;
 use crate::{Paint, View};
@@ -44,6 +44,7 @@ pub struct Config {
     pub window: usize,
     pub turbo: bool,
     pub skip: Option<Skip>,
+    pub colour: ColourSpace,
 }
 
 impl Config {
@@ -63,6 +64,21 @@ impl Config {
             window: WINDOW,
             turbo: codec == Codec::H264 && x264::available().is_ok(),
             skip: None,
+            colour: ColourSpace::BT709,
+        }
+    }
+
+    fn encoder_config(&self) -> EncoderConfig {
+        let mut config = EncoderConfig::new(self.codec, self.width, self.height, self.frame_rate);
+        config.colour = self.colour;
+        config
+    }
+
+    fn chroma(&self) -> Chroma {
+        if self.colour == ColourSpace::BT709 {
+            Chroma::Swscale
+        } else {
+            Chroma::Exact(self.colour)
         }
     }
 }
@@ -108,7 +124,7 @@ impl Summary {
 
 const WARM_POOLS: usize = 2;
 
-type PoolKey = (u32, u32, PixelFormat, usize);
+type PoolKey = (u32, u32, PixelFormat, usize, ColourSpace);
 
 struct PoolSlot {
     key: PoolKey,
@@ -140,10 +156,10 @@ impl Warm {
     }
 
     /// Allocates the pixel pool for frames of `width` x `height` if no render has yet.
-    pub fn prepare(&mut self, width: u32, height: u32) -> Result<()> {
-        let config = Config::new(width, height, Rational::new(30, 1), Codec::H264, 0);
-        let encoder_config = EncoderConfig::new(config.codec, width, height, config.frame_rate);
-        let key = pool_key(&config, &encoder_config, config.turbo_options())?;
+    pub fn prepare(&mut self, width: u32, height: u32, colour: ColourSpace) -> Result<()> {
+        let mut config = Config::new(width, height, Rational::new(30, 1), Codec::H264, 0);
+        config.colour = colour;
+        let key = pool_key(&config, &config.encoder_config(), config.turbo_options())?;
         self.slot(key).map(|_| ())
     }
 
@@ -154,10 +170,16 @@ impl Warm {
                 if self.pools.len() >= WARM_POOLS {
                     self.pools.remove(0);
                 }
-                let (width, height, format, size) = key;
+                let (width, height, format, size, colour) = key;
                 self.pools.push(PoolSlot {
                     key,
-                    pool: PixelPool::with_size(width as usize, height as usize, format, size)?,
+                    pool: PixelPool::with_colour(
+                        width as usize,
+                        height as usize,
+                        format,
+                        size,
+                        colour,
+                    )?,
                     targets: PoolTargets::default(),
                 });
                 self.pools.len() - 1
@@ -173,6 +195,7 @@ struct Converting {
     targets: PoolTargets,
     imports: HashMap<u32, Source>,
     pool: PixelPool,
+    chroma: Chroma,
 }
 
 impl Converting {
@@ -198,7 +221,7 @@ impl Converting {
                 &self.imports[&id],
                 target,
                 paint.visible,
-                Chroma::Swscale,
+                self.chroma,
             );
         }
         let submission = self.gpu.queue.submit([commands.finish()]);
@@ -224,6 +247,7 @@ fn pool_key(
         config.height,
         videotoolbox::pixel_format(encoder_config),
         config.window + POOL_MARGIN + lane_buffers,
+        config.colour,
     ))
 }
 
@@ -313,6 +337,7 @@ pub struct LaneSpec {
     pool: PixelPool,
     width: u32,
     height: u32,
+    chroma: Chroma,
 }
 
 impl LaneSpec {
@@ -326,6 +351,7 @@ impl LaneSpec {
                 targets: PoolTargets::default(),
                 imports: HashMap::new(),
                 pool: self.pool,
+                chroma: self.chroma,
             },
             producer: self.producer,
             width: self.width,
@@ -385,6 +411,7 @@ impl Lane {
             pool: self.converting.pool.clone(),
             width: self.width,
             height: self.height,
+            chroma: self.converting.chroma,
         }
     }
 }
@@ -414,8 +441,7 @@ impl DerefMut for Pipeline<'_> {
 
 impl<'w> Pipeline<'w> {
     pub fn new(config: &Config, out: &Path, warm: &'w mut Warm) -> Result<Pipeline<'w>> {
-        let encoder_config =
-            EncoderConfig::new(config.codec, config.width, config.height, config.frame_rate);
+        let encoder_config = config.encoder_config();
         let turbo = config.turbo_options();
         let key = pool_key(config, &encoder_config, turbo)?;
         let gpu = warm.gpu.clone();
@@ -439,6 +465,7 @@ impl<'w> Pipeline<'w> {
                 targets,
                 imports: HashMap::new(),
                 pool: pool.clone(),
+                chroma: config.chroma(),
             },
             producer,
             width: config.width,
@@ -611,7 +638,9 @@ impl Plan {
     /// render still spreads over its views.
     fn sized(mut self, frames: u64) -> Plan {
         if self.run > MIN_RUN {
-            self.run = self.run.min(frames.div_ceil(self.views as u64).max(MIN_RUN));
+            self.run = self
+                .run
+                .min(frames.div_ceil(self.views as u64).max(MIN_RUN));
         }
         self
     }

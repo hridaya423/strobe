@@ -11,6 +11,7 @@ use gpu_support::{NV12, P010, Surface};
 use vrf::colour::{self, Chroma, Format, Rect};
 use vrf::gpu::Gpu;
 use vrf::gpu::convert::Converter;
+use vrf_encode::{ColourSpace, Matrix, Range};
 
 const FORMATS: [Format; 2] = [Format::Nv12, Format::P010];
 
@@ -382,6 +383,221 @@ fn spec_gpu_matches_oracle() {
                 );
             }
         }
+    }
+}
+
+const SPACES: [ColourSpace; 4] = [
+    ColourSpace {
+        matrix: Matrix::Bt601,
+        range: Range::Limited,
+    },
+    ColourSpace {
+        matrix: Matrix::Bt601,
+        range: Range::Full,
+    },
+    ColourSpace {
+        matrix: Matrix::Bt709,
+        range: Range::Limited,
+    },
+    ColourSpace {
+        matrix: Matrix::Bt709,
+        range: Range::Full,
+    },
+];
+
+#[test]
+fn exact_gpu_matches_oracle() {
+    let gpu = Gpu::new().unwrap();
+    for image in [noise(), gradient(), extremes(), all_colours()] {
+        for space in SPACES {
+            for (x, y) in [(0, 0), (1, 1)] {
+                let rect = Rect {
+                    x,
+                    y,
+                    width: image.width - 2,
+                    height: image.height - 2,
+                };
+                let chroma = Chroma::Exact(space);
+                let want = colour::convert(&image.rgba, image.width, rect, chroma, Format::Nv12);
+                let got = gpu_convert(&gpu, &image, rect, chroma, Format::Nv12, false);
+                assert_same(
+                    &format!("{} {space:?} crop {x},{y}", image.name),
+                    &got,
+                    &want,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_planes_are_the_nearest_integers_of_the_definition() {
+    let mut rng = SplitMix(7);
+    let (blocks_x, blocks_y) = (512u32, 512u32);
+    let (width, height) = (blocks_x * 2, blocks_y * 2);
+    let mut rgba = vec![255u8; (width * height * 4) as usize];
+    let mut colours = Vec::new();
+    for by in 0..blocks_y {
+        for bx in 0..blocks_x {
+            let v = rng.next().to_le_bytes();
+            colours.push([v[0], v[1], v[2]]);
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let i = (((by * 2 + dy) * width + bx * 2 + dx) * 4) as usize;
+                rgba[i..i + 3].copy_from_slice(&v[..3]);
+            }
+        }
+    }
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    for space in SPACES {
+        let out = colour::convert(&rgba, width, rect, Chroma::Exact(space), Format::Nv12);
+        let (luma, chroma) = out.split_at((width * height) as usize);
+        let (kr, kb) = match space.matrix {
+            Matrix::Bt601 => (0.299, 0.114),
+            Matrix::Bt709 => (0.2126, 0.0722),
+        };
+        let (y_scale, y_off, c_scale) = match space.range {
+            Range::Limited => (219.0, 16.0, 224.0),
+            Range::Full => (255.0, 0.0, 255.0),
+        };
+        for (n, c) in colours.iter().enumerate() {
+            let (r, g, b) = (f64::from(c[0]), f64::from(c[1]), f64::from(c[2]));
+            let y = (kr * r + (1.0 - kr - kb) * g + kb * b) / 255.0;
+            let cb = (b / 255.0 - y) / (2.0 * (1.0 - kb));
+            let cr = (r / 255.0 - y) / (2.0 * (1.0 - kr));
+            let (bx, by) = (n as u32 % blocks_x, n as u32 / blocks_x);
+            let got = [
+                luma[(by * 2 * width + bx * 2) as usize],
+                chroma[((by * blocks_x + bx) * 2) as usize],
+                chroma[((by * blocks_x + bx) * 2 + 1) as usize],
+            ];
+            let want = [
+                y_off + y_scale * y,
+                (128.0 + c_scale * cb).min(255.0),
+                (128.0 + c_scale * cr).min(255.0),
+            ];
+            for (got, want) in got.into_iter().zip(want) {
+                assert!(
+                    (f64::from(got) - want).abs() <= 0.5 + 1e-6,
+                    "{space:?} {c:?}: got {got} want {want}"
+                );
+            }
+        }
+    }
+}
+
+fn ffmpeg_decode(planes: &[u8], width: u32, height: u32, space: ColourSpace) -> Vec<u8> {
+    let tag = format!("decode-{:?}-{:?}", space.matrix, space.range);
+    let input = tmp(&format!("{tag}.nv12"));
+    let output = tmp(&format!("{tag}.rgb"));
+    std::fs::write(&input.0, planes).unwrap();
+    let matrix = match space.matrix {
+        Matrix::Bt601 => "bt601",
+        Matrix::Bt709 => "bt709",
+    };
+    let range = match space.range {
+        Range::Limited => "tv",
+        Range::Full => "pc",
+    };
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo"])
+        .args(["-pix_fmt", "nv12", "-s", &format!("{width}x{height}"), "-i"])
+        .arg(&input.0)
+        .args([
+            "-vf",
+            &format!(
+                "scale=in_color_matrix={matrix}:in_range={range}:flags=accurate_rnd+full_chroma_int+bitexact,format=rgb24"
+            ),
+            "-f",
+            "rawvideo",
+        ])
+        .arg(&output.0)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::read(&output.0).unwrap()
+}
+
+#[test]
+fn a_blank_frame_decodes_to_its_colour_when_full_range_bt601() {
+    let space = ColourSpace {
+        matrix: Matrix::Bt601,
+        range: Range::Full,
+    };
+    let rgb = [243u8, 239, 230];
+    let rgba: Vec<u8> = (0..64 * 64)
+        .flat_map(|_| [rgb[0], rgb[1], rgb[2], 255])
+        .collect();
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+    };
+    let planes = colour::convert(&rgba, 64, rect, Chroma::Exact(space), Format::Nv12);
+    assert_eq!([planes[0], planes[4096], planes[4097]], [239, 123, 131]);
+    let decoded = ffmpeg_decode(&planes, 64, 64, space);
+    assert!(decoded.chunks_exact(3).all(|px| px == rgb));
+}
+
+#[test]
+fn full_range_roundtrips_within_one_level_and_beats_limited() {
+    const BLOCK: u32 = 16;
+    let size = 2048u32;
+    let mut rgba = vec![255u8; (size * size * 4) as usize];
+    let mut rng = SplitMix(11);
+    let per_row = size / BLOCK;
+    for block in 0..per_row * per_row {
+        let v = rng.next().to_le_bytes();
+        let (bx, by) = (block % per_row, block / per_row);
+        for dy in 0..BLOCK {
+            for dx in 0..BLOCK {
+                let i = (((by * BLOCK + dy) * size + bx * BLOCK + dx) * 4) as usize;
+                rgba[i..i + 3].copy_from_slice(&v[..3]);
+            }
+        }
+    }
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: size,
+        height: size,
+    };
+    let mean_error = |space: ColourSpace| {
+        let planes = colour::convert(&rgba, size, rect, Chroma::Exact(space), Format::Nv12);
+        let decoded = ffmpeg_decode(&planes, size, size, space);
+        let (mut sum, mut count, mut worst) = (0u64, 0u64, 0i32);
+        for y in 0..size {
+            for x in 0..size {
+                if !(4..12).contains(&(x % BLOCK)) || !(4..12).contains(&(y % BLOCK)) {
+                    continue;
+                }
+                let i = (y * size + x) as usize;
+                for c in 0..3 {
+                    let e = (i32::from(rgba[i * 4 + c]) - i32::from(decoded[i * 3 + c])).abs();
+                    sum += e as u64;
+                    count += 1;
+                    worst = worst.max(e);
+                }
+            }
+        }
+        (sum as f64 / count as f64, worst)
+    };
+    for matrix in [Matrix::Bt601, Matrix::Bt709] {
+        let (limited, _) = mean_error(ColourSpace {
+            matrix,
+            range: Range::Limited,
+        });
+        let (full, worst) = mean_error(ColourSpace {
+            matrix,
+            range: Range::Full,
+        });
+        assert!(worst <= 1, "{matrix:?} full range worst error {worst}");
+        assert!(full < limited, "{matrix:?} full {full} limited {limited}");
     }
 }
 

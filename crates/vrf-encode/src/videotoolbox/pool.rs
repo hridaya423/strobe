@@ -9,15 +9,19 @@ use objc2_core_video::{
     kCVImageBufferChromaLocation_Left, kCVImageBufferChromaLocationBottomFieldKey,
     kCVImageBufferChromaLocationTopFieldKey, kCVImageBufferColorPrimaries_ITU_R_709_2,
     kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunction_ITU_R_709_2,
-    kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
-    kCVImageBufferYCbCrMatrixKey, kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey,
-    kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
-    kCVPixelBufferPoolAllocationThresholdKey, kCVPixelBufferPoolMinimumBufferCountKey,
-    kCVPixelBufferWidthKey, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+    kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrixKey, kCVPixelBufferHeightKey,
+    kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
+    kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferPoolAllocationThresholdKey,
+    kCVPixelBufferPoolMinimumBufferCountKey, kCVPixelBufferWidthKey,
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, kCVReturnSuccess,
     kCVReturnWouldExceedAllocationThreshold,
 };
 use objc2_io_surface::IOSurfaceRef;
+
+use crate::{ColourSpace, Matrix, Range};
 
 pub const POOL_SIZE: usize = 48;
 
@@ -30,10 +34,11 @@ pub enum PixelFormat {
 }
 
 impl PixelFormat {
-    pub(super) fn os_type(self) -> u32 {
-        match self {
-            PixelFormat::Nv12 => kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            PixelFormat::P010 => kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+    pub(super) fn os_type(self, range: Range) -> u32 {
+        match (self, range) {
+            (PixelFormat::Nv12, Range::Limited) => kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            (PixelFormat::Nv12, Range::Full) => kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            (PixelFormat::P010, _) => kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
         }
     }
 }
@@ -45,6 +50,7 @@ pub struct PixelPool {
     pool: CFRetained<CVPixelBufferPool>,
     threshold: CFRetained<Dict>,
     size: usize,
+    matrix: Matrix,
 }
 
 /// A clone is another reference to the same buffer. The buffer returns to its pool when the
@@ -64,7 +70,7 @@ fn number(value: usize) -> CFRetained<CFNumber> {
     CFNumber::new_i64(value as i64)
 }
 
-fn tag(buffer: &CVPixelBuffer) {
+fn tag(buffer: &CVPixelBuffer, matrix: Matrix) {
     let tags = unsafe {
         [
             (
@@ -77,7 +83,10 @@ fn tag(buffer: &CVPixelBuffer) {
             ),
             (
                 kCVImageBufferYCbCrMatrixKey,
-                kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                match matrix {
+                    Matrix::Bt601 => kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+                    Matrix::Bt709 => kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                },
             ),
             (
                 kCVImageBufferChromaLocationTopFieldKey,
@@ -108,7 +117,21 @@ impl PixelPool {
         format: PixelFormat,
         size: usize,
     ) -> Result<Self> {
-        let format_number = CFNumber::new_i32(format.os_type() as i32);
+        Self::with_colour(width, height, format, size, ColourSpace::BT709)
+    }
+
+    pub fn with_colour(
+        width: usize,
+        height: usize,
+        format: PixelFormat,
+        size: usize,
+        colour: ColourSpace,
+    ) -> Result<Self> {
+        ensure!(
+            format == PixelFormat::Nv12 || colour.range == Range::Limited,
+            "full range is for 8-bit buffers only"
+        );
+        let format_number = CFNumber::new_i32(format.os_type(colour.range) as i32);
         let (width, height) = (number(width), number(height));
         let iosurface_properties = Dict::empty();
         let metal = objc2_core_foundation::CFBoolean::new(true);
@@ -163,6 +186,7 @@ impl PixelPool {
             pool,
             threshold,
             size,
+            matrix: colour.matrix,
         };
         let warm = (0..size)
             .map(|_| this.acquire())
@@ -198,7 +222,7 @@ impl PixelPool {
         let Some(surface) = CVPixelBufferGetIOSurface(Some(&buffer)) else {
             bail!("pool buffer has no IOSurface");
         };
-        tag(&buffer);
+        tag(&buffer, self.matrix);
         Ok(Some(PoolBuffer { buffer, surface }))
     }
 

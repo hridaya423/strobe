@@ -8,13 +8,16 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use objc2_io_surface::IOSurfaceLockOptions;
-use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_average, page_url};
+use support::{
+    HEIGHT, TOLERANCE, WIDTH, centre_colours, centre_colours_as, expected_colour, load_average,
+    page_url,
+};
 use vrf_blink::driver::{
     Capture, Config, Pipeline, Plan, Stats, Summary, Warm, render, render_runs,
 };
 use vrf_blink::skip::{Skip, TRACK_JS};
 use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
-use vrf_encode::{Codec, Rational};
+use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
 const FRAME_RATE: Rational = Rational::new(30, 1);
 
@@ -151,6 +154,54 @@ fn colour_per_frame_300(ui: &Ui) -> Result<()> {
         stats.repeats
     );
     report("driver_colour_per_frame_300", &config, &stats);
+    Ok(())
+}
+
+fn full_range_bt601_is_tagged_and_decodes(ui: &Ui) -> Result<()> {
+    let mut view = View::open(ui, &page_url(), WIDTH as i32, HEIGHT as i32)?;
+    let mut config = Config::new(WIDTH, HEIGHT, FRAME_RATE, Codec::H264, 60);
+    config.colour = ColourSpace {
+        matrix: Matrix::Bt601,
+        range: Range::Full,
+    };
+    let out = std::env::temp_dir().join("vrf-blink-driver_full_range_bt601.mp4");
+    render(
+        &mut view,
+        &config,
+        |view, i| view.evaluate(&format!("seek({i})")).map(drop),
+        &out,
+    )?;
+    view.close()?;
+    let tags = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+        .arg("stream=pix_fmt,color_range,color_space,color_transfer,color_primaries")
+        .args(["-of", "csv=p=0"])
+        .arg(&out)
+        .output()?;
+    let tags = String::from_utf8(tags.stdout)?;
+    ensure!(
+        tags.trim() == "yuvj420p,pc,smpte170m,bt709,bt709",
+        "tags {tags:?}"
+    );
+    let colours = centre_colours_as(&out, "in_color_matrix=auto:in_range=auto")?;
+    ensure!(colours.len() == 60, "{} frames decoded", colours.len());
+    let mut worst = 0;
+    for (index, colour) in colours.iter().enumerate() {
+        let want = expected_colour(index as u64);
+        let error = colour
+            .iter()
+            .zip(want)
+            .map(|(a, b)| (a - b).abs())
+            .max()
+            .unwrap();
+        ensure!(
+            error <= TOLERANCE,
+            "frame {index}: centre {colour:?}, expected {want:?}"
+        );
+        worst = worst.max(error);
+    }
+    println!("driver_full_range_bt601: 60 frames match, worst channel error {worst}");
+    std::fs::remove_file(&out)?;
     Ok(())
 }
 
@@ -385,7 +436,8 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
     let mut render = |skip: Option<Skip>| -> Result<(Vec<u8>, u64)> {
         let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
         config.skip = skip;
-        let out = std::env::temp_dir().join(format!("vrf-blink-skip-flip-{}.mov", std::process::id()));
+        let out =
+            std::env::temp_dir().join(format!("vrf-blink-skip-flip-{}.mov", std::process::id()));
         let runs = render_runs(
             &config,
             Plan::new(3, 7),
@@ -419,7 +471,10 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
 fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::H264, 96);
-    let out = std::env::temp_dir().join(format!("vrf-blink-parallel-failure-{}.mp4", std::process::id()));
+    let out = std::env::temp_dir().join(format!(
+        "vrf-blink-parallel-failure-{}.mp4",
+        std::process::id()
+    ));
     let started = Instant::now();
     let Err(error) = render_runs(
         &config,
@@ -506,6 +561,10 @@ fn back_to_back_begin_frames_are_all_delivered(ui: &Ui) -> Result<()> {
 fn main() -> ExitCode {
     support::run(&[
         ("driver_colour_per_frame_300", colour_per_frame_300),
+        (
+            "driver_full_range_bt601_is_tagged_and_decodes",
+            full_range_bt601_is_tagged_and_decodes,
+        ),
         ("driver_import_delay_1ms_2000", import_delay_1ms_2000),
         ("driver_import_delay_50ms_300", import_delay_50ms_300),
         ("driver_no_damage_repeats", no_damage_repeats),

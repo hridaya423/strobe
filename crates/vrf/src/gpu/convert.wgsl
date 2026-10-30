@@ -3,8 +3,13 @@ struct Params {
     y: u32,
     width: u32,
     height: u32,
-    spec: u32,
+    mode: u32,
     bits: u32,
+    kr: u32,
+    kg: u32,
+    kb: u32,
+    d: u32,
+    full: u32,
 }
 
 var<immediate> p: Params;
@@ -69,13 +74,52 @@ fn chroma_spec(x0: u32, y0: u32) -> vec2<u32> {
     );
 }
 
+fn luma_exact(c: vec3<u32>) -> u32 {
+    let w = p.kr * c.x + p.kg * c.y + p.kb * c.z;
+    let scale = select(219u, 255u, p.full == 1u);
+    let offset = select(16u, 0u, p.full == 1u);
+    let den = 255u * p.d;
+    return offset + (2u * scale * w + den) / (2u * den);
+}
+
+fn level_exact(t: i32, base: u32) -> u32 {
+    let scale = select(224, 255, p.full == 1u);
+    let top = select(240u, 255u, p.full == 1u);
+    let den = 2040u * base;
+    let sum = bitcast<u32>(scale * t) + den / 2u + 128u * den;
+    return min(sum / den, top);
+}
+
+fn chroma_exact(x0: u32, y0: u32) -> vec2<u32> {
+    var s = vec3<i32>(0);
+    for (var dy = 0u; dy < 2u; dy++) {
+        s += vec3<i32>(load(x0, y0 + dy)) + vec3<i32>(load(x0 + 1u, y0 + dy));
+    }
+    let kr = i32(p.kr);
+    let kg = i32(p.kg);
+    let kb = i32(p.kb);
+    let d = i32(p.d);
+    return vec2<u32>(
+        level_exact((d - kb) * s.z - kr * s.x - kg * s.y, p.d - p.kb),
+        level_exact((d - kr) * s.x - kg * s.y - kb * s.z, p.d - p.kr),
+    );
+}
+
 fn luma_at(x: u32, y: u32) -> u32 {
     let c = load(x, y);
-    return select(luma_swscale(c), luma_spec(c), p.spec == 1u);
+    switch p.mode {
+        case 1u: { return luma_spec(c); }
+        case 2u: { return luma_exact(c); }
+        default: { return luma_swscale(c); }
+    }
 }
 
 fn chroma_at(cx: u32, cy: u32) -> vec2<u32> {
-    return select(chroma_swscale(cx * 2u, cy * 2u), chroma_spec(cx * 2u, cy * 2u), p.spec == 1u);
+    switch p.mode {
+        case 1u: { return chroma_spec(cx * 2u, cy * 2u); }
+        case 2u: { return chroma_exact(cx * 2u, cy * 2u); }
+        default: { return chroma_swscale(cx * 2u, cy * 2u); }
+    }
 }
 
 @compute @workgroup_size(16, 16)

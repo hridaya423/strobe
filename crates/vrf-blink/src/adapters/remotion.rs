@@ -15,7 +15,7 @@ use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use vrf::audio::{RemotionAsset, mix, remotion_clips, saturate};
-use vrf_encode::{Codec, Rational};
+use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
 use super::hyperframes;
 use super::{
@@ -615,7 +615,8 @@ impl Renderer {
             Some(warm) => warm,
             None => self.warm.insert(Warm::new()?),
         };
-        warm.prepare(1920, 1080)
+        warm.prepare(1920, 1080, ColourSpace::BT709)?;
+        warm.prepare(1920, 1080, colour(Codec::H264))
     }
 
     /// Renders a HyperFrames composition on the same GPU state and pixel pools. Nothing of the
@@ -772,6 +773,7 @@ impl Renderer {
             count,
         );
         config.skip = options.skip.then(Skip::tracked);
+        config.colour = colour(codec);
         let (width, height) = (composition.width as i32, composition.height as i32);
         let page = &loaded.page;
         let seek_retries = AtomicU64::new(0);
@@ -907,5 +909,15 @@ impl Renderer {
             seek_retries: seek_retries.into_inner(),
             assets: collected,
         })
+    }
+}
+
+pub(crate) fn colour(codec: Codec) -> ColourSpace {
+    match codec {
+        Codec::H264 | Codec::Hevc => ColourSpace {
+            matrix: Matrix::Bt601,
+            range: Range::Full,
+        },
+        Codec::Av1 | Codec::ProRes422 => ColourSpace::BT709,
     }
 }

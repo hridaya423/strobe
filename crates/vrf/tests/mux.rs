@@ -811,6 +811,7 @@ fn stream_info_becomes_a_bt709_stream_config() {
         codec: vrf_encode::Codec::Hevc,
         width: 1920,
         height: 1080,
+        colour: vrf_encode::ColourSpace::BT709,
         timebase: vrf_encode::Rational::new(1, 30),
         config: vec![1, 2, 3],
     };

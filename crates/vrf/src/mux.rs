@@ -59,6 +59,20 @@ impl Colour {
     };
 }
 
+impl From<vrf_encode::ColourSpace> for Colour {
+    fn from(space: vrf_encode::ColourSpace) -> Colour {
+        Colour {
+            primaries: 1,
+            transfer: 1,
+            matrix: match space.matrix {
+                vrf_encode::Matrix::Bt601 => 6,
+                vrf_encode::Matrix::Bt709 => 1,
+            },
+            full_range: space.range == vrf_encode::Range::Full,
+        }
+    }
+}
+
 /// One sample entry. `config` is the body of the `avcC`, `hvcC` or `av1C` box (the decoder configuration
 /// record, without the box header) and is empty for ProRes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +108,7 @@ impl TryFrom<&vrf_encode::StreamInfo> for StreamConfig {
             },
             width: u16::try_from(info.width).context("width does not fit 16 bits")?,
             height: u16::try_from(info.height).context("height does not fit 16 bits")?,
-            colour: Colour::BT709,
+            colour: info.colour.into(),
             config: info.config.clone(),
         })
     }

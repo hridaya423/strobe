@@ -18,7 +18,10 @@ use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::core::Interface;
 
 use crate::bitstream;
-use crate::{Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Quality, Rational, StreamInfo};
+use crate::{
+    Codec, ColourSpace, Encoder, EncoderConfig, EncoderFrame, Matrix, Packet, Quality, Range,
+    Rational, StreamInfo,
+};
 
 mod api;
 #[allow(dead_code)]
@@ -185,15 +188,22 @@ pub fn capabilities(device: &ID3D12Device) -> Result<Capabilities> {
     })
 }
 
-fn set_vui(vui: &mut nv::NV_ENC_CONFIG_H264_VUI_PARAMETERS) {
+fn matrix_coeffs(matrix: Matrix) -> nv::NV_ENC_VUI_MATRIX_COEFFS {
+    match matrix {
+        Matrix::Bt601 => nv::NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_SMPTE170M,
+        Matrix::Bt709 => nv::NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709,
+    }
+}
+
+fn set_vui(vui: &mut nv::NV_ENC_CONFIG_H264_VUI_PARAMETERS, colour: ColourSpace) {
     vui.videoSignalTypePresentFlag = 1;
     vui.videoFormat = nv::NV_ENC_VUI_VIDEO_FORMAT::NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
-    vui.videoFullRangeFlag = 0;
+    vui.videoFullRangeFlag = u32::from(colour.range == Range::Full);
     vui.colourDescriptionPresentFlag = 1;
     vui.colourPrimaries = nv::NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
     vui.transferCharacteristics =
         nv::NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-    vui.colourMatrix = nv::NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+    vui.colourMatrix = matrix_coeffs(colour.matrix);
 }
 
 fn configure(
@@ -251,7 +261,7 @@ fn configure(
                 h264.chromaFormatIDC = 1;
                 h264.set_repeatSPSPPS(1);
                 h264.set_outputAUD(0);
-                set_vui(&mut h264.h264VUIParameters);
+                set_vui(&mut h264.h264VUIParameters, config.colour);
             }
             Codec::Hevc => {
                 let hevc = &mut cfg.encodeCodecConfig.hevcConfig;
@@ -260,7 +270,7 @@ fn configure(
                 hevc.set_pixelBitDepthMinus8(depth);
                 hevc.set_repeatSPSPPS(1);
                 hevc.set_outputAUD(0);
-                set_vui(&mut hevc.hevcVUIParameters);
+                set_vui(&mut hevc.hevcVUIParameters, config.colour);
                 if config.ten_bit {
                     cfg.profileGUID = guid::NV_ENC_HEVC_PROFILE_MAIN10_GUID;
                 }
@@ -278,9 +288,8 @@ fn configure(
                     nv::NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
                 av1.transferCharacteristics =
                     nv::NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-                av1.matrixCoefficients =
-                    nv::NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
-                av1.colorRange = 0;
+                av1.matrixCoefficients = matrix_coeffs(config.colour.matrix);
+                av1.colorRange = u32::from(config.colour.range == Range::Full);
             }
             Codec::ProRes422 => unreachable!("rejected before the session opens"),
         }
@@ -845,6 +854,7 @@ impl Encoder for NvencEncoder {
             codec: self.config.codec,
             width: self.config.width,
             height: self.config.height,
+            colour: self.config.colour,
             timebase: Rational::new(1, self.config.frame_rate.num),
             config,
         })

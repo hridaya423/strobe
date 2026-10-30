@@ -1,3 +1,5 @@
+use vrf_encode::{ColourSpace, Matrix, Range};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Nv12,
@@ -17,6 +19,35 @@ impl Format {
 pub enum Chroma {
     Swscale,
     Spec,
+    Exact(ColourSpace),
+}
+
+/// Luma weights over `d`, the smallest integers that give the standard's decimal weights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Weights {
+    pub kr: u32,
+    pub kg: u32,
+    pub kb: u32,
+    pub d: u32,
+}
+
+impl Weights {
+    pub fn of(matrix: Matrix) -> Weights {
+        match matrix {
+            Matrix::Bt601 => Weights {
+                kr: 299,
+                kg: 587,
+                kb: 114,
+                d: 1000,
+            },
+            Matrix::Bt709 => Weights {
+                kr: 1063,
+                kg: 3576,
+                kb: 361,
+                d: 5000,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +59,45 @@ pub struct Rect {
 }
 
 type Rgb = [i64; 3];
+
+fn luma_exact(c: Rgb, space: ColourSpace) -> i64 {
+    let k = Weights::of(space.matrix);
+    let w = i64::from(k.kr) * c[0] + i64::from(k.kg) * c[1] + i64::from(k.kb) * c[2];
+    let (scale, offset) = match space.range {
+        Range::Limited => (219, 16),
+        Range::Full => (255, 0),
+    };
+    let den = 255 * i64::from(k.d);
+    offset + (2 * scale * w + den) / (2 * den)
+}
+
+fn chroma_exact(block: [[Rgb; 2]; 2], space: ColourSpace) -> [i64; 2] {
+    let k = Weights::of(space.matrix);
+    let (kr, kg, kb, d) = (
+        i64::from(k.kr),
+        i64::from(k.kg),
+        i64::from(k.kb),
+        i64::from(k.d),
+    );
+    let mut s = [0i64; 3];
+    for c in block.iter().flatten() {
+        for (sum, v) in s.iter_mut().zip(c) {
+            *sum += v;
+        }
+    }
+    let (scale, top) = match space.range {
+        Range::Limited => (224, 240),
+        Range::Full => (255, 255),
+    };
+    let level = |t: i64, base: i64| {
+        let den = 2040 * base;
+        ((scale * t + den / 2).div_euclid(den) + 128).min(top)
+    };
+    [
+        level((d - kb) * s[2] - kr * s[0] - kg * s[1], d - kb),
+        level((d - kr) * s[0] - kg * s[1] - kb * s[2], d - kr),
+    ]
+}
 
 fn luma_swscale(c: Rgb, bits: u32) -> i64 {
     let v = (5983 * c[0] + 20127 * c[1] + 2032 * c[2] + (0x801 << 8)) >> 9;
@@ -78,11 +148,15 @@ fn chroma_spec(rows: [[Rgb; 3]; 2], bits: u32) -> [i64; 2] {
 }
 
 /// Converts the `rect` crop of an RGBA8 image `stride` pixels wide to
-/// 4:2:0 BT.709 limited range, the CPU twin of the GPU convert pass. Returns
-/// the Y plane followed by the interleaved CbCr plane, tightly packed. P010
-/// samples are little-endian `u16` holding the 10-bit value shifted left by 6.
+/// 4:2:0, BT.709 limited range unless `chroma` is `Exact`, the CPU twin of the GPU convert pass.
+/// Returns the Y plane followed by the interleaved CbCr plane, tightly packed. P010 samples are
+/// little-endian `u16` holding the 10-bit value shifted left by 6.
 pub fn convert(rgba: &[u8], stride: u32, rect: Rect, chroma: Chroma, format: Format) -> Vec<u8> {
     let bits = format.bits();
+    assert!(
+        bits == 8 || !matches!(chroma, Chroma::Exact(_)),
+        "exact conversion is for 8-bit planes"
+    );
     let pixel = |x: u32, y: u32| -> Rgb {
         let i = (((rect.y + y) * stride + rect.x + x) * 4) as usize;
         [rgba[i].into(), rgba[i + 1].into(), rgba[i + 2].into()]
@@ -104,6 +178,7 @@ pub fn convert(rgba: &[u8], stride: u32, rect: Rect, chroma: Chroma, format: For
                 match chroma {
                     Chroma::Swscale => luma_swscale(c, bits),
                     Chroma::Spec => luma_spec(c, bits),
+                    Chroma::Exact(space) => luma_exact(c, space),
                 },
             );
         }
@@ -118,6 +193,13 @@ pub fn convert(rgba: &[u8], stride: u32, rect: Rect, chroma: Chroma, format: For
                         [pixel(x0, y0 + 1), pixel(x0 + 1, y0 + 1)],
                     ],
                     bits,
+                ),
+                Chroma::Exact(space) => chroma_exact(
+                    [
+                        [pixel(x0, y0), pixel(x0 + 1, y0)],
+                        [pixel(x0, y0 + 1), pixel(x0 + 1, y0 + 1)],
+                    ],
+                    space,
                 ),
                 Chroma::Spec => {
                     let row = |y| {
