@@ -43,7 +43,7 @@ impl Engine {
             Engine::Hyperframes => framework == Framework::Hyperframes,
             Engine::Remotion => framework == Framework::Remotion,
             Engine::Kinetograph | Engine::Kinetograph4 => true,
-            Engine::Vrf => framework == Framework::Remotion,
+            Engine::Vrf => true,
         }
     }
 
@@ -78,20 +78,27 @@ impl Engine {
                     cwd: dir,
                 }
             }
-            Engine::Vrf => Invocation {
-                cwd: corpus.project_dir(),
-                argv: vec![
-                    s(vrf_binary()),
-                    "render".into(),
-                    s(corpus.project_dir()),
-                    "--composition".into(),
-                    corpus.composition.clone().unwrap_or_default(),
-                    "--entry".into(),
-                    s(corpus.entry.clone()),
-                    "-o".into(),
-                    out,
-                ],
-            },
+            Engine::Vrf => {
+                let mut argv = vec![s(vrf_binary()), "render".into(), s(corpus.project_dir())];
+                if corpus.framework == Framework::Remotion {
+                    argv.extend([
+                        "--composition".into(),
+                        corpus.composition.clone().unwrap_or_default(),
+                        "--entry".into(),
+                        s(corpus.entry.clone()),
+                    ]);
+                } else {
+                    argv.extend([
+                        "--hyperframes".into(),
+                        s(bench_dir().join("engines/node_modules/hyperframes")),
+                    ]);
+                }
+                argv.extend(["-o".into(), out]);
+                Invocation {
+                    cwd: corpus.project_dir(),
+                    argv,
+                }
+            }
             Engine::Kinetograph | Engine::Kinetograph4 => {
                 let workers = if self == Engine::Kinetograph {
                     "1"

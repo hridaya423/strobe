@@ -14,6 +14,7 @@ use vrf::colour;
 
 use crate::app::{OnUi, Ui};
 use crate::scheme::Project;
+use crate::video::{self, Pusher};
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -65,6 +66,7 @@ struct Channels {
     methods: Sender<MethodResult>,
     loaded: Sender<()>,
     closed: Sender<()>,
+    pages: Sender<String>,
 }
 
 wrap_render_handler! {
@@ -173,9 +175,28 @@ wrap_client! {
         load_handler: LoadHandler,
         life_span_handler: LifeSpanHandler,
         request_handler: Option<RequestHandler>,
+        pages: Sender<String>,
     }
 
     impl Client {
+        fn on_process_message_received(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _source_process: ProcessId,
+            message: Option<&mut ProcessMessage>,
+        ) -> ::std::os::raw::c_int {
+            let Some(message) = message else { return 0 };
+            if CefString::from(&message.name()).to_string() != video::PAGE {
+                return 0;
+            }
+            let text = message
+                .argument_list()
+                .map(|list| CefString::from(&list.string(0)).to_string());
+            let _ = self.pages.send(text.unwrap_or_default());
+            1
+        }
+
         fn request_handler(&self) -> Option<RequestHandler> {
             self.request_handler.clone()
         }
@@ -225,6 +246,7 @@ pub struct View {
     paints: Receiver<Paint>,
     methods: Receiver<MethodResult>,
     closed: Receiver<()>,
+    pages: Option<Receiver<String>>,
     project: Option<Project>,
     size: Arc<Size>,
     next_id: i32,
@@ -303,11 +325,13 @@ impl View {
         let (methods_tx, methods) = mpsc::channel();
         let (loaded_tx, loaded) = mpsc::channel();
         let (closed_tx, closed) = mpsc::channel();
+        let (pages_tx, pages) = mpsc::channel();
         let channels = Channels {
             paints: paints_tx,
             methods: methods_tx,
             loaded: loaded_tx,
             closed: closed_tx,
+            pages: pages_tx,
         };
         let target = url.to_owned();
         let init_script = init_script.map(|script| format!("{TICK_JS}\n{script}"));
@@ -346,6 +370,7 @@ impl View {
                 BlinkLoadHandler::new(channels.loaded),
                 BlinkLifeSpanHandler::new(channels.closed),
                 request_handler,
+                channels.pages,
             );
             let browser = browser_host_create_browser_sync(
                 Some(&window_info),
@@ -371,6 +396,7 @@ impl View {
             paints,
             methods,
             closed,
+            pages: Some(pages),
             project,
             size,
             next_id: 1,
@@ -439,6 +465,15 @@ impl View {
             host.0.notify_screen_info_changed();
             host.0.was_resized();
         });
+    }
+
+    /// The messages the page sent with `__vrf_video_send`. Can be taken once.
+    pub(crate) fn take_pages(&mut self) -> Option<Receiver<String>> {
+        self.pages.take()
+    }
+
+    pub(crate) fn pusher(&self) -> Pusher {
+        Pusher::new(self.ui.clone(), self.host.clone())
     }
 
     /// Distinguishes views, so a driver can tell that the page it was capturing was replaced.

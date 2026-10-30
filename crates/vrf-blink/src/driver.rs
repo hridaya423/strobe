@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -619,11 +619,9 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
         }
         let to = from.saturating_add(shared.plan.run).min(shared.count);
         let start = shared.first + from;
-        let resume = if last.is_some_and(|last| last + 1 == start) {
-            start
-        } else {
-            start.saturating_sub(shared.plan.lead_in)
-        };
+        let resume = start
+            .saturating_sub(shared.plan.lead_in)
+            .max(last.map_or(0, |last| last + 1));
         for before in resume..start {
             (shared.seek)(&mut view, before).with_context(|| format!("seek to frame {before}"))?;
             worker

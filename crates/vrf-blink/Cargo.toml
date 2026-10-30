@@ -18,7 +18,11 @@ percent-encoding = "2.3.2"
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+objc2-core-video = { version = "0.3.2", features = ["objc2-io-surface"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["metal", "wgsl", "std", "parking_lot"] }
+
+[build-dependencies]
+cc = "1.2"
 
 [dev-dependencies]
 vrf-bench = { path = "../vrf-bench" }
@@ -40,9 +44,21 @@ name = "remotion"
 harness = false
 
 [[test]]
+name = "video"
+harness = false
+
+[[test]]
+name = "remotion_video"
+harness = false
+
+[[test]]
 name = "corpus_raw"
 harness = false
 
 [[test]]
 name = "daemon"
+harness = false
+
+[[test]]
+name = "hyperframes"
 harness = false
