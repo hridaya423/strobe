@@ -103,6 +103,8 @@ pub struct Stats {
     pub begin_to_paint: Vec<Duration>,
     pub convert: Vec<Duration>,
     pub encode: Vec<Duration>,
+    /// Each claimed run's first frame, frame count and wall time.
+    pub runs: Vec<(u64, u64, Duration)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -635,6 +637,18 @@ impl Claims {
             .min(remaining)
     }
 
+    /// Whether a claim may still get frames.
+    fn remaining(&self) -> bool {
+        if !self.first.lock().unwrap().is_empty() {
+            return true;
+        }
+        let mut next = *self.next.lock().unwrap();
+        while self.moved.contains(&(next / self.max)) {
+            next += self.max;
+        }
+        next < self.count
+    }
+
     fn claim(&self) -> Option<(u64, u64)> {
         if let Some(range) = self.first.lock().unwrap().pop() {
             let from = range * self.max;
@@ -706,6 +720,7 @@ struct Shared<'a, T> {
 
 struct Worker<T> {
     frames: Vec<(u64, T)>,
+    runs: Vec<(u64, u64, Duration)>,
     seek: Vec<Duration>,
     lead_in: u64,
     capture: Capture,
@@ -796,9 +811,21 @@ fn tl(what: std::fmt::Arguments) {
     }
 }
 
-fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
+fn drive<T>(shared: &Shared<T>, handoff: Handoff) -> Result<Worker<T>> {
+    thread::scope(|scope| drive_in(scope, shared, handoff))
+}
+
+/// A view of fixed ranges opens the view for its next range while it renders this one, so the
+/// open, which is mostly the browser loading the page, overlaps the render.
+fn drive_in<'s, T>(
+    scope: &'s thread::Scope<'s, '_>,
+    shared: &'s Shared<T>,
+    mut handoff: Handoff,
+) -> Result<Worker<T>> {
+    let mut spare: Option<thread::ScopedJoinHandle<'s, Result<View>>> = None;
     let mut worker = Worker {
         frames: Vec::new(),
+        runs: Vec::new(),
         seek: Vec::new(),
         lead_in: 0,
         capture: Capture::default(),
@@ -814,16 +841,24 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
         let Some((from, to)) = shared.claims.claim() else {
             break;
         };
-        if shared.plan.ranges.is_some() && last.is_some() {
+        let fixed = shared.plan.ranges.is_some();
+        if fixed && last.is_some() {
             handoff.wait()?;
             tl(format_args!("open"));
-            let fresh = (shared.open)()?;
+            let fresh = match spare.take() {
+                Some(opening) => opening.join().expect("opening a view panicked")?,
+                None => (shared.open)()?,
+            };
             tl(format_args!("opened"));
             std::mem::replace(&mut view, fresh).close()?;
             tl(format_args!("closed"));
             last = None;
         }
+        if fixed && shared.claims.remaining() {
+            spare = Some(scope.spawn(|| (shared.open)()));
+        }
         tl(format_args!("range {from} {to}"));
+        let run_started = Instant::now();
         let (mut ts, mut tw, mut tc) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
         let start = shared.first + from;
         let resume = start
@@ -859,6 +894,12 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
                     .next(&view, shared.watchdog)
                     .with_context(|| format!("capture frame {frame}"))?;
                 tc += c.elapsed();
+                tl(format_args!(
+                    "f {frame} s {:.2} w {:.2} p {:.2}",
+                    (w - step).as_secs_f64() * 1e3,
+                    (c - w).as_secs_f64() * 1e3,
+                    c.elapsed().as_secs_f64() * 1e3
+                ));
                 handoff.send(index, paint.map_or(Job::Repeat, Job::Paint))?;
             }
             let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -866,12 +907,16 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
             worker.frames.push((index, value));
         }
         tl(format_args!("ranged seek {ts:?} wait {tw:?} capture {tc:?}"));
+        worker.runs.push((from, to - from, run_started.elapsed()));
         last = Some(shared.first + to - 1);
     }
     handoff.wait()?;
     tl(format_args!("done"));
     view.check_project()?;
     view.close()?;
+    if let Some(opening) = spare {
+        opening.join().expect("opening a view panicked")?.close()?;
+    }
     Ok(worker)
 }
 
@@ -971,6 +1016,7 @@ pub fn render_runs<T: Send>(
         stats.skipped += worker.skipped;
         stats.retries += worker.capture.retries;
         stats.seek.extend(worker.seek);
+        stats.runs.extend(worker.runs);
         stats.begin_to_paint.extend(worker.capture.begin_to_paint);
         stats.convert.extend(worker.convert);
     }

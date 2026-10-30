@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::thread;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, ensure};
 use ring::digest;
@@ -18,7 +18,7 @@ use super::{
     PerFrame, Progress, StageStats, add_track, encode_track, audio_samples, cache_dir, hash_tree, short_hex,
     since,
 };
-use crate::driver::{Config, Plan, Runs, Warm, render_runs};
+use crate::driver::{Capture, Config, Plan, Runs, Warm, render_runs};
 use crate::video::NativeVideos;
 use crate::skip::{self, Skip, TRACK_JS};
 use crate::{Mode, Project, Ui, View};
@@ -271,8 +271,9 @@ pub struct Page {
 struct Probe {
     composition: Composition,
     static_frames: Option<Vec<u64>>,
-    /// Seconds a seek takes at every `COST_STEP`th frame, the estimate of where the render is slow.
-    seek_costs: Vec<f64>,
+    /// Seconds a seek and its paint take at every `COST_STEP`th frame, the estimate of where the
+    /// render is slow.
+    costs: Vec<f64>,
 }
 
 impl Page {
@@ -357,11 +358,13 @@ impl Page {
         }
         let (mut view, composition) = self.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
         let static_frames = skip.then(|| static_frames(&mut view)).transpose()?;
-        let seek_costs = (0..composition.frames)
+        let mut capture = Capture::default();
+        let costs = (0..composition.frames)
             .step_by(COST_STEP)
             .map(|frame| {
                 let started = Instant::now();
                 Page::seek(&mut view, frame, self.video.at(frame), false)?;
+                capture.next(&view, Duration::from_secs(5))?;
                 Ok(started.elapsed().as_secs_f64())
             })
             .collect::<Result<Vec<_>>>()?;
@@ -369,14 +372,34 @@ impl Page {
         let probe = Probe {
             composition,
             static_frames,
-            seek_costs,
+            costs,
         };
+        self.keep(&probe)?;
+        Ok(probe)
+    }
+
+    fn keep(&self, probe: &Probe) -> Result<()> {
         let partial = self
             .probed
             .with_extension(format!("partial-{}", std::process::id()));
-        fs::write(&partial, serde_json::to_vec(&probe)?)?;
+        fs::write(&partial, serde_json::to_vec(probe)?)?;
         fs::rename(&partial, &self.probed)?;
-        Ok(probe)
+        Ok(())
+    }
+
+    /// Replaces the probe's cost estimate with what a render of frames from `first` measured, a
+    /// better guide for the next render's order: the probe seeks ahead in jumps and pays one-time
+    /// work the render spreads over a range.
+    fn learn(&self, mut probe: Probe, first: u64, runs: &[(u64, u64, Duration)]) -> Result<()> {
+        for &(from, frames, took) in runs {
+            let per_frame = took.as_secs_f64() / frames.max(1) as f64;
+            for frame in (first + from..first + from + frames).filter(|f| f % COST_STEP as u64 == 0) {
+                if let Some(cost) = probe.costs.get_mut(frame as usize / COST_STEP) {
+                    *cost = per_frame;
+                }
+            }
+        }
+        self.keep(&probe)
     }
 
     /// Leaves the view showing `frame`.
@@ -472,11 +495,8 @@ pub fn render(
     let page = Page::new(prepare, options)?;
 
     let step = Instant::now();
-    let Probe {
-        composition,
-        static_frames,
-        seek_costs,
-    } = page.probe(ui, options.skip)?;
+    let probe = page.probe(ui, options.skip)?;
+    let composition = probe.composition;
     let probe_s = step.elapsed();
     ensure!(
         composition.frames == page.frames,
@@ -507,10 +527,10 @@ pub fn render(
         *codec,
         count,
     );
-    config.skip = static_frames.map(Skip::planned);
+    config.skip = probe.static_frames.clone().map(Skip::planned);
     config.costs = Some(
         (first..=last)
-            .map(|frame| seek_costs.get(frame as usize / COST_STEP).copied().unwrap_or_default())
+            .map(|frame| probe.costs.get(frame as usize / COST_STEP).copied().unwrap_or_default())
             .collect(),
     );
     config.jpeg_capture = matches!(codec, Codec::H264 | Codec::Hevc);
@@ -564,6 +584,7 @@ pub fn render(
         lead_in_frames,
         ..
     } = runs;
+    page.learn(probe, first, &stats.runs)?;
 
     let step = Instant::now();
     if let Some(track) = track {

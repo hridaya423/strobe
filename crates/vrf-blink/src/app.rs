@@ -283,7 +283,10 @@ pub fn run<R: Send + 'static>(work: impl FnOnce(Ui) -> R + Send + 'static) -> R 
         mac::setup_application();
     }
     #[cfg(windows)]
-    if !is_helper || std::env::args().any(|arg| arg == "--type=gpu-process") {
+    if std::env::var_os("VRF_NO_THROTTLE_OPT").is_none() {
+        win::opt_out_of_power_throttling();
+        win::raise_timer_resolution();
+    } else if !is_helper || std::env::args().any(|arg| arg == "--type=gpu-process") {
         win::raise_timer_resolution();
     }
 
