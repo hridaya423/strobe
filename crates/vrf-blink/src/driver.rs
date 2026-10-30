@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -607,6 +607,35 @@ pub struct Runs<T> {
     pub lead_in_frames: u64,
 }
 
+/// Views that open at once. Opening contends on one browser thread, so a view opened alone is
+/// ready in a third of the time and starts rendering while the others open.
+const OPENING: usize = 3;
+
+struct Limit {
+    free: Mutex<usize>,
+    changed: Condvar,
+}
+
+impl Limit {
+    fn new(count: usize) -> Limit {
+        Limit {
+            free: Mutex::new(count),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+        *self
+            .changed
+            .wait_while(self.free.lock().unwrap(), |free| *free == 0)
+            .unwrap() -= 1;
+        let result = f();
+        *self.free.lock().unwrap() += 1;
+        self.changed.notify_one();
+        result
+    }
+}
+
 struct Shared<'a, T> {
     first: u64,
     plan: Plan,
@@ -785,6 +814,8 @@ pub fn render_runs<T: Send>(
     on_frame: impl Fn(u64, u64, &T) -> Result<()> + Sync,
 ) -> Result<Runs<T>> {
     let started = Instant::now();
+    let opening = Limit::new(OPENING);
+    let open = || opening.run(&open);
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
     let plan = plan.fit(frame_bytes).sized(config.frames);
     let mut config = config.clone();
