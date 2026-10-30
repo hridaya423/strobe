@@ -420,6 +420,50 @@ fn embedded_video_colours_equal_hyperframes_extraction(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn embedded_video_edges_equal_hyperframes_extraction(ui: &Ui) -> Result<()> {
+    let name = "cfr1080.mp4";
+    let project = sized_fixture(
+        "edges",
+        1920,
+        1080,
+        1,
+        &format!(
+            "<div id=\"wrap\" style=\"position:absolute;left:286.5px;top:117.5px;width:1347px;height:758px;\
+             overflow:hidden;transform-origin:50% 55.74%\"><video id=\"v\" src=\"assets/{name}\" data-start=\"0\" \
+             data-duration=\"1\" data-track-index=\"0\" muted playsinline \
+             style=\"width:100%;height:100%;object-fit:cover;display:block\"></video></div>"
+        ),
+        "const tl = gsap.timeline({paused: true}); \
+         tl.to('#wrap', {scale: 1.4248, y: 62, duration: 0.5, ease: 'power3.out'}, 0); \
+         window.__timelines = {main: tl};",
+    )?;
+    fs::copy(clips::clip(name)?, project.join("assets").join(name))?;
+    let mut options = options(&project);
+    options.audio = false;
+    let mut files = Vec::new();
+    for (label, native_video) in [("native", true), ("extraction", false)] {
+        options.native_video = native_video;
+        let out = work_dir().join(format!("edges-{label}.mp4"));
+        render(ui, &options, None, Codec::H264, &out)?;
+        files.push(out);
+    }
+    let scored = score::score(&files[0], &files[1], Sampling::All, None)?;
+    let worst = &scored.worst;
+    println!(
+        "edges: FLIP mean {:.5}, p99.9 {:.4}, over 32 {:.4}%",
+        worst.flip_mean.value,
+        worst.flip_p999.value,
+        worst.frac_over_32.value * 100.0
+    );
+    ensure!(
+        worst.frac_over_32.value <= 0.0003,
+        "{} of pixels over 32 on frame {}",
+        worst.frac_over_32.value,
+        worst.frac_over_32.frame
+    );
+    Ok(())
+}
+
 fn a_project_without_audio_stays_video_only(ui: &Ui) -> Result<()> {
     let seconds = 1;
     let project = fixture("silent", seconds, BOX, &sweep(seconds))?;
@@ -544,6 +588,10 @@ fn main() -> ExitCode {
         (
             "hyperframes_native_video_colours_equal_extraction",
             embedded_video_colours_equal_hyperframes_extraction,
+        ),
+        (
+            "hyperframes_native_video_edges_equal_extraction",
+            embedded_video_edges_equal_hyperframes_extraction,
         ),
         (
             "hyperframes_project_without_audio_stays_video_only",
