@@ -88,14 +88,11 @@ struct RenderArgs {
     /// Leave the audio out of the file.
     #[arg(long)]
     no_audio: bool,
-    /// What decodes embedded video: `native` (VideoToolbox, macOS only, falling back to the
-    /// framework's own decoding for clips it cannot reproduce exactly) or `remotion` (the
-    /// framework's own for all: Remotion's frame server, HyperFrames' ffmpeg extraction).
-    #[cfg_attr(target_os = "macos", arg(long, value_enum, default_value = "native"))]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        arg(long, value_enum, default_value = "remotion")
-    )]
+    /// What decodes embedded video: `native` (VideoToolbox on macOS, Media Foundation on
+    /// Windows, falling back to the framework's own decoding for clips it cannot reproduce
+    /// exactly) or `remotion` (the framework's own for all: Remotion's frame server,
+    /// HyperFrames' ffmpeg extraction).
+    #[arg(long, value_enum, default_value = "native")]
     video: VideoArg,
     /// Render every frame, even those the page proves unchanged.
     #[arg(long)]
