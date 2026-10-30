@@ -382,19 +382,31 @@
   const nativeClips = new Map();
   const nativeSurfaces = new Map();
 
-  const nativePicture = async (id, slot) => {
+  const nativeClip = (id) => {
     const native = nativeClips.get(id);
     if (!native) throw new Error(`video "${id}" has no native decode parameters`);
     const video = globalThis.__vrf.video;
     if (!native.opened) {
       native.opened = video.open(`${native.params.path}#${id}`).then((clip) => {
         if (!clip) throw new Error(`video "${id}" (${native.params.path}) cannot be decoded natively: ${video.refusal()}`);
-                native.slots = extractionSlots(clip.pts, clip.timescale, native.params);
+        native.slots = extractionSlots(clip.pts, clip.timescale, native.params);
         return clip;
       });
     }
+    return native;
+  };
+
+  const showNativeFrame = async (id, slot) => {
+    const native = nativeClip(id);
     const clip = await native.opened;
-    return { picture: await video.frame(clip, sourceFrameAtSlot(native.slots, slot)), config: { matrix: native.params.matrix, full: native.params.full } };
+    const config = { matrix: native.params.matrix, full: native.params.full };
+    const frame = (k) => async () => ({ picture: await globalThis.__vrf.video.frame(clip, k), config });
+    const surface = nativeSurface(id);
+    const k = sourceFrameAtSlot(native.slots, slot);
+    await surface.show(k, frame(k));
+    const next = sourceFrameAtSlot(native.slots, slot + 1);
+    if (next !== k) surface.prefetch(next, frame(next));
+    return surface;
   };
 
   const nativeSurface = (id) => {
@@ -409,7 +421,7 @@
   const releaseNativeSurfaces = (active) => {
     for (const [id, surface] of nativeSurfaces) {
       if (active.has(id)) continue;
-      surface.image.remove();
+      surface.image?.remove();
       nativeSurfaces.delete(id);
     }
   };
@@ -472,9 +484,7 @@
       img.style.setProperty('visibility', 'hidden', 'important');
       img.decoding = 'sync';
       if (entry.slot !== undefined) {
-        const { picture, config } = await nativePicture(entry.id, entry.slot);
-        const surface = nativeSurface(entry.id);
-        await surface.draw(picture, config);
+        const surface = await showNativeFrame(entry.id, entry.slot);
         img.style.opacity = String(Number.isNaN(opacity) ? 1 : opacity);
         surface.image.className = img.className;
         surface.image.style.cssText = img.style.cssText;
