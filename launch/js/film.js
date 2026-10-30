@@ -327,14 +327,60 @@ function setup() {
   const BRAND = wordmarkLayout(330, W / 2);
   const BRAND_Y = H / 2 + 100;
 
-  const NUM_P = 60;
-  const NUM_Y = 400;
+  const NUM_P = 38;
+  const NUM_Y = 420;
+  const RACE = [
+    ["github-unwrapped", "Remotion", 5.2], ["transitions-video", "Remotion", 4.6], ["spacex-launch", "HyperFrames", 3.9],
+    ["figma-launch", "HyperFrames", 3.5], ["heygen-stripe", "HyperFrames", 3.1], ["4-0-trailer", "Remotion", 2.4], ["hyperframes-launch", "HyperFrames", 2.2],
+  ];
+  const RACE_T = b(20.5);
+  const RACE_D = 4.4;
+
+  function brush(pts, p, width, color) {
+    const n = pts.length - 1;
+    const m = p * n;
+    if (m <= 0) return;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = color;
+    for (let i = 1; i <= Math.ceil(m); i++) {
+      const u = Math.min(1, m - (i - 1));
+      const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+      const k = i / n;
+      ctx.lineWidth = width * (0.75 + 0.35 * Math.sin(k * Math.PI)) * (1 - 0.35 * k * k);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(lerp(ax, bx, u), lerp(ay, by, u));
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function loopPts(cx, cy, rx, ry, seed, turns = 1.12) {
+    const n = 90, out = [];
+    for (let i = 0; i <= n; i++) {
+      const a = -2.2 + (i / n) * Math.PI * 2 * turns;
+      const wob = 1 + 0.04 * Math.sin(a * 3 + seed) + 0.05 * (i / n);
+      out.push([cx + Math.cos(a) * rx * wob, cy + Math.sin(a) * ry * wob + Math.sin(a * 2 + seed) * 6]);
+    }
+    return out;
+  }
+
+  function linePts(x0, y0, x1, y1, seed, bow = 10) {
+    const n = 24, out = [];
+    for (let i = 0; i <= n; i++) {
+      const u = i / n;
+      out.push([lerp(x0, x1, u), lerp(y0, y1, u) + Math.sin(u * Math.PI) * bow + (hash(i, seed) - 0.5) * 2]);
+    }
+    return out;
+  }
 
   const CUTS = [];
   {
-    let t = b(18), n = 0;
-    while (t < b(22) - 1e-6) {
-      const dur = t < b(21) ? 0.1 : 0.05;
+    let t = b(26), n = 0;
+    while (t < b(30) - 1e-6) {
+      const dur = t < b(28.5) ? 0.2 : t < b(29.5) ? 0.1 : 0.05;
       CUTS.push({ t0: t, t1: t + dur, n, layout: [0, 1, 0, 2, 0, 3, 1, 0][n % 8], dir: hash(n, 77) < 0.5 ? -1 : 1 });
       t += dur;
       n++;
@@ -363,9 +409,10 @@ function setup() {
     ctx.globalAlpha = 1;
     ctx.filter = "none";
     if (t < b(8)) sceneOpen(t);
-    else if (t < b(12)) sceneBrand(t);
-    else if (t < b(18)) sceneNumbers(t);
-    else if (t < b(22)) sceneMontage(t);
+    else if (t < b(14)) sceneBrand(t);
+    else if (t < b(19)) sceneClaim(t);
+    else if (t < b(26)) sceneTable(t);
+    else if (t < b(30)) sceneMontage(t);
     else sceneLogo(t);
   }
 
@@ -526,14 +573,14 @@ function setup() {
   function sceneBrand(t) {
     const t0 = b(8);
     const arrive = E.eo(seg(t, t0, t0 + 0.6));
-    const whip = E.ei(seg(t, b(11), b(11.85)));
+    const whip = E.ei(seg(t, b(13.1), b(14)));
     const boltT = b(8.75);
     const kick = decay(t, boltT, 12);
     const cam = {
-      s: lerp(1.7, 1, arrive) * tw(t, t0 + 0.6, b(11), 1, 1.05, E.lin) * (1 + 0.04 * kick),
+      s: lerp(1.7, 1, arrive) * tw(t, t0 + 0.6, b(13.1), 1, 1.08, E.lin) * (1 + 0.04 * kick),
       fx: W / 2 + whip * 2600,
       fy: H / 2,
-      r: lerp(0.06, 0, arrive) - 0.01 * seg(t, t0 + 0.6, b(11)),
+      r: lerp(0.06, 0, arrive) - 0.01 * seg(t, t0 + 0.6, b(13.1)),
       ox: Math.sin(t * 160) * 10 * kick,
     };
 
@@ -543,12 +590,12 @@ function setup() {
 
     ctx.save();
     camera(ctx, 1, cam);
-    const bloom = E.eo(seg(t, b(8.9), b(9.6))) * (1 - E.ei(seg(t, b(10.2), b(10.8))));
+    const bloom = E.eo(seg(t, b(8.9), b(9.6))) * (1 - E.ei(seg(t, b(11), b(11.7))));
     brandMark(t, bloom, boltT);
 
     LABELS.forEach((txt, i) => {
       const on = b(9.2) + i * 0.034;
-      const off = b(10.1) + (LABELS.length - i) * 0.017;
+      const off = b(11.3) + (LABELS.length - i) * 0.017;
       if (t < on || t >= off) return;
       const [dx, dy] = LABEL_POS[i];
       const x = W / 2 + dx, y = BRAND_Y - 100 + dy * Math.max(0.6, bloom);
@@ -564,137 +611,185 @@ function setup() {
       ctx.fillRect(0, 0, W, H);
     }
 
-    const panel = E.ei(seg(t, b(11.1), b(12)));
-    if (panel > 0) {
-      const x = W - (W + 120) * panel;
-      ctx.fillStyle = HEX.night;
-      ctx.fillRect(x, 0, W - x + 10, H);
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(x, 0, W - x, H);
-      ctx.clip();
-      numbersLayer(t);
-      ctx.restore();
+    if (whip > 0.02) {
+      ctx.fillStyle = `rgba(47,123,255,${Math.pow(whip, 3)})`;
+      ctx.fillRect(0, 0, W, H);
     }
   }
 
-  function numbersLayer(t) {
-    const enter = E.eo(seg(t, b(11.3), b(12.6)));
-    const drift = Math.max(0, t - b(12.6)) * 70;
-    const flipT = b(15);
-    const push = tw(t, b(12.6), b(18), 1, 1.06, E.lin) * (1 + 0.04 * decay(t, flipT, 14));
-    const cam = { s: push, fx: W / 2, fy: H / 2, ox: (1 - enter) * 2300 - drift, r: tw(t, b(12.6), b(18), -0.01, 0.012, E.lin) };
-    const exitK = E.ei(seg(t, b(17.5), b(18)));
+  const HERO = pixelText("5.2×", { p: NUM_P, cx: W / 2, cy: NUM_Y });
 
-    const A = pixelText("3.9×", { p: NUM_P, cx: W / 2, cy: NUM_Y });
-    const B = pixelText("3.1×", { p: NUM_P, cx: W / 2, cy: NUM_Y });
-    const key = (q) => q.c + "," + q.r;
-    const bKeys = new Set(B.cells.map(key));
-    const aKeys = new Set(A.cells.map(key));
-    let cells;
-    if (t < flipT) cells = A.cells.map((q) => ({ ...q }));
-    else {
-      cells = [];
-      for (const q of A.cells) {
-        if (bKeys.has(key(q))) cells.push({ ...q });
-        else {
-          const d = flipT + 0.12 * ((q.x - A.x0) / A.width) + 0.03 * hash(q.c, q.r);
-          const s = 1 - E.qo(seg(t, d, d + 0.06));
-          if (s > 0) cells.push({ ...q, s });
-        }
-      }
-      for (const q of B.cells) {
-        if (aKeys.has(key(q))) continue;
-        const d = flipT + 0.02 + 0.12 * ((q.x - A.x0) / A.width) + 0.03 * hash(q.c, q.r);
-        const u = seg(t, d, d + 0.08);
-        if (u > 0) cells.push({ ...q, s: E.bo(u), flash: t < d + 0.06 });
-      }
+  function sceneClaim(t) {
+    const iris = E.cio(seg(t, b(15), b(15.75)));
+    const push = tw(t, b(14), b(19), 1, 1.07, E.lin);
+    if (iris < 1) {
+      ctx.fillStyle = HEX.electric;
+      ctx.fillRect(0, 0, W, H);
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+      ctx.scale(push * (1 + 0.06 * decay(t, b(14.5), 10)), push);
+      ctx.translate(-W / 2, -H / 2);
+      ctx.font = GEIST(600, 300);
+      ctx.letterSpacing = "-14px";
+      ctx.textBaseline = "alphabetic";
+      ctx.textAlign = "center";
+      ctx.fillStyle = HEX.night;
+      const word = t < b(14.5) ? "up" : "up to";
+      const u = E.eo(seg(t, t < b(14.5) ? b(14) : b(14.5), (t < b(14.5) ? b(14) : b(14.5)) + 0.25));
+      ctx.fillText(word, W / 2, H / 2 + 100 + (1 - u) * 30);
+      ctx.textAlign = "left";
+      ctx.letterSpacing = "0px";
+      label("STROBE / BENCHMARKS", 96, 80, HEX.night, { size: 22 });
+      label("7 LAUNCH VIDEOS", W - 96, 80, HEX.night, { size: 22, align: "right" });
+      ctx.restore();
+      if (iris <= 0) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(W / 2, NUM_Y, Math.hypot(W, H) * iris, 0, Math.PI * 2);
+      ctx.clip();
     }
-    for (const q of cells) {
-      const wave = Math.sin((q.c * 0.6 + q.r * 0.3) - t * 9) * 6 * decay(t, b(12.55), 3);
-      q.y += wave;
-      if (exitK > 0) {
-        q.x = lerp(q.x, W / 2, exitK * 0.85);
-        q.y = lerp(q.y, H / 2, exitK * 0.85);
-        q.s = (q.s ?? 1) * (1 - exitK * 0.5);
-      }
-    }
-
-    const landed = E.eo(seg(t, b(12.4), b(12.9)));
+    ctx.fillStyle = HEX.night;
+    ctx.fillRect(0, 0, W, H);
+    const cam = { s: push, fx: W / 2, fy: H / 2, r: tw(t, b(15), b(19), -0.008, 0.008, E.lin) };
+    const cells = HERO.cells.map((q) => {
+      const d = b(15.1) + 0.25 * Math.hypot(q.x - W / 2, q.y - NUM_Y) / 700 + 0.04 * hash(q.c, q.r);
+      const u = seg(t, d, d + 0.1);
+      return { ...q, s: u > 0 ? E.bo(u) : 0, flash: t < d + 0.07 };
+    });
     dither(ctx, 3, (c, k) => {
       camera(c, k, cam);
       c.globalCompositeOperation = "lighter";
-      c.filter = `blur(${70 * k * cam.s}px)`;
-      light(c, 0.5 + 0.35 * (1 - landed) + 0.3 * decay(t, flipT, 10));
-      for (const q of cells) c.fillRect(q.x - NUM_P / 2, q.y - NUM_P / 2, NUM_P, NUM_P);
+      c.filter = `blur(${22}px)`;
+      light(c, 0.55 * E.eo(seg(t, b(15.2), b(16))));
+      for (const q of cells) if (q.s > 0) c.fillRect(q.x - NUM_P / 2, q.y - NUM_P / 2, NUM_P, NUM_P);
       c.filter = "none";
     });
     grid(cam, "rgba(47,123,255,0.10)");
-
     ctx.save();
     camera(ctx, 1, cam);
-    const flashOn = t >= b(12.55) && t < b(12.55) + 0.06;
     for (const q of cells) {
-      const s = NUM_P * 0.9 * (q.s ?? 1);
-      ctx.fillStyle = q.flash || flashOn ? HEX.ice : HEX.core;
-      ctx.fillRect(q.x - s / 2, q.y - s / 2, s, s);
+      const sz = NUM_P * 0.9 * q.s;
+      if (sz <= 0.3) continue;
+      ctx.fillStyle = q.flash ? HEX.ice : HEX.core;
+      ctx.fillRect(q.x - sz / 2, q.y - sz / 2, sz, sz);
     }
-    ctx.restore();
+    brush(loopPts(W / 2 + 10, NUM_Y - 10, HERO.width / 2 + 130, 220, 2), E.cio(seg(t, b(16), b(16.9))), 14, HEX.ice);
 
-    ctx.save();
-    ctx.translate((1 - enter) * 2300, 0);
-    const left = 130;
-    const isHF = t >= flipT;
-    const kick = isHF ? "MEAN OF 4 HYPERFRAMES LAUNCH VIDEOS" : "MEAN OF 3 REMOTION LAUNCH VIDEOS";
-    if (t >= b(12.5)) label(scramble(kick, t, isHF ? flipT : b(12.5), 0.18, isHF ? 2 : 1), left + 20, 96, HEX.electric);
-
-    const capY = 880;
-    ctx.font = GEIST(600, 64);
-    ctx.letterSpacing = "-2px";
+    const capY = 900;
+    const parts = [["faster than ", GEIST(600, 64), HEX.ice, b(17)], ["Remotion", SERIF(96), HEX.core, b(17.5)], [" & ", GEIST(600, 64), HEX.ice, b(18)], ["HyperFrames", SERIF(96), HEX.core, b(18.2)]];
+    let total = 0;
+    for (const [txt, font] of parts) {
+      ctx.font = font;
+      total += ctx.measureText(txt).width;
+    }
+    let x = W / 2 - total / 2;
     ctx.textBaseline = "alphabetic";
-    const a1 = E.eo(seg(t, b(12.7), b(13)));
-    ctx.globalAlpha = a1 * (1 - exitK);
-    ctx.fillStyle = HEX.ice;
-    ctx.fillText("faster than", left + 20, capY);
-    const fw = ctx.measureText("faster than ").width;
-    ctx.letterSpacing = "0px";
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(left + 20 + fw - 10, capY - 90, 900, 120);
-    ctx.clip();
-    const roll = E.eo(seg(t, flipT, flipT + 0.24));
-    ctx.font = SERIF(92);
-    ctx.fillStyle = HEX.core;
-    ctx.globalAlpha = E.eo(seg(t, b(12.85), b(13.15))) * (1 - exitK);
-    if (!isHF || roll < 1) ctx.fillText("Remotion", left + 20 + fw, capY - roll * 120);
-    if (isHF) ctx.fillText("HyperFrames", left + 20 + fw, capY + 120 - roll * 120);
-    ctx.restore();
-    ctx.globalAlpha = 1;
-
-    const raceT = isHF ? b(15.1) : b(12.9);
-    const mult = isHF ? 3.1 : 3.9;
-    const rx = left + 1200, rw = 320;
-    const p = seg(t, raceT, raceT + 0.3);
-    const ra = E.eo(seg(t, b(12.8), b(13))) * (1 - exitK);
-    if (ra > 0) {
-      ctx.globalAlpha = ra;
-      [["strobe", 1, HEX.core], [isHF ? "hyperframes" : "remotion", 1 / mult, HEX.electric]].forEach(([name, frac, col], i) => {
-        const y = capY - 44 + i * 44;
-        label(name, rx - 20, y, col, { align: "right" });
-        ctx.fillStyle = "rgba(47,123,255,0.25)";
-        ctx.fillRect(rx, y - 3, rw, 6);
+    for (const [txt, font, col, on] of parts) {
+      ctx.font = font;
+      const w = ctx.measureText(txt).width;
+      const u = E.eo(seg(t, on, on + 0.25));
+      if (u > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x - 4, capY - 110, w + 8, 140);
+        ctx.clip();
         ctx.fillStyle = col;
-        ctx.fillRect(rx, y - 3, rw * frac * p, 6);
-      });
-      ctx.globalAlpha = 1;
+        ctx.fillText(txt, x, capY + (1 - u) * 110);
+        ctx.restore();
+      }
+      x += w;
     }
+    label(scramble("BEST OF 7 LAUNCH VIDEOS, SAME MACHINE", t, b(15.3), 0.3, 4), 96, 80, HEX.electric, { size: 22, a: E.eo(seg(t, b(15.3), b(15.6))) });
+    ctx.globalAlpha = 1;
     ctx.restore();
+    if (iris < 1) ctx.restore();
   }
 
-  function sceneNumbers(t) {
+  function sceneTable(t) {
+    const t0 = b(19);
+    const wipe = E.cio(seg(t, t0, t0 + 0.45));
+    const lineX = lerp(-40, W + 40, wipe);
+    if (wipe < 1) {
+      sceneClaim(b(19) - 1e-4);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, lineX, H);
+      ctx.clip();
+    }
+    const cam = { s: tw(t, t0, b(26), 1.04, 1, E.lin), fx: W / 2, fy: H / 2, r: tw(t, t0, b(26), 0.006, -0.004, E.lin) };
     ctx.fillStyle = HEX.night;
     ctx.fillRect(0, 0, W, H);
-    numbersLayer(t);
+    grid(cam, "rgba(47,123,255,0.08)");
+    ctx.save();
+    camera(ctx, 1, cam);
+    const L = 150, nameW = 380, cols = 56, cw = 16, gap = 4, stripX = L + nameW + 40, stripW = cols * (cw + gap);
+    const top = 300, rowH = 84;
+    const elapsed = Math.max(0, t - RACE_T);
+    label("LAUNCH VIDEO", L, top - 70, HEX.electric, { size: 20 });
+    label("FRAMES RENDERED  —  STROBE  /  RIVAL", stripX, top - 70, HEX.electric, { size: 20 });
+    label("SPEEDUP", W - L, top - 70, HEX.electric, { size: 20, align: "right" });
+    ctx.fillStyle = "rgba(47,123,255,0.25)";
+    ctx.fillRect(L, top - 46, W - 2 * L, 1);
+    ctx.font = GEIST(600, 76);
+    ctx.letterSpacing = "-3px";
+    ctx.fillStyle = HEX.core;
+    ctx.textBaseline = "alphabetic";
+    const hu = E.eo(seg(t, t0 + 0.2, t0 + 0.55));
+    ctx.globalAlpha = hu;
+    ctx.fillText("Same 7 videos. Same machine.", L, 150 + (1 - hu) * 30);
+    ctx.globalAlpha = 1;
+    ctx.letterSpacing = "0px";
+    RACE.forEach(([name, rival, m], i) => {
+      const y = top + i * rowH;
+      const on = t0 + 0.35 + i * 0.06;
+      const ru = E.eo(seg(t, on, on + 0.3));
+      if (ru <= 0) return;
+      ctx.save();
+      ctx.globalAlpha = ru;
+      ctx.translate(0, (1 - ru) * 24);
+      const ps = clamp((elapsed * m) / RACE_D), pr = clamp(elapsed / RACE_D);
+      const doneT = RACE_T + RACE_D / m;
+      const done = t >= doneT;
+      const hl = i === 0 ? E.eo(seg(t, doneT, doneT + 0.3)) : 0;
+      if (hl > 0) {
+        ctx.fillStyle = `rgba(47,123,255,${0.22 * hl})`;
+        ctx.fillRect(L - 20, y - 30, (W - 2 * L + 40) * hl, rowH - 8);
+      }
+      label(name, L, y - 6, done ? HEX.core : HEX.ice, { size: 26 });
+      label(`vs ${rival}`, L, y + 22, HEX.electric, { size: 18 });
+      const ns = Math.floor(ps * cols), nr = Math.floor(pr * cols);
+      for (let c = 0; c < cols; c++) {
+        const x = stripX + c * (cw + gap);
+        ctx.fillStyle = c < ns ? (c === ns - 1 && !done ? HEX.ice : HEX.core) : "rgba(47,123,255,0.14)";
+        ctx.fillRect(x, y - 22, cw, 16);
+        ctx.fillStyle = c < nr ? HEX.electric : "rgba(47,123,255,0.10)";
+        ctx.fillRect(x, y + 2, cw, 10);
+      }
+      if (done) {
+        const pu = E.bo(seg(t, doneT, doneT + 0.18));
+        ctx.save();
+        ctx.translate(W - L, y + 10);
+        ctx.scale(pu, pu);
+        ctx.font = GEIST(600, 52);
+        ctx.textAlign = "right";
+        ctx.fillStyle = i === 0 ? HEX.core : HEX.ice;
+        ctx.fillText(`${m.toFixed(1)}×`, 0, 0);
+        ctx.restore();
+      } else if (elapsed > 0) {
+        label(`${Math.floor(ps * 100)}%`, W - L, y - 2, HEX.electric, { size: 22, align: "right" });
+      }
+      ctx.restore();
+    });
+    const ex = W - L - 70, ey = top - 2;
+    brush(loopPts(ex, ey, 120, 54, 7, 1.1), E.cio(seg(t, b(24.2), b(24.9))), 10, HEX.ice);
+    ctx.restore();
+    if (wipe < 1) {
+      ctx.restore();
+      ctx.fillStyle = HEX.ice;
+      ctx.fillRect(lineX - 2, 0, 4, H);
+      ctx.fillStyle = "rgba(143,227,255,0.25)";
+      ctx.fillRect(lineX - 14, 0, 28, H);
+    }
   }
 
   function sceneMontage(t) {
@@ -714,7 +809,7 @@ function setup() {
       }
     });
 
-    const frame = Math.floor(lerp(0, 1692, seg(t, b(18), b(22))));
+    const frame = Math.floor(lerp(0, 1692, seg(t, b(26), b(30))));
     const ctr = pixelText(String(frame).padStart(4, "0"), { p: 8, x: 96, cy: 120 });
     ctx.fillStyle = HEX.night;
     ctx.fillRect(80, 52, ctr.width + 32, 14 * 8 + 8);
@@ -724,9 +819,9 @@ function setup() {
     ctx.fillRect(W - 360, H - 120, 280, 64);
     label("286 FPS", W - 104, H - 88, HEX.core, { align: "right", size: 40 });
 
-    const first = t < b(20);
+    const first = t < b(28);
     const head = first ? "every frame," : "rendered.";
-    const hT = first ? b(18) : b(20);
+    const hT = first ? b(26) : b(28);
     ctx.font = SERIF(200);
     ctx.textBaseline = "alphabetic";
     const hw = ctx.measureText(head).width;
@@ -741,14 +836,14 @@ function setup() {
     ctx.fillStyle = HEX.core;
     ctx.fillText(head, hx, hy);
     ctx.restore();
-    if (t >= b(21.5) && Math.floor(t * 60) % 3 === 0) {
+    if (t >= b(29.5) && Math.floor(t * 60) % 3 === 0) {
       ctx.fillStyle = core(0.18);
       ctx.fillRect(0, 0, W, H);
     }
   }
 
   function sceneLogo(t) {
-    const t0 = b(22);
+    const t0 = b(30);
     ctx.fillStyle = HEX.night;
     ctx.fillRect(0, 0, W, H);
 
@@ -762,7 +857,7 @@ function setup() {
       return;
     }
     const tp = t0 + 0.28;
-    const tb = b(23.5);
+    const tb = b(31.5);
     if (t < tb) {
       const blink = [[0, 0.1], [0.16, 0.2], [0.3, 0.42], [0.5, 0.53]].some(([a, z]) => t - tp >= a && t - tp < z);
       if (blink || t - tp > 0.6) {
@@ -775,13 +870,13 @@ function setup() {
     const STEPS = [128, 96, 64, 48, 32, 24, 16, 12, 8, 6, 4];
     const si = Math.min(STEPS.length - 1, Math.floor((t - tb) / (1.5 / 60)));
     const smooth = t >= tb + STEPS.length * (1.5 / 60) + 0.05;
-    const flyT = b(25), landT = b(26);
+    const flyT = b(33), landT = b(34);
     const fly = E.eio(seg(t, flyT, landT));
     const oy = LOGO_Y - LOGO.o.h * 0.5;
     const cx = lerp(W / 2, LOGO.o.x, fly), cy = lerp(H / 2, oy, fly), h = lerp(560, LOGO.o.h * 1.05, fly);
-    const cam = { s: tw(t, landT, 12, 1, 1.05, E.lin) * (1 + 0.05 * decay(t, landT, 9)), fx: W / 2, fy: H / 2, r: tw(t, landT, 12, 0.012, 0, E.lin) };
-    const glow = E.eo(seg(t, b(24), b(25))) * lerp(1, 0.55, fly);
-    const pulse = 1 + 0.5 * decay(t, b(24), 8) + 0.7 * decay(t, landT, 6);
+    const cam = { s: tw(t, landT, 16, 1, 1.06, E.lin) * (1 + 0.05 * decay(t, landT, 9)), fx: W / 2, fy: H / 2, r: tw(t, landT, 16, 0.012, 0, E.lin) };
+    const glow = E.eo(seg(t, b(32), b(33))) * lerp(1, 0.55, fly);
+    const pulse = 1 + 0.5 * decay(t, b(32), 8) + 0.7 * decay(t, landT, 6);
 
     dither(ctx, 3, (c, k) => {
       camera(c, k, cam);
@@ -819,12 +914,12 @@ function setup() {
       boltInO(ctx, LOGO, LOGO_Y, { bg: HEX.night, fill: t < landT + 0.05 ? HEX.core : HEX.ice });
     }
 
-    const tagT = b(26.6);
+    const tagT = b(34.8);
     const tag = "HTML to video, at the speed of light.";
     const nch = Math.floor(clamp((t - tagT) * 75, 0, tag.length));
     if (nch > 0) label(tag.slice(0, nch), W / 2, LOGO_Y + 120, HEX.ice, { size: 34, align: "center" });
     const cmd = "$ strobe render ./site";
-    const cmdT = b(27.4);
+    const cmdT = b(35.8);
     const ncmd = Math.floor(clamp((t - cmdT) * 45, 0, cmd.length));
     if (ncmd > 0) {
       ctx.font = `30px ${MONO}`;
@@ -838,7 +933,7 @@ function setup() {
         ctx.fillRect(x0 + cw + 6, LOGO_Y + 164, 16, 32);
       }
     }
-    const glintT = b(28);
+    const glintT = b(37);
     if (t >= glintT && t < glintT + 0.4) {
       const gc = glint.getContext("2d");
       gc.setTransform(1, 0, 0, 1, 0, 0);
@@ -863,7 +958,7 @@ function setup() {
 
   const tl = gsap.timeline({ paused: true });
   const clock = { t: 0 };
-  tl.to(clock, { t: 12, duration: 12, ease: "none", onUpdate: () => render(clock.t) }, 0);
+  tl.to(clock, { t: 16, duration: 16, ease: "none", onUpdate: () => render(clock.t) }, 0);
   render(0);
   return { tl, render };
 }
