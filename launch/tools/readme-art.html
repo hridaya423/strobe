@@ -67,54 +67,38 @@
       }
 
       function banner(c) {
+        const BH = 600;
         c.width = W;
-        c.height = H;
+        c.height = BH;
         const ctx = c.getContext("2d");
-        const Y = 610;
-        const m = document.createElement("canvas").getContext("2d");
-        m.font = `italic 400 330px "Instrument Serif"`;
-        m.letterSpacing = "-3.3px";
-        const ow = m.measureText("strobe").width;
-        const ox = W / 2 - ow / 2 + m.measureText("str").width + m.measureText("o").width * 0.5;
-        const oh = m.measureText("o").actualBoundingBoxAscent;
-        dither(ctx, 3, (f, k) => {
-          f.globalCompositeOperation = "lighter";
-          f.filter = `blur(${40}px)`;
-          light(f, 0.12);
-          boltPath(f, ox * k, (Y - oh * 0.5) * k, oh * 3.2 * k);
-          f.fill();
-          f.filter = `blur(${26}px)`;
-          light(f, 0.012);
-          f.fillRect(0, (Y - 230) * k, W * k, 300 * k);
-          f.filter = "none";
+        ctx.fillStyle = HEX.night;
+        ctx.fillRect(0, 0, W, BH);
+        const size = 300, base = 352, step = 170, shots = [0.08, 0.14, 0.24];
+        const fx = 1180;
+        const layer = (alpha, x, ink, bolt) => {
+          const t = document.createElement("canvas");
+          t.width = W;
+          t.height = BH;
+          wordmark(t.getContext("2d"), size, x, base, ink, bolt);
+          ctx.globalAlpha = alpha;
+          ctx.drawImage(t, 0, 0);
+          ctx.globalAlpha = 1;
+        };
+        shots.forEach((a, i) => layer(a, fx - (shots.length - i) * step, HEX.electric, HEX.electric));
+        layer(1, fx, HEX.core, HEX.electric);
+        const y = 426;
+        ctx.fillStyle = "rgba(143,227,255,0.18)";
+        ctx.fillRect(fx - shots.length * step, y, shots.length * step, 1);
+        shots.forEach((a, i) => {
+          ctx.fillStyle = `rgba(143,227,255,${0.2 + a * 1.5})`;
+          ctx.fillRect(fx - (shots.length - i) * step, y - 6, 1, 13);
         });
-        ctx.strokeStyle = "rgba(47,123,255,0.10)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (let x = 0; x <= W; x += 120) {
-          ctx.moveTo(x + 0.5, 0);
-          ctx.lineTo(x + 0.5, H);
-        }
-        for (let y = 0; y <= H; y += 120) {
-          ctx.moveTo(0, y + 0.5);
-          ctx.lineTo(W, y + 0.5);
-        }
-        ctx.stroke();
-        const ink = document.createElement("canvas");
-        ink.width = W;
-        ink.height = H;
-        wordmark(ink.getContext("2d"), 330, W / 2, Y, HEX.core, HEX.electric);
-        ctx.drawImage(ink, 0, 0);
-        ctx.font = '30px "Departure Mono"';
-        ctx.textAlign = "center";
-        ctx.fillStyle = HEX.ice;
-        ctx.fillText("HTML to video, at the speed of light.", W / 2, Y + 110);
-        ctx.font = '22px "Departure Mono"';
         ctx.fillStyle = HEX.electric;
+        ctx.fillRect(fx - 1, y - 10, 3, 21);
+        ctx.font = '500 34px "Geist"';
         ctx.textAlign = "left";
-        ctx.fillText("STROBE / RENDER ENGINE", 120, 300);
-        ctx.textAlign = "right";
-        ctx.fillText("REMOTION + HYPERFRAMES", W - 120, 300);
+        ctx.fillStyle = "rgba(244,251,255,0.62)";
+        ctx.fillText("A render engine for Remotion and HyperFrames.", fx - shots.length * step, 506);
       }
 
       function chart(c, dark) {
@@ -123,10 +107,15 @@
         const track = dark ? "rgba(125,133,144,0.18)" : "rgba(87,96,106,0.12)";
         const rival = dark ? "#3D4A5C" : "#C9D1D9";
         const fast = HEX.electric;
-        const rowH = 92, top = 70, Wc = 1600, Hc = top + RACE.length * rowH + 30;
-        c.width = Wc;
-        c.height = Hc;
+        const P = 56, rowH = 92, top = 70, Wc = 1600, Hc = top + RACE.length * rowH + 30;
+        c.width = Wc + 2 * P;
+        c.height = Hc + 2 * P;
         const ctx = c.getContext("2d");
+        ctx.fillStyle = dark ? "#0D1117" : "#FFFFFF";
+        ctx.beginPath();
+        ctx.roundRect(0, 0, c.width, c.height, 24);
+        ctx.fill();
+        ctx.translate(P, P);
         const L = 0, nameW = 360, barX = L + nameW, barW = 860, max = Math.max(...RACE.map((r) => r[2]));
         ctx.font = '20px "Departure Mono"';
         ctx.fillStyle = dim;
@@ -172,7 +161,7 @@
       }
 
       document.fonts.load('italic 330px "Instrument Serif"').then(() =>
-        Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"')]).then(() => {
+        Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 34px "Geist"')]).then(() => {
           const c = document.getElementById("c");
           if (art === "banner") banner(c);
           else chart(c, art === "chart-dark");

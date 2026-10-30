@@ -24,11 +24,8 @@ vrf render ./launch-film -o launch.mp4
 ```
 
 <p align="center">
-  <img src="assets/readme/film.gif" alt="The opening of the Strobe launch film: the word forever, the strobe wordmark and 5.2× faster than Remotion" width="100%">
+  <img src="assets/readme/film.webp" alt="The opening of the Strobe launch film, ending on 5.2× faster than Remotion" width="100%">
 </p>
-
-> [!NOTE]
-> The project is called Strobe. The binary is still called `vrf` until the rename lands.
 
 ## The numbers
 
@@ -39,17 +36,7 @@ vrf render ./launch-film -o launch.mp4
   </picture>
 </p>
 
-I rendered seven public launch videos, each one on the framework it was built for.
-
-| Launch video | Rival | Rival time | Strobe time | Speedup |
-|---|---|---:|---:|---:|
-| `github-unwrapped` | Remotion 4.0.539 | 44.28 s | 8.49 s | **5.2×** |
-| `transitions-video` | Remotion 4.0.539 | 13.79 s | 3.01 s | **4.6×** |
-| `spacex-launch` | HyperFrames 0.8.216 | 15.90 s | 4.46 s | **3.6×** |
-| `figma-launch` | HyperFrames 0.8.216 | 30.69 s | 8.71 s | **3.5×** |
-| `heygen-stripe` | HyperFrames 0.8.216 | 23.02 s | 7.63 s | **3.0×** |
-| `hyperframes-launch` | HyperFrames 0.8.216 | 26.18 s | 9.25 s | **2.8×** |
-| `4-0-trailer` | Remotion 4.0.539 | 38.94 s | 16.28 s | **2.4×** |
+I rendered seven public launch videos, each one on the framework it was built for: Remotion 4.0.539 or HyperFrames 0.8.216.
 
 Each time is wall clock, from the command to the finished file. The machine is an Apple M4 Mac mini with 10 cores and 16 GiB of memory. The rival times are the median of five runs. The Strobe times on the four HyperFrames videos come from one run each.
 
@@ -101,14 +88,17 @@ Strobe has two raster modes, and you pick the trade.
 
 `--mode fast` rasterises on the GPU, as HyperFrames does. It is up to 30% quicker on pages where raster is the bottleneck. Blended fills and gradients can land one level away from the Remotion pixels. HyperFrames projects use this mode by default.
 
-## Build it
+## Install it
 
-There are no release binaries yet, so you build from source. You need these tools:
+Download the build for macOS or Windows from the [releases page](https://github.com/hridaya423/strobe/releases).
 
-- Rust 1.99.1. The `rust-toolchain.toml` file pins the version.
-- cmake and ninja, to build CEF.
-- Node, plus the dependencies of your project.
-- x264 for the second H.264 lane. On macOS, run `brew install x264`. If the library is not at `/opt/homebrew/lib/libx264.dylib`, set `VRF_LIBX264` to its path.
+Strobe renders your project with your project's own dependencies, so you need Node and a `node_modules` folder. For the second H.264 lane on macOS, run `brew install x264`. If the library is not at `/opt/homebrew/lib/libx264.dylib`, set `VRF_LIBX264` to its path.
+
+<details>
+<summary><b>Build from source</b></summary>
+<br>
+
+You need Rust 1.99.1, which `rust-toolchain.toml` pins, plus cmake and ninja to build CEF.
 
 ```sh
 git clone https://github.com/hridaya423/strobe
@@ -117,6 +107,8 @@ cargo build --release -p vrf-cli
 ```
 
 The binary is `target/release/vrf`.
+
+</details>
 
 ## Render a project
 
@@ -169,7 +161,6 @@ I would rather you read this here than find it in production.
 - **Linux.** Strobe runs on macOS and Windows. Linux is not done.
 - **Text on Windows.** Windows draws glyph edges with DirectWrite, and macOS uses CoreText. On Windows, `github-unwrapped` and `4-0-trailer` do not pass the 10% fidelity margin yet. `progress.md` tracks the details.
 - **Embedded video on Windows.** The `native` decoder uses VideoToolbox, so it works only on macOS.
-- **Release builds.** There is no installer and no prebuilt binary.
 
 ## License
 
