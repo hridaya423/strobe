@@ -74,6 +74,9 @@ struct RenderArgs {
     /// Render in this process even if a daemon is running.
     #[arg(long)]
     no_daemon: bool,
+    /// Encode H.264 on VideoToolbox alone, without the libx264 lane.
+    #[arg(long)]
+    no_turbo: bool,
 }
 
 #[derive(Args)]
@@ -152,7 +155,10 @@ impl RenderArgs {
                 Mode::Online
             },
             timeout: Duration::from_millis(self.timeout),
-            plan,
+            plan: Plan {
+                turbo: !self.no_turbo,
+                ..plan
+            },
         };
         Ok(RenderJob {
             options,

@@ -328,7 +328,37 @@ impl TurboEncoder {
         TurboEncoder::with_options(config, options)
     }
 
+    /// Buffers the lanes hold beyond what the renderer keeps in flight: a chunk for every
+    /// VideoToolbox session after the first, and two for the CPU lane.
+    pub fn lane_buffers(config: &EncoderConfig, options: &TurboOptions) -> Result<usize> {
+        let cpu_lane = options.cpu_lane && config.codec == Codec::H264;
+        let sessions = match options.vt_sessions {
+            Some(sessions) => sessions,
+            None => capabilities(config.codec)?.parallelization_limit,
+        };
+        ensure!(sessions > 0, "turbo mode needs a VideoToolbox session");
+        Ok(options.chunk_frames as usize * (sessions - 1 + if cpu_lane { 2 } else { 0 }))
+    }
+
     pub fn with_options(config: EncoderConfig, options: TurboOptions) -> Result<TurboEncoder> {
+        let format = if config.ten_bit {
+            PixelFormat::P010
+        } else {
+            PixelFormat::Nv12
+        };
+        let size = POOL_SIZE + TurboEncoder::lane_buffers(&config, &options)?;
+        let pool =
+            PixelPool::with_size(config.width as usize, config.height as usize, format, size)?;
+        TurboEncoder::with_pool(config, options, pool)
+    }
+
+    /// Encodes frames from `pool`, which must hold the config's size and format and at least
+    /// [`TurboEncoder::lane_buffers`] buffers more than the renderer keeps in flight.
+    pub fn with_pool(
+        config: EncoderConfig,
+        options: TurboOptions,
+        pool: PixelPool,
+    ) -> Result<TurboEncoder> {
         ensure!(
             matches!(config.codec, Codec::H264 | Codec::Hevc),
             "turbo mode chunks H.264 and HEVC; {:?} has its own engine",
@@ -341,15 +371,6 @@ impl TurboEncoder {
             None => capabilities(config.codec)?.parallelization_limit,
         };
         ensure!(sessions > 0, "turbo mode needs a VideoToolbox session");
-        let chunk = options.chunk_frames as usize;
-        let size = POOL_SIZE + chunk * (sessions - 1 + if cpu_lane { 2 } else { 0 });
-        let format = if config.ten_bit {
-            PixelFormat::P010
-        } else {
-            PixelFormat::Nv12
-        };
-        let pool =
-            PixelPool::with_size(config.width as usize, config.height as usize, format, size)?;
         let shared = Arc::new(Shared {
             frame_rate: config.frame_rate,
             ordered: Mutex::new(Ordered {

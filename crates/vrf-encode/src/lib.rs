@@ -59,17 +59,18 @@ pub enum Codec {
     ProRes422,
 }
 
-/// Rate control presets. Each value is a VideoToolbox `Quality` setting probed
-/// against libx264 veryfast CRF 18 with VMAF on two 1080p motion-graphics
-/// clips (`docs/research/2026-10-29/02-encode.md` §4).
+/// Rate control presets. Each value is a VideoToolbox `Quality` setting. Encoding Remotion's own
+/// frames of `rm-4-0-trailer`, `rm-github-unwrapped` and `rm-transitions-video`, `Balanced` scores
+/// within 10% of Remotion's MP4 on every FLIP metric; 0.70 did not on the trailer's mean. The
+/// libx264 CRF of `Balanced` passes the same bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Quality {
-    /// `Quality` 0.50: VMAF 90.1 and 91.9, 3 to 5 Mb/s.
+    /// `Quality` 0.50, 3 to 5 Mb/s at 1080p.
     Draft,
-    /// `Quality` 0.70: VMAF 96.9 and 98.3, at or above libx264 veryfast CRF 18 (95.6 and 97.1).
+    /// `Quality` 0.85.
     #[default]
     Balanced,
-    /// `Quality` 0.85: VMAF 98.3 and 99.4, 25 to 33 Mb/s.
+    /// `Quality` 0.90. About 13% slower than `Balanced` on the Mac mini's H.264 ceiling.
     High,
 }
 
@@ -77,20 +78,18 @@ impl Quality {
     pub fn value(self) -> f32 {
         match self {
             Quality::Draft => 0.50,
-            Quality::Balanced => 0.70,
-            Quality::High => 0.85,
+            Quality::Balanced => 0.85,
+            Quality::High => 0.90,
         }
     }
 
-    /// The libx264 `veryfast` CRF that scores within one VMAF point of this preset's
-    /// VideoToolbox encode, so the two lanes of a turbo encode look alike. VideoToolbox scores
-    /// higher than CRF 18 at the same quality setting (`02` §4); the values come from VMAF
-    /// sweeps of `crates/vrf/tests/turbo.rs` content and the two clips of `02`.
+    /// The libx264 `veryfast` CRF for the CPU lane of a turbo encode, so that its chunks pass
+    /// the same bar as VideoToolbox's.
     pub fn x264_crf(self) -> u32 {
         match self {
             Quality::Draft => 25,
             Quality::Balanced => 16,
-            Quality::High => 13,
+            Quality::High => 12,
         }
     }
 }
