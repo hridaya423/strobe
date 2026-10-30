@@ -55,6 +55,7 @@ fn fixture_project(name: &str) -> Result<PathBuf> {
         let reference = std::env::var_os("VRF_BENCH_DIR")
             .map_or_else(bench_dir, PathBuf::from)
             .join("corpus/external/github-unwrapped/node_modules");
+        let _ = fs::remove_file(&modules);
         symlink(reference, &modules)?;
     }
     let src = project.join("src");
