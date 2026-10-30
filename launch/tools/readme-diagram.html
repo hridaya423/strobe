@@ -8,6 +8,11 @@
         src: url("../assets/fonts/DepartureMono-Regular.woff2") format("woff2");
       }
       @font-face {
+        font-family: "Instrument Serif";
+        font-style: italic;
+        src: url("../assets/fonts/InstrumentSerif-Italic.woff2") format("woff2");
+      }
+      @font-face {
         font-family: "Geist";
         font-weight: 100 900;
         src: url("../assets/fonts/Geist.woff2") format("woff2");
@@ -25,67 +30,97 @@
   <body>
     <div id="out"></div>
     <script>
-      const dark = new URLSearchParams(location.search).get("theme") === "dark";
-      const T = dark
-        ? { ink: "#E6EDF3", muted: "#7D8590", soft: "#8B949E", node: "#161B22", stroke: "#30363D", zone: "rgba(230,237,243,0.025)", zoneStroke: "rgba(230,237,243,0.12)", paper: "#0D1117" }
-        : { ink: "#0B1220", muted: "#57606A", soft: "#57606A", node: "#FFFFFF", stroke: "#D0D7DE", zone: "rgba(11,18,32,0.025)", zoneStroke: "rgba(11,18,32,0.14)", paper: "#FFFFFF" };
-      const ACC = "#2F7BFF";
-      const NW = 240, NH = 80;
-      const TOP = 84, BOT = 316;
+      const C = { night: "#04060D", deep: "#0B2A6B", electric: "#2F7BFF", ice: "#8FE3FF", core: "#F4FBFF", dim: "#5B6678", ash: "#2A3240", fog: "#8D97A8" };
+      const W = 1600, H = 820, NW = 248, NH = 92, GAP = 50;
+      const X = [64, 64 + (NW + GAP), 64 + 2 * (NW + GAP), 64 + 3 * (NW + GAP), 64 + 4 * (NW + GAP)];
+      const R1 = 300, R2 = 560;
+      const BOLT = "34.18,10 22.72,35.08 30.91,35.08 27.36,54 41.82,26.72 33.36,26.72 38.82,10";
 
-      const node = (x, y, name, sub, focal) => `
-        <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="6" fill="${T.paper}"/>
-        <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="6" fill="${focal ? (dark ? "rgba(47,123,255,0.14)" : "rgba(47,123,255,0.08)") : T.node}" stroke="${focal ? ACC : T.stroke}" stroke-width="${focal ? 1.6 : 1.2}"/>
-        <text x="${x + 20}" y="${y + 34}" font-family="Geist" font-weight="600" font-size="21" fill="${T.ink}">${name}</text>
-        <text x="${x + 20}" y="${y + 60}" font-family="Departure Mono" font-size="15" fill="${T.muted}">${sub}</text>`;
+      const bolt = (x, y, s, fill) => `<g transform="translate(${x} ${y}) scale(${s}) translate(-32 -32)"><polygon points="${BOLT}" fill="${fill}"/></g>`;
 
-      const arrow = (x1, x2, y, color, label) => {
-        const line = `<line x1="${x1}" y1="${y}" x2="${x2 - 2}" y2="${y}" stroke="${color}" stroke-width="${color === ACC ? 2 : 1.4}" marker-end="url(#${color === ACC ? "a2" : "a1"})"/>`;
-        if (!label) return line;
-        const w = label.length * 9.4 + 16, cx = (x1 + x2) / 2;
-        return line + `<rect x="${cx - w / 2}" y="${y - 34}" width="${w}" height="20" fill="${T.paper}"/>
-          <text x="${cx}" y="${y - 19}" text-anchor="middle" font-family="Departure Mono" font-size="14" fill="${color === ACC ? ACC : T.soft}" letter-spacing="1">${label}</text>`;
+      const chip = (x, y, text, live) => {
+        const w = text.length * 10 + 18;
+        return `<rect x="${x}" y="${y}" width="${w}" height="22" rx="4" fill="${live ? "rgba(47,123,255,0.16)" : "rgba(141,151,168,0.10)"}" stroke="${live ? "rgba(143,227,255,0.45)" : "rgba(141,151,168,0.28)"}"/>
+          <text x="${x + w / 2}" y="${y + 16}" text-anchor="middle" font-family="Departure Mono" font-size="13" letter-spacing="1" fill="${live ? C.ice : C.fog}">${text}</text>`;
       };
 
-      const zone = (x, y, w, h, label, color, dashed) => {
-        const lw = label.length * 10.4 + 24;
-        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${dashed ? "none" : T.zone}" stroke="${color}" stroke-width="${dashed ? 1.4 : 1}" ${dashed ? 'stroke-dasharray="6,5"' : ""}/>
-          <rect x="${x + 16}" y="${y - 10}" width="${lw}" height="20" fill="${T.paper}"/>
-          <text x="${x + 26}" y="${y + 5}" font-family="Departure Mono" font-size="14" fill="${dashed ? ACC : T.soft}" letter-spacing="1.5">${label}</text>`;
+      const node = (i, y, name, sub, tag, live, focal) => {
+        const x = X[i];
+        const fill = focal ? "url(#focal)" : live ? "#08122A" : "#0A0D14";
+        const stroke = focal ? C.ice : live ? "rgba(47,123,255,0.75)" : C.ash;
+        return `${focal ? `<rect x="${x - 6}" y="${y - 6}" width="${NW + 12}" height="${NH + 12}" rx="14" fill="${C.electric}" opacity="0.35" filter="url(#bloom)"/>` : ""}
+          <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="10" fill="${fill}" stroke="${stroke}" stroke-width="${focal ? 1.6 : 1.2}"/>
+          <text x="${x + 20}" y="${y + 38}" font-family="Geist" font-weight="600" font-size="22" fill="${live ? C.core : "#B7C0CE"}">${name}</text>
+          <text x="${x + 20}" y="${y + 66}" font-family="Departure Mono" font-size="15" fill="${live ? "rgba(143,227,255,0.72)" : C.dim}">${sub}</text>
+          ${tag ? chip(x + NW - tag.length * 10 - 32, y + 14, tag, live) : ""}`;
       };
 
-      const X = [48, 348, 648, 948, 1248];
-      const W = 1536, H = 468;
-      const cy1 = TOP + NH / 2, cy2 = BOT + NH / 2;
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="arch-t arch-d">
-        <title id="arch-t">How a frame reaches the file</title>
-        <desc id="arch-d">Remotion and HyperFrames capture each frame as a JPEG or PNG and pipe it to FFmpeg. Strobe sends each painted GPU surface through a compute convert straight into the hardware encoder.</desc>
+      const wire = (i, j, y, live) => {
+        const x1 = X[i] + NW, x2 = X[j] - 3;
+        if (!live) return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${C.dim}" stroke-width="1.4" stroke-dasharray="4,5" marker-end="url(#dull)"/>`;
+        return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${C.electric}" stroke-width="6" opacity="0.55" filter="url(#bloom)"/>
+          <line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${C.ice}" stroke-width="2" marker-end="url(#hot)"/>`;
+      };
+
+      const grid = () => {
+        let d = "";
+        for (let x = 40; x < W; x += 40) d += `M${x} 0V${H}`;
+        for (let y = 40; y < H; y += 40) d += `M0 ${y}H${W}`;
+        return `<path d="${d}" stroke="rgba(47,123,255,0.07)" stroke-width="1"/>`;
+      };
+
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="t d">
+        <title id="t">The frame never leaves the GPU</title>
+        <desc id="d">Remotion and HyperFrames screenshot each frame to a JPEG or PNG on the CPU and pipe it to FFmpeg. Strobe moves each frame from a CEF view through IOSurface and a wgpu convert into VideoToolbox without a CPU readback.</desc>
         <defs>
-          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.muted}"/></marker>
-          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${ACC}"/></marker>
+          <clipPath id="card"><rect width="${W}" height="${H}" rx="20"/></clipPath>
+          <filter id="bloom" x="-40%" y="-200%" width="180%" height="500%"><feGaussianBlur stdDeviation="9"/></filter>
+          <filter id="haze" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="70"/></filter>
+          <linearGradient id="focal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#123A8C"/><stop offset="1" stop-color="#0B2A6B"/></linearGradient>
+          <marker id="dull" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="${C.dim}"/></marker>
+          <marker id="hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${C.ice}"/></marker>
         </defs>
-        <rect width="${W}" height="${H}" rx="12" fill="${T.paper}"/>
-        ${zone(16, TOP - 44, W - 32, NH + 72, "REMOTION, HYPERFRAMES", T.zoneStroke)}
-        ${zone(16, BOT - 44, W - 32, NH + 104, "STROBE", T.zoneStroke)}
-        ${zone(X[1] - 20, BOT - 20, X[3] + NW - X[1] + 40, NH + 48, "STAYS ON THE GPU", ACC, true)}
-        ${arrow(X[0] + NW, X[1], cy1, T.muted, "")}
-        ${arrow(X[1] + NW, X[2], cy1, T.muted, "")}
-        ${arrow(X[2] + NW, X[4], cy1, T.muted, "")}
-        ${arrow(X[0] + NW, X[1], cy2, ACC, "")}
-        ${arrow(X[1] + NW, X[2], cy2, ACC, "")}
-        ${arrow(X[2] + NW, X[3], cy2, ACC, "")}
-        ${arrow(X[3] + NW, X[4], cy2, T.muted, "")}
-        ${node(X[0], TOP, "Headless Chrome", "screenshots a frame")}
-        ${node(X[1], TOP, "JPEG or PNG", "piped to FFmpeg")}
-        ${node(X[2], TOP, "FFmpeg", "decodes, then encodes")}
-        ${node(X[4], TOP, "MP4", "with AAC audio")}
-        ${node(X[0], BOT, "CEF 156 view", "one begin frame")}
-        ${node(X[1], BOT, "IOSurface", "D3D12 on Windows")}
-        ${node(X[2], BOT, "wgpu convert", "BGRA to NV12", true)}
-        ${node(X[3], BOT, "VideoToolbox", "NVENC on Windows")}
-        ${node(X[4], BOT, "MP4", "with AAC audio")}
+        <g clip-path="url(#card)">
+          <rect width="${W}" height="${H}" fill="${C.night}"/>
+          ${grid()}
+          <ellipse cx="${X[2] + NW / 2}" cy="${R2 + NH / 2}" rx="620" ry="150" fill="${C.electric}" opacity="0.20" filter="url(#haze)"/>
+
+          <text x="64" y="78" font-family="Departure Mono" font-size="16" letter-spacing="2" fill="${C.electric}">HOW A FRAME REACHES THE FILE</text>
+          <text x="64" y="150" font-family="Instrument Serif" font-style="italic" font-size="74" fill="${C.core}">The frame never leaves the GPU.</text>
+
+          <text x="64" y="${R1 - 26}" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.fog}">REMOTION, HYPERFRAMES</text>
+          <text x="${W - 64}" y="${R1 - 26}" text-anchor="end" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.dim}">SCREENSHOT, THEN FFMPEG</text>
+          ${wire(0, 1, R1 + NH / 2, false)}
+          ${wire(1, 2, R1 + NH / 2, false)}
+          ${wire(2, 4, R1 + NH / 2, false)}
+          ${node(0, R1, "Headless Chrome", "paints the frame")}
+          ${node(1, R1, "JPEG or PNG", "read back, compressed", "CPU")}
+          ${node(2, R1, "FFmpeg", "decodes, encodes", "CPU")}
+          ${node(4, R1, "MP4", "with AAC audio")}
+
+          <line x1="64" y1="${(R1 + NH + R2) / 2 - 4}" x2="${W - 64}" y2="${(R1 + NH + R2) / 2 - 4}" stroke="rgba(141,151,168,0.14)"/>
+
+          ${bolt(80, R2 - 31, 0.42, C.electric)}
+          <text x="98" y="${R2 - 26}" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.ice}">STROBE</text>
+          <text x="${W - 64}" y="${R2 - 26}" text-anchor="end" font-family="Departure Mono" font-size="15" letter-spacing="2" fill="${C.electric}">ZERO CPU READBACKS ON MACOS</text>
+          <rect x="${X[1] - 22}" y="${R2 - 18}" width="${X[3] + NW - X[1] + 44}" height="${NH + 64}" rx="16" fill="none" stroke="rgba(143,227,255,0.45)" stroke-width="1.2" stroke-dasharray="2,6" stroke-linecap="round"/>
+          <text x="${(X[1] + X[3] + NW) / 2}" y="${R2 + NH + 36}" text-anchor="middle" font-family="Departure Mono" font-size="14" letter-spacing="2" fill="rgba(143,227,255,0.8)">STAYS ON THE GPU</text>
+          ${wire(0, 1, R2 + NH / 2, true)}
+          ${wire(1, 2, R2 + NH / 2, true)}
+          ${wire(2, 3, R2 + NH / 2, true)}
+          ${wire(3, 4, R2 + NH / 2, true)}
+          ${node(0, R2, "CEF 156 view", "one begin frame", "", true)}
+          ${node(1, R2, "IOSurface", "D3D12 on Windows", "GPU", true)}
+          ${node(2, R2, "wgpu convert", "BGRA to NV12", "GPU", true, true)}
+          ${node(3, R2, "VideoToolbox", "NVENC on Windows", "GPU", true)}
+          ${node(4, R2, "MP4", "with AAC audio", "", true)}
+
+          <text x="64" y="${H - 40}" font-family="Departure Mono" font-size="14" letter-spacing="1.5" fill="${C.dim}">SAME PROJECT, SAME CODE, 2.4× TO 5.2× FASTER ON SEVEN LAUNCH VIDEOS</text>
+          <text x="${W - 64}" y="${H - 38}" text-anchor="end" font-family="Instrument Serif" font-style="italic" font-size="40" fill="${C.core}">strobe</text>
+        </g>
+        <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="20" fill="none" stroke="rgba(143,227,255,0.12)"/>
       </svg>`;
-      document.fonts.load('600 21px "Geist"').then(() => document.fonts.load('15px "Departure Mono"')).then(() => {
+      Promise.all([document.fonts.load('600 22px "Geist"'), document.fonts.load('15px "Departure Mono"'), document.fonts.load('italic 74px "Instrument Serif"')]).then(() => {
         document.getElementById("out").innerHTML = svg;
         document.title = "ready";
       });
