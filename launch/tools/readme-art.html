@@ -82,6 +82,30 @@
         ctx.fillText("The fast render engine for HTML video", LW / 2, 352);
       }
 
+      function card(c) {
+        const CW = 1280, CH = 640;
+        c.width = CW;
+        c.height = CH;
+        const ctx = c.getContext("2d");
+        ctx.fillStyle = HEX.night;
+        ctx.fillRect(0, 0, CW, CH);
+        const ink = document.createElement("canvas");
+        ink.width = CW;
+        ink.height = CH;
+        wordmark(ink.getContext("2d"), 250, CW / 2, 318, HEX.core, HEX.electric);
+        ctx.drawImage(ink, 0, 0);
+        ctx.textAlign = "center";
+        ctx.font = '500 40px "Geist"';
+        ctx.fillStyle = "rgba(244,251,255,0.78)";
+        ctx.fillText("The fast render engine for HTML video", CW / 2, 410);
+        ctx.font = '500 30px "Geist"';
+        ctx.fillStyle = HEX.ice;
+        ctx.fillText("Remotion and HyperFrames, up to 5.2× faster", CW / 2, 462);
+        ctx.font = '22px "Departure Mono"';
+        ctx.fillStyle = "rgba(244,251,255,0.42)";
+        ctx.fillText("github.com/hridaya423/strobe", CW / 2, CH - 56);
+      }
+
       function chart(c, dark) {
         const ink = dark ? "#E6EDF3" : "#0B1220";
         const dim = dark ? "#7D8590" : "#57606A";
@@ -144,7 +168,8 @@
       document.fonts.load('italic 330px "Instrument Serif"').then(() =>
         Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 38px "Geist"')]).then(() => {
           const c = document.getElementById("c");
-          if (art.startsWith("logo")) logo(c, art === "logo-dark");
+          if (art === "card") card(c);
+          else if (art.startsWith("logo")) logo(c, art === "logo-dark");
           else chart(c, art === "chart-dark");
           document.title = "ready";
         }),
