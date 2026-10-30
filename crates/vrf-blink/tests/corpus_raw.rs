@@ -46,7 +46,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
             let (view, meta) = page.open(ui, corpus.width as i32, corpus.height as i32)?;
             let seek = move |view: &mut View, frame| {
                 let _keep = &server;
-                remotion::Page::seek(view, frame, 1).map(drop)
+                remotion::Page::seek(view, frame, 1, false).map(drop)
             };
             (view, meta.duration_in_frames, false, Box::new(seek))
         }
@@ -65,7 +65,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
             let page = hyperframes::Page::new(prepare, &options)?;
             let (view, meta) = page.open(ui, corpus.width as i32, corpus.height as i32)?;
             let seek = move |view: &mut View, frame| {
-                hyperframes::Page::seek(view, frame, page.video.at(frame))
+                hyperframes::Page::seek(view, frame, page.video.at(frame), false).map(drop)
             };
             (view, meta.frames, true, Box::new(seek))
         }

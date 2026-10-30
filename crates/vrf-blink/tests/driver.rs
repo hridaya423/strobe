@@ -12,7 +12,7 @@ use support::{HEIGHT, TOLERANCE, WIDTH, centre_colours, expected_colour, load_av
 use vrf_blink::driver::{
     Capture, Config, Pipeline, Plan, Stats, Summary, Warm, render, render_runs,
 };
-use vrf_blink::skip::{Skip, TRACK_JS};
+use vrf_blink::skip::{self, Skip, TRACK_JS};
 use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
 use vrf_encode::{Codec, Rational};
 
@@ -279,6 +279,11 @@ fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+fn seek(view: &mut View, frame: u64, ask: bool) -> Result<((), bool)> {
+    let (_, unchanged) = skip::evaluate(view, &format!("seek({frame})"), ask)?;
+    Ok(((), unchanged))
+}
+
 fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
@@ -293,7 +298,7 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
             &out,
             &mut warm,
             || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
-            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |view, frame, ask| seek(view, frame, ask),
             |_| Ok(()),
         )?;
         runs.muxer.finish()?;
@@ -330,7 +335,7 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
             &out,
             &mut warm,
             || View::open_project(ui, &project, page, 640, 360, Some(TRACK_JS)),
-            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |view, frame, ask| seek(view, frame, ask),
             |_| Ok(()),
         )?;
         runs.muxer.finish()?;
@@ -393,7 +398,7 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
             &out,
             &mut warm,
             || View::open_project(ui, &project, "flip.html", 640, 360, Some(TRACK_JS)),
-            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
+            |view, frame, ask| seek(view, frame, ask),
             |_| Ok(()),
         )?;
         runs.muxer.finish()?;
@@ -428,9 +433,9 @@ fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
         &out,
         &mut Warm::new()?,
         || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
-        |view, frame| {
+        |view, frame, ask| {
             ensure!(frame != 50, "frame 50 is broken");
-            view.evaluate(&format!("seek({frame})")).map(drop)
+            seek(view, frame, ask)
         },
         |_| Ok(()),
     ) else {

@@ -23,7 +23,7 @@ use super::{
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
-use crate::skip::{Skip, TRACK_JS};
+use crate::skip::{self, Skip, TRACK_JS};
 use crate::video::{Clips, Link, StartFallback};
 use crate::{Mode, Project, Ui, View};
 
@@ -485,9 +485,18 @@ impl Page {
     /// Leaves the view showing `frame` once Remotion's barrier has cleared, and returns the
     /// assets the frame registered. Frames must be seeked in increasing order for Remotion's
     /// output to match its own renderer.
-    pub fn seek(view: &mut View, frame: u64, attempt: u32) -> Result<Vec<Value>> {
-        let result = view.evaluate(&format!("__vrf.rm.seek({frame}, {{ attempt: {attempt} }})"))?;
-        Ok(serde_json::from_value(result["assets"].clone())?)
+    pub fn seek(
+        view: &mut View,
+        frame: u64,
+        attempt: u32,
+        ask: bool,
+    ) -> Result<(Vec<Value>, bool)> {
+        let (result, unchanged) = skip::evaluate(
+            view,
+            &format!("__vrf.rm.seek({frame}, {{ attempt: {attempt} }})"),
+            ask,
+        )?;
+        Ok((serde_json::from_value(result["assets"].clone())?, unchanged))
     }
 }
 
@@ -794,11 +803,13 @@ impl Renderer {
                     first_ready.get_or_init(|| (since(command_start), open_started.elapsed()));
                     Ok(view)
                 },
-                |view, frame| {
+                |view, frame, ask| {
                     let mut attempt = 1;
                     loop {
-                        match Page::seek(view, frame, attempt) {
-                            Ok(assets) => return Ok(FrameAssets { frame, assets }),
+                        match Page::seek(view, frame, attempt, ask) {
+                            Ok((assets, unchanged)) => {
+                                return Ok((FrameAssets { frame, assets }, unchanged));
+                            }
                             Err(error) if error.to_string().contains(RETRY_MARK) => {
                                 let (fresh, _) = page.open(ui, width, height)?;
                                 std::mem::replace(view, fresh).close()?;

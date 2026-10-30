@@ -210,7 +210,7 @@ fn run(ui: Ui) -> Result<()> {
         "hash,frame,ga_calls,seek_rt,page_total,set_frame_sync,ready_after_set,tail,collect,fetch_hdr_max,fetch_body_max,fetches,bytes,watchdog,b2p,pipeline,total\n",
     );
     for before in first.saturating_sub(10)..first {
-        Page::seek(&mut view, before, 1)?;
+        Page::seek(&mut view, before, 1, false)?;
     }
     let cpu_profile = std::env::var_os("VRF_CPUPROFILE");
     if cpu_profile.is_some() {

@@ -648,7 +648,7 @@ struct Shared<'a, T> {
     done: AtomicU64,
     on_frame: &'a (dyn Fn(u64) -> Result<()> + Sync),
     open: &'a (dyn Fn() -> Result<View> + Sync),
-    seek: &'a (dyn Fn(&mut View, u64) -> Result<T> + Sync),
+    seek: &'a (dyn Fn(&mut View, u64, bool) -> Result<(T, bool)> + Sync),
 }
 
 struct Worker<T> {
@@ -759,7 +759,8 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
             .saturating_sub(shared.plan.lead_in)
             .max(last.map_or(0, |last| last + 1));
         for before in resume..start {
-            (shared.seek)(&mut view, before).with_context(|| format!("seek to frame {before}"))?;
+            (shared.seek)(&mut view, before, false)
+                .with_context(|| format!("seek to frame {before}"))?;
             handoff.wait()?;
             worker
                 .capture
@@ -770,12 +771,10 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
         for index in from..to {
             let frame = shared.first + index;
             let step = Instant::now();
-            let value = (shared.seek)(&mut view, frame)
+            let ask = shared.skip.is_some_and(|skip| skip.wants(frame));
+            let (value, unchanged) = (shared.seek)(&mut view, frame, ask)
                 .with_context(|| format!("seek to frame {frame}"))?;
             worker.seek.push(step.elapsed());
-            let unchanged = shared
-                .skip
-                .map_or(Ok(false), |skip| skip.unchanged(&mut view, frame))?;
             if unchanged && index > from {
                 handoff.send(index, Job::Skip)?;
             } else {
@@ -800,7 +799,8 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
 
 /// Renders `config.frames` frames starting at `first` to a file at `out`, with `plan.views` views
 /// each on its own thread. `open` makes a view and `seek` leaves it showing a frame and returns
-/// what the adapter collects for it; `seek` may replace the view. The first error any view hits
+/// what the adapter collects for it, and, when its last argument asks, whether the frame is
+/// unchanged from the one before (see `skip::evaluate`); `seek` may replace the view. The first error any view hits
 /// stops the others and is the one returned. `on_frame` gets the number of frames done after each
 /// one, from whichever view finished it.
 pub fn render_runs<T: Send>(
@@ -810,7 +810,7 @@ pub fn render_runs<T: Send>(
     out: &Path,
     warm: &mut Warm,
     open: impl Fn() -> Result<View> + Sync,
-    seek: impl Fn(&mut View, u64) -> Result<T> + Sync,
+    seek: impl Fn(&mut View, u64, bool) -> Result<(T, bool)> + Sync,
     on_frame: impl Fn(u64) -> Result<()> + Sync,
 ) -> Result<Runs<T>> {
     let started = Instant::now();

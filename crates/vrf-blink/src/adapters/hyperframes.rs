@@ -19,7 +19,7 @@ use super::{
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
 use crate::video::NativeVideos;
-use crate::skip::{Skip, TRACK_JS};
+use crate::skip::{self, Skip, TRACK_JS};
 use crate::{Mode, Project, Ui, View};
 
 const HYPERFRAMES_JS: &str = include_str!("../../js/hyperframes.js");
@@ -313,10 +313,11 @@ impl Page {
     }
 
     /// Leaves the view showing `frame`.
-    pub fn seek(view: &mut View, frame: u64, videos: Option<Value>) -> Result<()> {
+    pub fn seek(view: &mut View, frame: u64, videos: Option<Value>, ask: bool) -> Result<bool> {
         let options = videos.map_or_else(|| json!({}), |videos| json!({ "videos": videos }));
-        view.evaluate(&format!("__vrf.hf.seek({frame}, {options})"))?;
-        Ok(())
+        let (_, unchanged) =
+            skip::evaluate(view, &format!("__vrf.hf.seek({frame}, {options})"), ask)?;
+        Ok(unchanged)
     }
 }
 
@@ -456,13 +457,13 @@ pub fn render(
             first_ready.get_or_init(|| since(command_start));
             Ok(view)
         },
-        |view, frame| {
-            Page::seek(view, frame, page.video.at(frame)).map_err(|error| {
-                match view.check_project() {
+        |view, frame, ask| {
+            Page::seek(view, frame, page.video.at(frame), ask)
+                .map(|unchanged| ((), unchanged))
+                .map_err(|error| match view.check_project() {
                     Err(refused) => error.context(refused.to_string()),
                     Ok(()) => error,
-                }
-            })
+                })
         },
         |done| progress.frame(done),
     )?;

@@ -95,7 +95,7 @@ fn shoot(ui: &Ui, composition: &str, video: VideoDecoder, frames: &[u64]) -> Res
     let gpu = Gpu::new()?;
     let mut shots = Vec::new();
     for &frame in frames {
-        Page::seek(&mut view, frame, 1)?;
+        Page::seek(&mut view, frame, 1, false)?;
         view.begin_frame();
         let paint = view
             .recv_paint(Duration::from_secs(10))

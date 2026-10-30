@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
+use serde_json::Value;
 
 use crate::View;
 
@@ -27,14 +28,21 @@ impl Skip {
         }
     }
 
-    pub fn unchanged(&self, view: &mut View, frame: u64) -> Result<bool> {
-        if self
-            .plan
-            .as_ref()
-            .is_some_and(|plan| !plan.contains(&frame))
-        {
-            return Ok(false);
-        }
-        Ok(view.evaluate("__vrf.track.take()")?.is_null())
+    pub fn wants(&self, frame: u64) -> bool {
+        self.plan.as_ref().is_none_or(|plan| plan.contains(&frame))
     }
+}
+
+/// Runs a seek expression and, when `ask` is set, asks the tracker in the same round trip
+/// whether the page still shows what was last painted. Returns the seek's value and whether the
+/// frame is unchanged; the answer is `false` when not asked.
+pub fn evaluate(view: &mut View, seek: &str, ask: bool) -> Result<(Value, bool)> {
+    if !ask {
+        return Ok((view.evaluate(seek)?, false));
+    }
+    let mut reply = view.evaluate(&format!(
+        "Promise.resolve({seek}).then((value) => ({{ value, unchanged: __vrf.track.take() === null }}))"
+    ))?;
+    let unchanged = reply["unchanged"].as_bool() == Some(true);
+    Ok((reply["value"].take(), unchanged))
 }

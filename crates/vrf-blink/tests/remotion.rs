@@ -91,7 +91,7 @@ fn reference_mode_pixels_equal_remotion_still(ui: &Ui) -> Result<()> {
     let (mut view, _) = page.open(ui, 320, 180)?;
     let gpu = Gpu::new()?;
     for frame in frames {
-        Page::seek(&mut view, frame, 1)?;
+        Page::seek(&mut view, frame, 1, false)?;
         view.begin_frame();
         let paint = view
             .recv_paint(Duration::from_secs(5))
