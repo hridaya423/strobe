@@ -57,12 +57,9 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
                 mode: Mode::Online,
                 plan: Plan::single(),
                 audio: false,
+                native_video: std::env::var("VRF_NATIVE_VIDEO").map_or(true, |value| value != "0"),
             };
-            let prepare = hyperframes::prepare(
-                &options.project,
-                options.hyperframes.as_deref(),
-                options.fps,
-            )?;
+            let prepare = hyperframes::prepare_for(&options)?;
             let page = hyperframes::Page::new(prepare, &options)?;
             let (view, meta) = page.open(ui, corpus.width as i32, corpus.height as i32)?;
             let seek = move |view: &mut View, frame| {
@@ -116,6 +113,7 @@ fn corpus_raw(ui: &Ui) -> Result<()> {
         }
         over8 = over8.max(s.frac_over_8);
         over32 = over32.max(s.frac_over_32);
+        println!("FRAME {frame} {:.5}", s.flip_mean);
         rows.push(s.flip_mean);
     }
     println!(

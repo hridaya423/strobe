@@ -109,6 +109,8 @@ impl Clips {
 /// serves the bundle from.
 pub type StartFallback = Arc<dyn Fn() -> Result<(u16, String)> + Send + Sync>;
 
+pub type Resolve = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
+
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Message {
@@ -131,18 +133,32 @@ pub struct Link;
 impl Link {
     /// Starts the thread. It ends when the view closes.
     pub fn attach(view: &mut View, project: Project, clips: Arc<Clips>, fallback: StartFallback) {
+        Link::attach_with(
+            view,
+            Arc::new(move |src| project.file_for(src)),
+            clips,
+            fallback,
+        );
+    }
+
+    pub fn attach_with(
+        view: &mut View,
+        resolve: Resolve,
+        clips: Arc<Clips>,
+        fallback: StartFallback,
+    ) {
         let pusher = view.pusher();
         let messages = view
             .take_pages()
             .expect("the view's page messages were already taken");
-        thread::spawn(move || serve(messages, pusher, project, clips, fallback));
+        thread::spawn(move || serve(messages, pusher, resolve, clips, fallback));
     }
 }
 
 fn serve(
     messages: Receiver<String>,
     pusher: Pusher,
-    project: Project,
+    resolve: Resolve,
     clips: Arc<Clips>,
     fallback: StartFallback,
 ) {
@@ -153,7 +169,7 @@ fn serve(
             .and_then(|message| match message {
                 Message::Open { req, src } => open(
                     &pusher,
-                    &project,
+                    &resolve,
                     &clips,
                     &fallback,
                     &mut playing,
@@ -173,7 +189,7 @@ fn serve(
 
 fn open(
     pusher: &Pusher,
-    project: &Project,
+    resolve: &Resolve,
     clips: &Clips,
     fallback: &StartFallback,
     playing: &mut Vec<Playing>,
@@ -181,8 +197,7 @@ fn open(
     src: &str,
 ) -> Result<()> {
     let id = playing.len() as u32;
-    let clip = project
-        .file_for(src)
+    let clip = resolve(src)
         .context("not a file in the project")
         .and_then(|path| clips.open(&path))
         .map_err(|error| format!("{error:#}"))

@@ -534,7 +534,6 @@ describe('item 23: video pre-extraction page side', () => {
     await hf.close();
   });
 
-  test('item_23_vfr_sources_with_long_gaps', { skip: 'frame choice and ffmpeg extraction are host side (Task 5.1)' }, () => {});
 });
 
 describe('item 24: static dedup equivalence', () => {
@@ -662,8 +661,6 @@ describe('shared items 1 to 8', () => {
 
   test('item_04_colour_pipeline_end_state', { skip: 'encoder side: yuv420p, CRF 18 and BT.709 tags are Task 2.x/3.7' }, () => {});
   test('item_05_audio_mix_model', { skip: 'Task 5.2' }, () => {});
-  test('item_06_video_frame_choice', { skip: 'host side lookup, Task 5.1; the page applies the chosen frames (item 23)' }, () => {});
-  test('item_07_video_colour_conversion', { skip: 'host side decode, Task 5.1' }, () => {});
 
   const veil = () =>
     project({
