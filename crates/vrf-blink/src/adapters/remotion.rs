@@ -1,32 +1,38 @@
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, ensure};
+use percent_encoding::percent_decode_str;
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use vrf::audio::{RemotionAsset, mix, remotion_clips, saturate};
 use vrf_encode::{Codec, Rational};
 
-use crate::driver::{Config, Plan, Runs, Summary, Warm, render_runs};
+use super::hyperframes;
+use super::{
+    PerFrame, Progress, StageStats, add_audio, audio_samples, cache_dir, hash_tree, short_hex,
+    since,
+};
+use crate::driver::{Config, Plan, Runs, Warm, render_runs};
+use crate::video::{Clips, Link, StartFallback};
 use crate::{Mode, Project, Ui, View};
 
+const VIDEO_JS: &str = include_str!("../../js/video.js");
 const REMOTION_JS: &str = include_str!("../../js/remotion.js");
 const CLOCK_JS: &str = include_str!("../../js/clock.js");
 const BUNDLE_JS: &str = include_str!("../../js/remotion-bundle.mjs");
 const SERVE_JS: &str = include_str!("../../js/remotion-serve.mjs");
 
 const FIRST_VIEW_SIZE: (i32, i32) = (1920, 1080);
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
-const NOT_HASHED: [&str; 5] = ["node_modules", ".git", ".vrf", ".cache", "out"];
 const ENTRY_CANDIDATES: [&str; 8] = [
     "src/index.ts",
     "src/index.tsx",
@@ -46,6 +52,19 @@ const REMOTION_COMMANDS: [&str; 6] = [
     "compositions",
 ];
 const RETRY_MARK: &str = "Rendering the frame will be retried";
+const AUDIO_BIT_RATE: u32 = 320_000;
+
+/// What decodes the frames of `<OffthreadVideo>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum VideoDecoder {
+    /// VideoToolbox in this process, drawn by the page's own WebGL surface. Clips it cannot
+    /// reproduce exactly (alpha, ProRes, 10-bit, remote URLs) go to Remotion's frame server,
+    /// which is started the first time one is needed.
+    #[default]
+    Native,
+    /// Remotion's own frame server, a Node process, for every clip.
+    Remotion,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Options {
@@ -58,6 +77,9 @@ pub struct Options {
     pub mode: Mode,
     pub timeout: Duration,
     pub plan: Plan,
+    /// Mix the composition's audio into the file. Off leaves a video-only file.
+    pub audio: bool,
+    pub video: VideoDecoder,
 }
 
 /// One render: what to render, which frames of it, the codec, and where the file goes.
@@ -98,27 +120,6 @@ pub struct FrameAssets {
     pub assets: Vec<Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StageStats {
-    pub mean_ms: f64,
-    pub p50_ms: f64,
-    pub p99_ms: f64,
-    pub max_ms: f64,
-}
-
-impl StageStats {
-    fn of(samples: &[Duration]) -> StageStats {
-        let summary = Summary::of(samples);
-        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        StageStats {
-            mean_ms: ms(summary.mean),
-            p50_ms: ms(summary.p50),
-            p99_ms: ms(summary.p99),
-            max_ms: ms(samples.iter().copied().max().unwrap_or_default()),
-        }
-    }
-}
-
 /// What a render found already prepared.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Warmth {
@@ -135,16 +136,9 @@ pub struct Stages {
     pub open_s: f64,
     pub pipeline_s: f64,
     pub render_s: f64,
+    pub audio_s: f64,
     pub finish_s: f64,
     pub warm: Warmth,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PerFrame {
-    pub seek: StageStats,
-    pub begin_to_paint: StageStats,
-    pub convert: StageStats,
-    pub encode: StageStats,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,11 +170,6 @@ pub struct Report {
 pub struct Bundle {
     pub dir: PathBuf,
     pub cached: bool,
-}
-
-fn cache_dir() -> PathBuf {
-    std::env::var_os("VRF_CACHE_DIR")
-        .map_or_else(|| std::env::temp_dir().join("vrf-cache"), PathBuf::from)
 }
 
 fn entry_in_scripts(project: &Path) -> Option<PathBuf> {
@@ -218,32 +207,6 @@ fn find_entry(project: &Path) -> Result<PathBuf> {
         })
 }
 
-fn hash_tree(context: &mut digest::Context, root: &Path, dir: &Path) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)
-        .with_context(|| format!("read {}", dir.display()))?
-        .collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        if NOT_HASHED
-            .iter()
-            .any(|name| entry.file_name() == OsStr::new(name))
-        {
-            continue;
-        }
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            hash_tree(context, root, &path)?;
-            continue;
-        }
-        let metadata = fs::metadata(&path)?;
-        let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
-        context.update(path.strip_prefix(root)?.as_os_str().as_encoded_bytes());
-        context.update(&metadata.len().to_le_bytes());
-        context.update(&modified.to_le_bytes());
-    }
-    Ok(())
-}
-
 fn input_hash(project: &Path, entry: &Path) -> Result<String> {
     let mut context = digest::Context::new(&digest::SHA256);
     hash_tree(&mut context, project, project)?;
@@ -256,10 +219,7 @@ fn input_hash(project: &Path, entry: &Path) -> Result<String> {
             bundler.display()
         )
     })?);
-    Ok(context.finish().as_ref()[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(short_hex(context))
 }
 
 /// Bundles the project with its own `@remotion/bundler` in a Node subprocess. The result is
@@ -366,11 +326,53 @@ impl Drop for Offthread {
     }
 }
 
+/// Remotion's frame server, started on first use for the clips the native path refuses.
+pub struct Fallback {
+    project_dir: PathBuf,
+    bundle_dir: PathBuf,
+    project: Project,
+    server: Mutex<Option<Offthread>>,
+}
+
+impl Fallback {
+    pub fn new(project_dir: &Path, bundle_dir: &Path, project: Project) -> Result<Fallback> {
+        Ok(Fallback {
+            project_dir: project_dir.canonicalize()?,
+            bundle_dir: bundle_dir.to_owned(),
+            project,
+            server: Mutex::new(None),
+        })
+    }
+
+    fn port_and_url(&self) -> Result<(u16, String)> {
+        let mut server = self.server.lock().unwrap();
+        if server.is_none() {
+            let started = Offthread::start(&self.project_dir, &self.bundle_dir)?;
+            self.project
+                .allow_direct(format!("http://localhost:{}/", started.port));
+            *server = Some(started);
+        }
+        let server = server.as_ref().expect("the frame server was just started");
+        Ok((server.port, server.serve_url.clone()))
+    }
+
+    /// Whether the frame server had to be started.
+    pub fn started(&self) -> bool {
+        self.server.lock().unwrap().is_some()
+    }
+}
+
+struct Native {
+    clips: Arc<Clips>,
+    fallback: Arc<Fallback>,
+}
+
 /// A bundled project that can open ready-to-seek views of one composition.
 pub struct Page {
     project: Project,
-    script: String,
+    config: Value,
     composition: String,
+    native: Option<Native>,
 }
 
 impl Page {
@@ -386,9 +388,29 @@ impl Page {
         });
         Ok(Page {
             project,
-            script: format!("globalThis.__vrf_rm_config = {config};\n{REMOTION_JS}\n{CLOCK_JS}"),
+            config,
             composition: serde_json::to_string(&options.composition)?,
+            native: None,
         })
+    }
+
+    /// Decodes `<OffthreadVideo>` natively instead of through Remotion's frame server, which
+    /// `fallback` starts only for a clip the native path refuses.
+    pub fn with_native_video(mut self, fallback: Arc<Fallback>) -> Page {
+        self.config["nativeVideo"] = Value::Bool(true);
+        self.native = Some(Native {
+            clips: Arc::default(),
+            fallback,
+        });
+        self
+    }
+
+    fn script(&self) -> String {
+        let video = if self.native.is_some() { VIDEO_JS } else { "" };
+        format!(
+            "globalThis.__vrf_rm_config = {};\n{video}\n{REMOTION_JS}\n{CLOCK_JS}",
+            self.config
+        )
     }
 
     /// Opens a view of `width` x `height` with the adapter and the virtual clock injected, and
@@ -400,8 +422,9 @@ impl Page {
             "index.html",
             width,
             height,
-            Some(&self.script),
+            Some(&self.script()),
         )?;
+        self.link(&mut view);
         let meta = view
             .evaluate(&format!(
                 "__vrf.rm.init({{ compositionId: {} }})",
@@ -409,6 +432,14 @@ impl Page {
             ))
             .context("the composition did not initialise")?;
         Ok((view, serde_json::from_value(meta)?))
+    }
+
+    fn link(&self, view: &mut View) {
+        if let Some(native) = &self.native {
+            let fallback = native.fallback.clone();
+            let start: StartFallback = Arc::new(move || fallback.port_and_url());
+            Link::attach(view, self.project.clone(), native.clips.clone(), start);
+        }
     }
 
     /// Opens a view at a guessed size and resolves the composition in it without mounting it, so
@@ -420,8 +451,9 @@ impl Page {
             "index.html",
             FIRST_VIEW_SIZE.0,
             FIRST_VIEW_SIZE.1,
-            Some(&self.script),
+            Some(&self.script()),
         )?;
+        self.link(&mut view);
         let meta = view
             .evaluate(&format!(
                 "__vrf.rm.resolve({{ compositionId: {} }})",
@@ -451,6 +483,19 @@ impl Page {
         let result = view.evaluate(&format!("__vrf.rm.seek({frame}, {{ attempt: {attempt} }})"))?;
         Ok(serde_json::from_value(result["assets"].clone())?)
     }
+}
+
+fn project_file(url: &str, roots: &[&Path]) -> Result<PathBuf> {
+    let relative = url
+        .strip_prefix("vrf://project/")
+        .map(|rest| rest.split(['?', '#']).next().unwrap_or_default())
+        .and_then(|rest| percent_decode_str(rest).decode_utf8().ok())
+        .with_context(|| format!("audio source {url} is not a file of the project"))?;
+    roots
+        .iter()
+        .map(|root| root.join(&*relative))
+        .find(|path| path.is_file())
+        .with_context(|| format!("audio source {url} is not in the project or its bundle"))
 }
 
 fn resolve_references(frames: &mut [FrameAssets]) {
@@ -491,11 +536,12 @@ struct Key {
     props: Option<String>,
     timeout: Duration,
     mode: Mode,
+    video: VideoDecoder,
 }
 
 struct Loaded {
     key: Key,
-    _frame_server: Offthread,
+    _frame_server: Option<Offthread>,
     page: Page,
     composition: Option<Composition>,
     spare: Option<View>,
@@ -527,10 +573,6 @@ enum Ready {
     Unmounted(View),
 }
 
-fn since(start: SystemTime) -> f64 {
-    start.elapsed().unwrap_or_default().as_secs_f64() * 1000.0
-}
-
 /// Renders Remotion compositions and keeps what the next render can reuse: the GPU state and
 /// pixel pools, and for the last few projects their bundle, frame server and one spare ready
 /// view. A render with several views takes the spare for its first and opens the rest. A
@@ -558,6 +600,22 @@ impl Renderer {
             None => self.warm.insert(Warm::new()?),
         };
         warm.prepare(1920, 1080)
+    }
+
+    /// Renders a HyperFrames composition on the same GPU state and pixel pools. Nothing of the
+    /// project stays loaded: its preparation is cached on disk and its views are opened fresh.
+    pub fn render_hyperframes(
+        &mut self,
+        ui: &Ui,
+        job: &hyperframes::RenderJob,
+        command_start: SystemTime,
+        progress: &mut (dyn FnMut(u64, u64) -> Result<()> + Send),
+    ) -> Result<hyperframes::Report> {
+        let warm = match self.warm.as_mut() {
+            Some(warm) => warm,
+            None => self.warm.insert(Warm::new()?),
+        };
+        hyperframes::render(ui, job, warm, command_start, progress)
     }
 
     /// Opens the spare view for the project rendered last, so the next render of it starts on a
@@ -620,6 +678,7 @@ impl Renderer {
             props: options.props.clone(),
             timeout: options.timeout,
             mode: options.mode,
+            video: options.video,
         };
         let kept = self
             .loaded
@@ -631,12 +690,16 @@ impl Renderer {
         let mut loaded = match kept {
             Some(loaded) => loaded,
             None => {
-                let frame_server = Offthread::start(&key.project, &bundle.dir)?;
-                let page = Page::new(
-                    Project::open(&bundle.dir, options.mode)?,
-                    options,
-                    Some(&frame_server),
-                )?;
+                let project = Project::open(&bundle.dir, options.mode)?;
+                let frame_server = match options.video {
+                    VideoDecoder::Remotion => Some(Offthread::start(&key.project, &bundle.dir)?),
+                    VideoDecoder::Native => None,
+                };
+                let mut page = Page::new(project.clone(), options, frame_server.as_ref())?;
+                if options.video == VideoDecoder::Native {
+                    let fallback = Fallback::new(&key.project, &bundle.dir, project)?;
+                    page = page.with_native_video(Arc::new(fallback));
+                }
                 Loaded {
                     key,
                     _frame_server: frame_server,
@@ -695,8 +758,7 @@ impl Renderer {
         let page = &loaded.page;
         let seek_retries = AtomicU64::new(0);
         let first_ready = OnceLock::new();
-        let first_frame_ms = OnceLock::new();
-        let progress = Mutex::new((progress, Instant::now()));
+        let progress = Progress::new(progress, count, command_start);
         let render_started = Instant::now();
         let runs = thread::scope(|scope| {
             let prepared = Mutex::new(Some(scope.spawn(|| match ready {
@@ -743,26 +805,39 @@ impl Renderer {
                         }
                     }
                 },
-                |done| {
-                    first_frame_ms.get_or_init(|| since(command_start));
-                    let mut guard = progress.lock().unwrap();
-                    let (callback, last) = &mut *guard;
-                    if last.elapsed() >= PROGRESS_INTERVAL || done == count {
-                        callback(done, count)?;
-                        *last = Instant::now();
-                    }
-                    Ok(())
-                },
+                |done| progress.frame(done),
             )
         })?;
         let render_s = render_started.elapsed();
         let Runs {
             plan,
-            muxer,
+            mut muxer,
             frames: mut collected,
             stats,
             lead_in_frames,
         } = runs;
+
+        resolve_references(&mut collected);
+        let step = Instant::now();
+        if options.audio {
+            let per_frame_assets = collected
+                .iter()
+                .map(|f| {
+                    f.assets
+                        .iter()
+                        .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
+                        .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let clips = remotion_clips(&per_frame_assets, composition.fps, |url| {
+                project_file(url, &[&bundle.dir, &loaded.key.project])
+            })?;
+            let mut pcm = mix(&clips, audio_samples(count, config.frame_rate))?;
+            saturate(&mut pcm);
+            add_audio(&mut muxer, &pcm, AUDIO_BIT_RATE)?;
+        }
+        let audio_s = step.elapsed();
         let step = Instant::now();
         muxer.finish()?;
         let finish_s = step.elapsed();
@@ -772,7 +847,6 @@ impl Renderer {
             self.loaded.remove(0);
         }
 
-        resolve_references(&mut collected);
         let elapsed = started.elapsed();
         let (setup_ms, open_s) = first_ready.get().copied().unwrap_or_default();
         Ok(Report {
@@ -786,7 +860,7 @@ impl Renderer {
             lead_in: plan.lead_in,
             lead_in_frames,
             setup_ms,
-            first_frame_ms: first_frame_ms.get().copied().unwrap_or_default(),
+            first_frame_ms: progress.first_frame_ms(),
             total_ms: since(command_start),
             stages: Stages {
                 bundle_s: bundle_s.as_secs_f64(),
@@ -795,6 +869,7 @@ impl Renderer {
                 open_s: open_s.as_secs_f64(),
                 pipeline_s: stats.pipeline.as_secs_f64(),
                 render_s: render_s.as_secs_f64(),
+                audio_s: audio_s.as_secs_f64(),
                 finish_s: finish_s.as_secs_f64(),
                 warm: Warmth {
                     gpu: gpu_warm,

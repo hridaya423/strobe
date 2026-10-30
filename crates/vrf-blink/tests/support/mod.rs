@@ -2,13 +2,14 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use vrf_bench::corpus::bench_dir;
-use vrf_blink::adapters::remotion::Options;
+use vrf_blink::adapters::remotion::{Options, RenderJob, Renderer, Report, VideoDecoder};
 use vrf_blink::driver::Plan;
 use vrf_blink::{Mode, Ui};
+use vrf_encode::Codec;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/js/test/remotion/fixtures");
 
@@ -48,7 +49,25 @@ pub fn options(project: &Path, composition: &str) -> Options {
         mode: Mode::Offline,
         timeout: Duration::from_millis(2500),
         plan: Plan::single(),
+        audio: true,
+        video: VideoDecoder::Native,
     }
+}
+
+pub fn render(
+    ui: &Ui,
+    options: &Options,
+    frames: Option<std::ops::RangeInclusive<u64>>,
+    codec: Codec,
+    out: &Path,
+) -> Result<Report> {
+    let job = RenderJob {
+        options: options.clone(),
+        frames,
+        codec,
+        output: out.to_owned(),
+    };
+    Renderer::new(1).render(ui, &job, SystemTime::now(), &mut |_, _| Ok(()))
 }
 
 pub type Case = (&'static str, fn(&Ui) -> Result<()>);
@@ -142,4 +161,61 @@ pub fn load_average() -> String {
         .unwrap_or("?")
         .trim()
         .to_owned()
+}
+
+pub fn decode_audio(path: &std::path::Path) -> Result<Vec<f32>> {
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-map", "0:a:0", "-f", "f32le", "-ar", "48000", "-ac", "2", "-",
+        ])
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "ffmpeg: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output
+        .stdout
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect())
+}
+
+pub fn has_audio_stream(path: &std::path::Path) -> Result<bool> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "ffprobe failed on {}",
+        path.display()
+    );
+    Ok(!output.stdout.is_empty())
+}
+
+pub fn onset(stereo: &[f32], threshold: f32) -> Option<usize> {
+    stereo
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .position(|frame| frame[0].abs() > threshold)
+}
+
+pub fn rms(stereo: &[f32], from: usize, frames: usize) -> f64 {
+    let window = &stereo[from * 2..(from + frames) * 2];
+    (window.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / window.len() as f64).sqrt()
 }

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>html, body { margin: 0; background: #000; overflow: hidden; } img, canvas { display: block; }</style>
+<script src="video.js"></script>
+</head>
+<body>
+<script>
+globalThis.show = async (items) => {
+  document.body.replaceChildren();
+  for (const [src, time, style] of items) {
+    const response = await __vrf.video.request(src, time);
+    if (!response) throw new Error(`refused ${src}`);
+    const img = new Image();
+    img.style.cssText = style;
+    img.src = URL.createObjectURL(await response.blob());
+    document.body.append(img);
+    await img.decode();
+  }
+  return __vrf.video.present();
+};
+</script>
+</body>
+</html>

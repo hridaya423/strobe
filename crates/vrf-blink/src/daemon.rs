@@ -15,6 +15,7 @@ use ring::digest;
 use serde::{Deserialize, Serialize};
 
 use crate::Ui;
+use crate::adapters::hyperframes;
 use crate::adapters::remotion::{FrameAssets, RenderJob, Renderer, Report};
 
 const BUILD_ID_BYTES: u64 = 64 * 1024;
@@ -55,6 +56,7 @@ pub enum Job {
     /// Finishes the jobs before it, then exits.
     Stop,
     Render(RenderJob),
+    Hyperframes(hyperframes::RenderJob),
 }
 
 /// One line of JSON from client to daemon.
@@ -94,6 +96,9 @@ enum Event {
         report: Box<Report>,
         assets: Vec<FrameAssets>,
     },
+    DoneHyperframes {
+        report: Box<hyperframes::Report>,
+    },
     Pong,
     Refused {
         reason: String,
@@ -112,6 +117,7 @@ fn send(mut stream: &UnixStream, event: &Event) -> std::io::Result<()> {
 /// How a daemon answered.
 pub enum Reply {
     Rendered(Box<Report>, Vec<FrameAssets>),
+    RenderedHyperframes(Box<hyperframes::Report>),
     Pong,
     /// The daemon will not serve this request, such as one from another build. Render in
     /// process instead.
@@ -152,6 +158,7 @@ pub fn call(
             Event::Queued { ahead } => queued(ahead),
             Event::Progress { frame, frames } => progress(frame, frames),
             Event::Done { report, assets } => return Ok(Reply::Rendered(report, assets)),
+            Event::DoneHyperframes { report } => return Ok(Reply::RenderedHyperframes(report)),
             Event::Pong => return Ok(Reply::Pong),
             Event::Refused { reason } => return Ok(Reply::Refused(reason)),
             Event::Failed { message } => bail!("{message}"),
@@ -221,7 +228,7 @@ fn accept(
                     return;
                 }
             };
-            let renders = matches!(request.job, Job::Render(_));
+            let renders = matches!(request.job, Job::Render(_) | Job::Hyperframes(_));
             let refusal = if renders && request.build != build {
                 Some(format!(
                     "the daemon is build {build} and the client is {}; restart the daemon",
@@ -248,6 +255,25 @@ fn accept(
     }
 }
 
+fn finish<T>(
+    renderer: &mut Renderer,
+    outcome: std::thread::Result<Result<T>>,
+    done: impl FnOnce(T) -> Event,
+) -> Event {
+    match outcome {
+        Ok(Ok(report)) => done(report),
+        Ok(Err(error)) => Event::Failed {
+            message: format!("{error:#}"),
+        },
+        Err(_) => {
+            renderer.clear();
+            Event::Failed {
+                message: "the render panicked".to_owned(),
+            }
+        }
+    }
+}
+
 fn render(
     renderer: &mut Renderer,
     ui: &Ui,
@@ -260,24 +286,30 @@ fn render(
             send(stream, &Event::Progress { frame, frames }).context("the client went away")
         })
     }));
-    match outcome {
-        Ok(Ok(mut report)) => {
-            let assets = std::mem::take(&mut report.assets);
-            Event::Done {
-                report: Box::new(report),
-                assets,
-            }
+    finish(renderer, outcome, |mut report| {
+        let assets = std::mem::take(&mut report.assets);
+        Event::Done {
+            report: Box::new(report),
+            assets,
         }
-        Ok(Err(error)) => Event::Failed {
-            message: format!("{error:#}"),
-        },
-        Err(_) => {
-            renderer.clear();
-            Event::Failed {
-                message: "the render panicked".to_owned(),
-            }
-        }
-    }
+    })
+}
+
+fn render_hyperframes(
+    renderer: &mut Renderer,
+    ui: &Ui,
+    job: hyperframes::RenderJob,
+    command_start: SystemTime,
+    stream: &UnixStream,
+) -> Event {
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        renderer.render_hyperframes(ui, &job, command_start, &mut |frame, frames| {
+            send(stream, &Event::Progress { frame, frames }).context("the client went away")
+        })
+    }));
+    finish(renderer, outcome, |report| Event::DoneHyperframes {
+        report: Box::new(report),
+    })
 }
 
 /// Serves render requests on `config.socket` until it has been idle for `config.idle`, or a
@@ -315,6 +347,9 @@ pub fn serve(ui: &Ui, config: &Config) -> Result<()> {
                 Event::Pong
             }
             Job::Render(job) => render(&mut renderer, ui, job, command_start, &stream),
+            Job::Hyperframes(job) => {
+                render_hyperframes(&mut renderer, ui, job, command_start, &stream)
+            }
         };
         let _ = send(&stream, &reply);
         drop(stream);

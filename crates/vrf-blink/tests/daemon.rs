@@ -69,7 +69,9 @@ impl Daemon {
         match self.call(Job::Render(job), true, None, &AtomicBool::new(false))? {
             Reply::Rendered(report, _) => Ok(*report),
             Reply::Refused(reason) => bail!("refused: {reason}"),
-            Reply::Pong | Reply::Gone => bail!("no render came back"),
+            Reply::Pong | Reply::Gone | Reply::RenderedHyperframes(_) => {
+                bail!("no render came back")
+            }
         }
     }
 
