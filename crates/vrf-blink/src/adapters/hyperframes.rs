@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -17,11 +18,15 @@ use super::{
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
+use crate::video::NativeVideos;
 use crate::{Mode, Project, Ui, View};
 
 const HYPERFRAMES_JS: &str = include_str!("../../js/hyperframes.js");
 const CLOCK_JS: &str = include_str!("../../js/clock.js");
+const VIDEO_JS: &str = include_str!("../../js/video.js");
+const HOP_JS: &str = include_str!("../../js/hyperframes-hop.js");
 const PREPARE_JS: &str = include_str!("../../js/hyperframes-prepare.mjs");
+const NATIVE_JS: &str = include_str!("../../js/hyperframes-native.mjs");
 
 const PROBE_SIZE: (i32, i32) = (640, 360);
 const AUDIO_BIT_RATE: u32 = 192_000;
@@ -38,6 +43,7 @@ pub struct Options {
     pub plan: Plan,
     /// Mix the composition's audio into the file. Off leaves a video-only file.
     pub audio: bool,
+    pub native_video: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
@@ -64,7 +70,9 @@ struct Prepared {
     total_frames: u64,
     has_video: bool,
     video_metadata: Vec<VideoSize>,
-    frames: Vec<Vec<(String, String)>>,
+    frames: Vec<Vec<(String, Value)>>,
+    #[serde(default)]
+    natives: HashMap<String, Value>,
     tracks: Vec<HyperframesTrack>,
 }
 
@@ -72,6 +80,14 @@ pub struct Prepare {
     pub dir: PathBuf,
     pub cached: bool,
     prepared: Prepared,
+}
+
+impl Prepare {
+    pub fn native_videos(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = self.prepared.natives.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        ids
+    }
 }
 
 fn find_hyperframes(project: &Path) -> Result<PathBuf> {
@@ -87,10 +103,12 @@ fn find_hyperframes(project: &Path) -> Result<PathBuf> {
         })
 }
 
-fn input_hash(project: &Path, hyperframes: &Path, fps: u32) -> Result<String> {
+fn input_hash(project: &Path, hyperframes: &Path, fps: u32, native: &str) -> Result<String> {
     let mut context = digest::Context::new(&digest::SHA256);
     hash_tree(&mut context, project, project)?;
     context.update(PREPARE_JS.as_bytes());
+    context.update(NATIVE_JS.as_bytes());
+    context.update(native.as_bytes());
     context.update(&fps.to_le_bytes());
     let manifest = hyperframes.join("package.json");
     context.update(
@@ -103,7 +121,12 @@ fn input_hash(project: &Path, hyperframes: &Path, fps: u32) -> Result<String> {
 /// Node subprocess, the way `hyperframes render` does before it opens a browser. The result is
 /// cached under `VRF_CACHE_DIR` (default: the system temp dir) by a hash of the project's files,
 /// the package version, the frame rate and the preparation script.
-pub fn prepare(project: &Path, hyperframes: Option<&Path>, fps: u32) -> Result<Prepare> {
+pub fn prepare(
+    project: &Path,
+    hyperframes: Option<&Path>,
+    fps: u32,
+    native: Option<&[String]>,
+) -> Result<Prepare> {
     let project = project
         .canonicalize()
         .with_context(|| format!("project directory {} does not exist", project.display()))?;
@@ -116,7 +139,11 @@ pub fn prepare(project: &Path, hyperframes: Option<&Path>, fps: u32) -> Result<P
         Some(dir) => dir.to_owned(),
         None => find_hyperframes(&project)?,
     };
-    let hash = input_hash(&project, &hyperframes, fps)?;
+    let native = match native {
+        Some(extract) => json!({ "native": true, "extract": extract }).to_string(),
+        None => "{}".to_owned(),
+    };
+    let hash = input_hash(&project, &hyperframes, fps, &native)?;
     let root = cache_dir().join("hyperframes");
     let dir = root.join(&hash);
     let read = |dir: PathBuf, cached| -> Result<Prepare> {
@@ -133,6 +160,7 @@ pub fn prepare(project: &Path, hyperframes: Option<&Path>, fps: u32) -> Result<P
     fs::create_dir_all(&root)?;
     let script = root.join("hyperframes-prepare.mjs");
     fs::write(&script, PREPARE_JS)?;
+    fs::write(root.join("hyperframes-native.mjs"), NATIVE_JS)?;
     let partial = root.join(format!("{hash}.partial-{}", std::process::id()));
     let _ = fs::remove_dir_all(&partial);
     let output = Command::new("node")
@@ -141,6 +169,7 @@ pub fn prepare(project: &Path, hyperframes: Option<&Path>, fps: u32) -> Result<P
         .arg(&project)
         .arg(&partial)
         .arg(fps.to_string())
+        .arg(&native)
         .output()
         .context("run node to prepare the project")?;
     ensure!(
@@ -167,11 +196,28 @@ pub fn prepare(project: &Path, hyperframes: Option<&Path>, fps: u32) -> Result<P
     read(dir, false)
 }
 
+pub fn prepare_for(options: &Options) -> Result<Prepare> {
+    let hyperframes = options.hyperframes.as_deref();
+    if !options.native_video {
+        return prepare(&options.project, hyperframes, options.fps, None);
+    }
+    let first = prepare(&options.project, hyperframes, options.fps, Some(&[]))?;
+    let refused = NativeVideos::new(
+        &first.prepared.natives,
+        &[&first.dir.join("plan/compiled"), &options.project],
+    )?
+    .refused();
+    if refused.is_empty() {
+        return Ok(first);
+    }
+    prepare(&options.project, hyperframes, options.fps, Some(&refused))
+}
+
 /// Where a composition's `<video>` elements get their pictures. Frame `n` of each video comes
 /// from a JPEG that HyperFrames' own extraction wrote, chosen by its own lookup (contract items 6
 /// and 23). Anything that answers `at` with the same entries can replace it.
 pub struct VideoFrames {
-    table: Vec<Vec<(String, String)>>,
+    table: Vec<Vec<(String, Value)>>,
     enabled: bool,
 }
 
@@ -184,7 +230,10 @@ impl VideoFrames {
             self.table.get(frame as usize).map_or(json!([]), |entries| {
                 entries
                     .iter()
-                    .map(|(id, path)| json!({ "id": id, "src": format!("{FRAMES_URL}{path}") }))
+                    .map(|(id, shown)| match shown {
+                        Value::String(path) => json!({ "id": id, "src": format!("{FRAMES_URL}{path}") }),
+                        slot => json!({ "id": id, "slot": slot }),
+                    })
                     .collect()
             })
         })
@@ -197,6 +246,7 @@ pub struct Page {
     script: String,
     init: String,
     pub video: VideoFrames,
+    native: NativeVideos,
     tracks: Vec<HyperframesTrack>,
     frames: u64,
 }
@@ -214,6 +264,7 @@ impl Page {
             &[dir.join("plan/compiled"), options.project.clone()],
             options.mode,
         )?;
+        let native = NativeVideos::new(&prepared.natives, &[&dir.join("plan/compiled"), &options.project])?;
         let hints: Vec<Value> = prepared
             .video_metadata
             .iter()
@@ -221,8 +272,14 @@ impl Page {
             .collect();
         Ok(Page {
             project,
-            script: format!("{early_stub}\n{HYPERFRAMES_JS}\n{CLOCK_JS}"),
-            init: json!({ "fps": [options.fps, 1], "videoMetadataHints": hints }).to_string(),
+            script: format!(
+                "{early_stub}\n{}\n{}\n{HYPERFRAMES_JS}\n{CLOCK_JS}",
+                if native.is_empty() { "" } else { VIDEO_JS },
+                if native.is_empty() { "" } else { HOP_JS }
+            ),
+            init: json!({ "fps": [options.fps, 1], "videoMetadataHints": hints, "nativeVideos": native.params() })
+                .to_string(),
+            native,
             video: VideoFrames {
                 table: prepared.frames,
                 enabled: prepared.has_video,
@@ -243,6 +300,9 @@ impl Page {
             height,
             Some(&self.script),
         )?;
+        if !self.native.is_empty() {
+            self.native.attach(&mut view);
+        }
         let meta = view
             .evaluate(&format!("__vrf.hf.init({})", self.init))
             .context("the composition did not initialise")?;
@@ -330,11 +390,7 @@ pub fn render(
     } = job;
     let started = Instant::now();
     let step = Instant::now();
-    let prepare = prepare(
-        &options.project,
-        options.hyperframes.as_deref(),
-        options.fps,
-    )?;
+    let prepare = prepare_for(options)?;
     let (prepare_s, prepare_cached) = (step.elapsed(), prepare.cached);
     let page = Page::new(prepare, options)?;
 

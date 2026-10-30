@@ -81,8 +81,9 @@ struct RenderArgs {
     /// Leave the audio out of the file.
     #[arg(long)]
     no_audio: bool,
-    /// What decodes <OffthreadVideo>: `native` (VideoToolbox, falling back to Remotion's frame
-    /// server for clips it cannot reproduce exactly) or `remotion` (its frame server for all).
+    /// What decodes embedded video: `native` (VideoToolbox, falling back to the framework's own
+    /// decoding for clips it cannot reproduce exactly) or `remotion` (the framework's own for
+    /// all: Remotion's frame server, HyperFrames' ffmpeg extraction).
     #[arg(long, value_enum, default_value = "native")]
     video: VideoArg,
     /// Print a JSON report on stdout instead of the summary line.
@@ -226,6 +227,7 @@ impl RenderArgs {
                 mode,
                 plan,
                 audio: !self.no_audio,
+                native_video: matches!(self.video, VideoArg::Native),
             };
             Work::Hyperframes(hyperframes::RenderJob {
                 options,

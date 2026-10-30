@@ -1,10 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { pathToFileURL } from 'node:url';
+import { installNative } from './hyperframes-native.mjs';
 
-const [hyperframesDir, projectDir, outDir, fpsArgument] = process.argv.slice(2);
+const [hyperframesDir, projectDir, outDir, fpsArgument, nativeArgument = '{}'] = process.argv.slice(2);
 const fps = Number(fpsArgument);
+const nativeOptions = JSON.parse(nativeArgument);
 const dist = join(hyperframesDir, 'dist');
 const log = console.log;
 console.log = console.error;
@@ -20,6 +23,15 @@ const chunkWith = (marker) => {
 };
 const load = (chunk) => import(pathToFileURL(join(dist, chunk.name)).href);
 
+const cacheRoot = join(dirname(outDir), 'extract-cache', createHash('sha1').update(nativeArgument).digest('hex').slice(0, 12));
+if (nativeOptions.native === true) process.env.HYPERFRAMES_EXTRACT_CACHE_DIR = cacheRoot;
+const extractChunk = chunkWith('async function extractVideoFramesRangeUnredacted(');
+const native = installNative({
+  chunk: extractChunk.name,
+  extract: nativeOptions.extract ?? [],
+  enabled: nativeOptions.native === true,
+  registry: join(cacheRoot, 'vrf-native'),
+});
 const planChunk = chunkWith('async function plan(projectDir, config, planDir');
 const engineChunk = chunkWith('function createFrameLookupTable(');
 const audioChunk = chunkWith('function parseAudioElements(');
@@ -59,8 +71,15 @@ for (const entry of extracted) {
   );
 }
 const table = extracted.length > 0 ? createFrameLookupTable(videos, extracted, fps) : null;
+const natives = {};
+const shown = (id, framePath) => {
+  const placeholder = native.read(join(planDir, 'video-frames', framePath));
+  if (!placeholder) return framePath;
+  natives[id] ??= placeholder.clip;
+  return placeholder.slot;
+};
 const frames = Array.from({ length: planned.totalFrames }, (_, frame) =>
-  table ? [...table.getActiveFramePayloads(frame / fps)].map(([id, payload]) => [id, payload.framePath]) : [],
+  table ? [...table.getActiveFramePayloads(frame / fps)].map(([id, payload]) => [id, shown(id, payload.framePath)]) : [],
 );
 
 const attribute = (tag, name) => tag.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
@@ -91,6 +110,7 @@ writeFileSync(
       .filter((entry) => entry.metadata?.width > 0)
       .map((entry) => ({ id: entry.videoId, width: entry.metadata.width, height: entry.metadata.height })),
     frames,
+    natives,
     tracks: collectTracks('index.html', 0, Infinity),
   }),
 );

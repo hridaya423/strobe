@@ -276,7 +276,8 @@
     );
   };
 
-  const init = async ({ fps, timeoutMs = 45000, quality = 'standard', alpha = false, motionBlur = false, skipVideoIds = [], videoMetadataHints = [] } = {}) => {
+  const init = async ({ fps, timeoutMs = 45000, quality = 'standard', alpha = false, motionBlur = false, skipVideoIds = [], videoMetadataHints = [], nativeVideos = {} } = {}) => {
+    for (const [id, params] of Object.entries(nativeVideos)) nativeClips.set(id, { params });
     state.fps = parseFps(fps) ?? parseFps(root()?.getAttribute('data-fps')) ?? [30, 1];
     renderSeekConfig.fps = fpsValue();
     window.__hfFlushSync?.();
@@ -323,10 +324,101 @@
     return next !== null && next.classList.contains('__render_frame__') ? next : null;
   };
 
+
+  const roundAway = (value) => (value < 0 ? -Math.round(-value) : Math.round(value));
+
+  const divideRounded = (numerator, denominator) => {
+    const half = denominator / 2n;
+    return numerator >= 0n ? (numerator + half) / denominator : -((half - numerator) / denominator);
+  };
+
+  const divideCeil = (numerator, denominator) => {
+    const quotient = numerator / denominator;
+    return numerator > 0n && numerator % denominator !== 0n ? quotient + 1n : quotient;
+  };
+
+  const truncatedMicroseconds = (seconds) => {
+    const text = String(Math.abs(seconds));
+    const sign = seconds < 0 ? -1n : 1n;
+    if (/e/i.test(text)) return sign * BigInt(Math.trunc(Math.abs(seconds) * 1e6));
+    const [whole, fraction = ''] = text.split('.');
+    return sign * (BigInt(whole) * 1000000n + BigInt(fraction.slice(0, 6).padEnd(6, '0')));
+  };
+
+  const extractionSlots = (pts, timescale, clip) => {
+    const ticks = BigInt(timescale);
+    const [fpsNum, fpsDen] = clip.fps.map(BigInt);
+    const offset = truncatedMicroseconds(clip.seek) + BigInt(clip.containerStartUs);
+    const shift = divideRounded(offset * ticks, 1000000n);
+    const [rateNum, rateDen] = clip.frameRate;
+    const rate = rateNum / rateDen;
+    const slots = new Array(pts.length);
+    for (let index = 0; index < pts.length; index += 1) {
+      const shifted = BigInt(pts[index]) - shift;
+      if (clip.vfr) {
+        const half = 1 / (2 * timescale) <= 0.001 ? 1n : 0n;
+        slots[index] = Number(divideCeil((2n * shifted - half) * fpsNum, 2n * ticks * fpsDen));
+        continue;
+      }
+      const micros = Number(divideRounded(shifted * 1000000n, ticks));
+      const snapped = roundAway((micros * 1e-6 + clip.start - clip.lead) * rate);
+      const retimed = BigInt(Math.trunc((clip.lead + snapped / rate - clip.start) / 1e-6));
+      slots[index] = Number(divideCeil((2n * retimed - 1n) * fpsNum, 2000000n * fpsDen));
+    }
+    return slots;
+  };
+
+  const sourceFrameAtSlot = (slots, slot) => {
+    let low = 0;
+    let high = slots.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (slots[middle] <= slot) low = middle + 1;
+      else high = middle;
+    }
+    return Math.max(0, low - 1);
+  };
+
+  const nativeClips = new Map();
+  const nativeSurfaces = new Map();
+
+  const nativePicture = async (id, slot) => {
+    const native = nativeClips.get(id);
+    if (!native) throw new Error(`video "${id}" has no native decode parameters`);
+    const video = globalThis.__vrf.video;
+    if (!native.opened) {
+      native.opened = video.open(`${native.params.path}#${id}`).then((clip) => {
+        if (!clip) throw new Error(`video "${id}" (${native.params.path}) cannot be decoded natively: ${video.refusal()}`);
+                native.slots = extractionSlots(clip.pts, clip.timescale, native.params);
+        return clip;
+      });
+    }
+    const clip = await native.opened;
+    return { picture: await video.frame(clip, sourceFrameAtSlot(native.slots, slot)), config: { matrix: native.params.matrix, full: native.params.full } };
+  };
+
+  const nativeSurface = (id) => {
+    let surface = nativeSurfaces.get(id);
+    if (!surface) {
+      surface = globalThis.__vrf.video.createJpegSurface();
+      nativeSurfaces.set(id, surface);
+    }
+    return surface;
+  };
+
+  const releaseNativeSurfaces = (active) => {
+    for (const [id, surface] of nativeSurfaces) {
+      if (active.has(id)) continue;
+      surface.canvas.remove();
+      nativeSurfaces.delete(id);
+    }
+  };
+
   const injectVideoFrames = async (entries) => {
     const active = new Set(entries.map((entry) => entry.id));
     const decodes = [];
     const published = [];
+    releaseNativeSurfaces(active);
     for (const video of document.querySelectorAll('video[data-start]')) {
       const img = frameSibling(video);
       const visible = active.has(video.id) && !isVisualAncestorHidden(video);
@@ -379,6 +471,18 @@
       });
       img.style.setProperty('visibility', 'hidden', 'important');
       img.decoding = 'sync';
+      if (entry.slot !== undefined) {
+        const { picture, config } = await nativePicture(entry.id, entry.slot);
+        const surface = nativeSurface(entry.id);
+        surface.draw(picture, config);
+        img.style.opacity = String(Number.isNaN(opacity) ? 1 : opacity);
+        surface.canvas.className = img.className;
+        surface.canvas.style.cssText = img.style.cssText;
+        surface.canvas.style.setProperty('visibility', 'hidden', 'important');
+        if (surface.canvas.previousElementSibling !== img) img.after(surface.canvas);
+        published.push(surface.canvas);
+        continue;
+      }
       if (entry.src !== undefined && img.getAttribute('src') !== entry.src) {
         if (entry.crossOrigin) img.crossOrigin = entry.crossOrigin;
         else img.removeAttribute('crossorigin');
@@ -516,5 +620,5 @@
   };
 
   window.__vrf = window.__vrf || {};
-  window.__vrf.hf = { init, seek, seekTime, quantizeTime, videos, staticFrames, compositePrepare, compositeFinish, real };
+  window.__vrf.hf = { init, seek, extractionSlots, sourceFrameAtSlot, seekTime, quantizeTime, videos, staticFrames, compositePrepare, compositeFinish, real };
 })();

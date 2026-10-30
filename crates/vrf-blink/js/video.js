@@ -301,5 +301,6 @@
     swsConfig,
     frame,
     clips,
+    createSurface,
   };
 })();

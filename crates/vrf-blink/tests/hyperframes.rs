@@ -1,3 +1,4 @@
+mod clips;
 #[allow(dead_code)]
 mod support;
 
@@ -107,6 +108,10 @@ fn counted_clip(path: &Path) -> Result<()> {
 }
 
 fn fixture(name: &str, seconds: u32, body: &str, script: &str) -> Result<PathBuf> {
+    sized_fixture(name, WIDTH, HEIGHT, seconds, body, script)
+}
+
+fn sized_fixture(name: &str, width: u32, height: u32, seconds: u32, body: &str, script: &str) -> Result<PathBuf> {
     let dir = work_dir().join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("assets"))?;
@@ -119,9 +124,9 @@ fn fixture(name: &str, seconds: u32, body: &str, script: &str) -> Result<PathBuf
         format!(
             "<!doctype html>\n<html><head><meta charset=\"utf-8\"><style>\
              html,body{{margin:0;background:#123}}\
-             #root{{position:relative;width:{WIDTH}px;height:{HEIGHT}px;overflow:hidden;background:#123}}\
+             #root{{position:relative;width:{width}px;height:{height}px;overflow:hidden;background:#123}}\
              </style></head><body>\n\
-             <div id=\"root\" data-composition-id=\"main\" data-width=\"{WIDTH}\" data-height=\"{HEIGHT}\" \
+             <div id=\"root\" data-composition-id=\"main\" data-width=\"{width}\" data-height=\"{height}\" \
              data-duration=\"{seconds}\" data-start=\"0\" data-fps=\"30\">{body}</div>\n\
              <script src=\"gsap.min.js\"></script>\n<script>{script}</script></body></html>\n"
         ),
@@ -147,6 +152,7 @@ fn options(project: &Path) -> Options {
         mode: Mode::Offline,
         plan: Plan::single(),
         audio: true,
+        native_video: true,
     }
 }
 
@@ -296,6 +302,119 @@ fn embedded_h264_shows_the_right_frame_on_every_frame(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn counter(frame: &score::Rgb8) -> u32 {
+    let cell = frame.width / 48;
+    (0..24)
+        .map(|bit| {
+            let at = (((cell / 2) * frame.width + bit * cell + cell / 2) * 3 + 1) as usize;
+            u32::from(frame.data[at] > 128) << bit
+        })
+        .sum()
+}
+
+fn embedded_video_shows_the_frames_hyperframes_extracts(ui: &Ui) -> Result<()> {
+    let cases = [
+        ("cfr1080.mp4", "0.5", "0.2", true),
+        ("vfr1080.mp4", "0", "0", true),
+        ("off1080.mp4", "0.25", "0.4", true),
+        ("cfr1080-hevc.mp4", "0", "0", true),
+        ("cfr1080-vp9.webm", "0", "0", false),
+        ("rate24.mp4", "0", "0.1", true),
+        ("rate60.mp4", "0.1", "0", true),
+    ];
+    for (name, start, media_start, native) in cases {
+        let project = sized_fixture(
+            &format!("ids-{name}"),
+            1920,
+            1080,
+            4,
+            &format!(
+                "<video id=\"v\" src=\"assets/{name}\" data-start=\"{start}\" data-media-start=\"{media_start}\" \
+                 data-duration=\"3\" data-track-index=\"0\" muted playsinline \
+                 style=\"position:absolute;left:0;top:0;width:1920px;height:1080px\"></video>"
+            ),
+            "const tl = gsap.timeline({paused: true}); tl.to('#root', {opacity: 1, duration: 4}); window.__timelines = {main: tl};",
+        )?;
+        match name {
+            "rate24.mp4" | "rate60.mp4" => {
+                let rate = &name[4..6];
+                let target = project.join("assets").join(name);
+                let source = clips::clip("cfr1080.mp4")?;
+                run(
+                    "ffmpeg",
+                    &["-v", "error", "-y", "-i", source.to_str().unwrap(), "-vf", &format!("fps={rate}"), "-c:v", "libx264", "-crf", "14", "-g", "30", target.to_str().unwrap()],
+                    Path::new("/"),
+                )?;
+            }
+            _ => {
+                fs::copy(clips::clip(name)?, project.join("assets").join(name))?;
+            }
+        }
+        let mut options = options(&project);
+        options.audio = false;
+        let used = hyperframes::prepare_for(&options)?.native_videos().len();
+        ensure!((used == 1) == native, "{name}: {used} natively decoded videos");
+        let mut ids = Vec::new();
+        for (label, native_video) in [("native", true), ("extraction", false)] {
+            options.native_video = native_video;
+            let out = work_dir().join(format!("ids-{name}-{label}.mp4"));
+            render(ui, &options, None, Codec::H264, &out)?;
+            ids.push(frames_of(&out)?.iter().map(counter).collect::<Vec<u32>>());
+        }
+        let wrong: Vec<(usize, u32, u32)> = ids[0]
+            .iter()
+            .zip(&ids[1])
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(frame, (a, b))| (frame, *a, *b))
+            .collect();
+        println!("{name}: {} of {} frames show HyperFrames' frame", ids[0].len() - wrong.len(), ids[0].len());
+        ensure!(ids[0].len() == 120, "{name}: {} frames", ids[0].len());
+        ensure!(wrong.is_empty(), "{name}: frame, native, extraction: {wrong:?}");
+    }
+    Ok(())
+}
+
+fn embedded_video_colours_equal_hyperframes_extraction(ui: &Ui) -> Result<()> {
+    for name in ["cfr1080.mp4", "cfr1080-601.mp4", "cfr1080-full.mp4", "cfr1080-hevc.mp4"] {
+        let project = sized_fixture(
+            &format!("colour-{name}"),
+            1920,
+            1080,
+            1,
+            &format!(
+                "<video id=\"v\" src=\"assets/{name}\" data-start=\"0\" data-duration=\"1\" data-track-index=\"0\" muted playsinline \
+                 style=\"position:absolute;left:0;top:0;width:1920px;height:1080px\"></video>"
+            ),
+            "const tl = gsap.timeline({paused: true}); tl.to('#root', {opacity: 1, duration: 1}); window.__timelines = {main: tl};",
+        )?;
+        fs::copy(clips::clip(name)?, project.join("assets").join(name))?;
+        let mut options = options(&project);
+        options.audio = false;
+        let mut files = Vec::new();
+        for (label, native_video) in [("native", true), ("extraction", false)] {
+            options.native_video = native_video;
+            let out = work_dir().join(format!("colour-{name}-{label}.mp4"));
+            render(ui, &options, None, Codec::H264, &out)?;
+            files.push(out);
+        }
+        let scored = score::score(&files[0], &files[1], Sampling::All, None)?;
+        let worst = &scored.worst;
+        println!(
+            "{name}: FLIP mean {:.5}, p99.9 {:.4}, max delta {}, over 8 {:.4}%, over 32 {:.4}%",
+            worst.flip_mean.value,
+            worst.flip_p999.value,
+            worst.max_delta.value,
+            worst.frac_over_8.value * 100.0,
+            worst.frac_over_32.value * 100.0
+        );
+        ensure!(scored.frames_compared == 30);
+        ensure!(worst.flip_mean.value <= 0.02, "{name}: FLIP mean {}", worst.flip_mean.value);
+        ensure!(worst.frac_over_32.value <= 0.001, "{name}: {} of pixels over 32", worst.frac_over_32.value);
+    }
+    Ok(())
+}
+
 fn a_project_without_audio_stays_video_only(ui: &Ui) -> Result<()> {
     let seconds = 1;
     let project = fixture("silent", seconds, BOX, &sweep(seconds))?;
@@ -371,6 +490,14 @@ fn main() -> ExitCode {
         (
             "hyperframes_embedded_h264_shows_exact_frame_ids",
             embedded_h264_shows_the_right_frame_on_every_frame,
+        ),
+        (
+            "hyperframes_native_video_shows_hyperframes_frames",
+            embedded_video_shows_the_frames_hyperframes_extracts,
+        ),
+        (
+            "hyperframes_native_video_colours_equal_extraction",
+            embedded_video_colours_equal_hyperframes_extraction,
         ),
         (
             "hyperframes_project_without_audio_stays_video_only",
