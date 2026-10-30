@@ -102,7 +102,11 @@ fn headless_frames(project: &Path, workers: u32) -> Result<PathBuf> {
     if out.exists() {
         return Ok(out);
     }
-    let output = Command::new(hyperframes_package().join("../.bin/hyperframes"))
+    let output = Command::new(hyperframes_package().join(if cfg!(windows) {
+        "../.bin/hyperframes.cmd"
+    } else {
+        "../.bin/hyperframes"
+    }))
         .arg("render")
         .arg(project)
         .args(["--format", "png-sequence", "--workers", &workers.to_string(), "--quiet", "-o"])
@@ -156,7 +160,7 @@ impl<'a> Ours<'a> {
         let paint = capture
             .next(view, Duration::from_millis(700))?
             .with_context(|| format!("no delivery for frame {frame}"))?;
-        let texture = self.gpu.import_iosurface(&paint.surface, 0, paint.format)?;
+        let texture = support::import(&self.gpu, &paint)?;
         Ok(Rgb8 {
             width: WIDTH,
             height: HEIGHT,
