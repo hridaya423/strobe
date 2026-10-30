@@ -151,7 +151,11 @@ fn options(project: &Path) -> Options {
 
 fn hyperframes_render(project: &Path, out: &Path) -> Result<()> {
     run(
-        hyperframes_package().join("../.bin/hyperframes"),
+        hyperframes_package().join(if cfg!(windows) {
+            "../.bin/hyperframes.cmd"
+        } else {
+            "../.bin/hyperframes"
+        }),
         &[
             "render",
             project.to_str().unwrap(),
@@ -327,10 +331,10 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     counted_clip(&project.join("assets/counted.mp4"))?;
     let mut files = Vec::new();
     for views in [1, 2, 4] {
-        let out = work_dir().join(format!("parallel-{views}.mov"));
+        let out = work_dir().join(format!("parallel-{views}.{}", support::DETERMINISTIC.1));
         let mut options = options(&project);
         options.plan = Plan::new(views, 7);
-        let report = hyperframes::render(ui, &options, None, Codec::ProRes422, &out)?;
+        let report = hyperframes::render(ui, &options, None, support::DETERMINISTIC.0, &out)?;
         ensure!(report.frames == 60 && report.views == views && report.repeats == 0);
         files.push((views, fs::read(&out)?));
     }

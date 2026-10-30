@@ -263,10 +263,7 @@ fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
     view.close()
 }
 
-#[cfg(target_os = "macos")]
-const DETERMINISTIC: (Codec, &str) = (Codec::ProRes422, "mov");
-#[cfg(windows)]
-const DETERMINISTIC: (Codec, &str) = (Codec::H264, "mp4");
+use support::DETERMINISTIC;
 
 fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let project = pages()?;

@@ -94,7 +94,78 @@ pub struct PoolFrame {
     pub ready: Option<Ready>,
 }
 
+fn texture(
+    device: &ID3D12Device,
+    width: u32,
+    height: u32,
+    format: PixelFormat,
+) -> Result<ID3D12Resource> {
+    ensure!(
+        width % 2 == 0 && height % 2 == 0,
+        "{width}x{height} is not a 4:2:0 size"
+    );
+    let desc = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Width: width as u64,
+        Height: height,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: format.dxgi(),
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS
+            | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        ..Default::default()
+    };
+    let mut resource: Option<ID3D12Resource> = None;
+    unsafe {
+        device.CreateCommittedResource(
+            &D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_DEFAULT,
+                ..Default::default()
+            },
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            None,
+            &mut resource,
+        )?;
+    }
+    resource.context("no texture returned")
+}
+
 impl InputPool {
+    /// Textures for an encoder that takes D3D12 resources directly and registers nothing.
+    pub fn unregistered(
+        device: &ID3D12Device,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        count: usize,
+    ) -> Result<InputPool> {
+        let slots = (0..count)
+            .map(|_| {
+                Ok(Slot {
+                    resource: texture(device, width, height, format)?,
+                    registered: std::ptr::null_mut(),
+                    mapped: std::ptr::null_mut(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(InputPool {
+            shared: Arc::new(PoolShared {
+                free: Mutex::new((0..count).rev().collect()),
+                slots,
+                released: Condvar::new(),
+                format,
+                size: (width, height),
+            }),
+        })
+    }
+
     pub(super) fn new(
         session: &Session,
         device: &ID3D12Device,
@@ -104,26 +175,6 @@ impl InputPool {
         format: PixelFormat,
         count: usize,
     ) -> Result<InputPool> {
-        ensure!(
-            width % 2 == 0 && height % 2 == 0,
-            "{width}x{height} is not a 4:2:0 size"
-        );
-        let desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Width: width as u64,
-            Height: height,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: format.dxgi(),
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS
-                | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-            ..Default::default()
-        };
         let mut point = nv::NV_ENC_FENCE_POINT_D3D12 {
             version: version::NV_ENC_FENCE_POINT_D3D12_VER,
             reserved: 0,
@@ -136,21 +187,7 @@ impl InputPool {
         };
         let mut slots = Vec::with_capacity(count);
         for _ in 0..count {
-            let mut resource: Option<ID3D12Resource> = None;
-            unsafe {
-                device.CreateCommittedResource(
-                    &D3D12_HEAP_PROPERTIES {
-                        Type: D3D12_HEAP_TYPE_DEFAULT,
-                        ..Default::default()
-                    },
-                    D3D12_HEAP_FLAG_NONE,
-                    &desc,
-                    D3D12_RESOURCE_STATE_COMMON,
-                    None,
-                    &mut resource,
-                )?;
-            }
-            let resource = resource.context("no texture returned")?;
+            let resource = texture(device, width, height, format)?;
             let (registered, mapped) = unsafe {
                 let mut register: nv::NV_ENC_REGISTER_RESOURCE = zeroed();
                 register.version = version::NV_ENC_REGISTER_RESOURCE_VER;
@@ -288,7 +325,7 @@ impl PoolFrame {
         self.lease.slot
     }
 
-    pub(super) fn pool_is(&self, pool: &InputPool) -> bool {
+    pub fn pool_is(&self, pool: &InputPool) -> bool {
         Arc::ptr_eq(&self.lease.shared, &pool.shared)
     }
 

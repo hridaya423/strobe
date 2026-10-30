@@ -3,11 +3,10 @@ use windows::Win32::Media::MediaFoundation::{
     AACMFTEncoder, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_MT_AAC_PAYLOAD_TYPE, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
     MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS,
-    MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_VERSION,
-    MFAudioFormat_PCM, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-    MFMediaType_Audio, MFSTARTUP_FULL, MFShutdown, MFStartup, MFT_MESSAGE_COMMAND_DRAIN,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
-    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
+    MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_VERSION, MFAudioFormat_PCM,
+    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Audio, MFSTARTUP_FULL,
+    MFShutdown, MFStartup, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -175,7 +174,9 @@ pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
         transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
         transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
     }
-    let capacity = unsafe { transform.GetOutputStreamInfo(0)? }.cbSize.max(4096);
+    let capacity = unsafe { transform.GetOutputStreamInfo(0)? }
+        .cbSize
+        .max(4096);
 
     let padded: Vec<f32> = std::iter::repeat_n(0.0, PRIMING_FRAMES as usize * channels)
         .chain(samples.iter().copied())

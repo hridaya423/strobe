@@ -12,16 +12,27 @@ pub fn link_dir(
     std::os::unix::fs::symlink(target, link)?;
     #[cfg(windows)]
     {
+        let target = std::fs::canonicalize(target)?;
+        let target = target
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string();
+        let link = std::path::absolute(link)?;
         let status = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
-            .arg(link.as_ref())
-            .arg(target.as_ref())
+            .arg(link)
+            .arg(target)
             .stdout(std::process::Stdio::null())
             .status()?;
         anyhow::ensure!(status.success(), "mklink /J failed");
     }
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+pub const DETERMINISTIC: (vrf_encode::Codec, &str) = (vrf_encode::Codec::ProRes422, "mov");
+#[cfg(windows)]
+pub const DETERMINISTIC: (vrf_encode::Codec, &str) = (vrf_encode::Codec::H264, "mp4");
 
 pub type Case = (&'static str, fn(&Ui) -> Result<()>);
 
