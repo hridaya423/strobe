@@ -645,7 +645,7 @@ impl ClaimState {
     fn held(&self, frontier: u64) -> u64 {
         self.runs
             .iter()
-            .filter(|(from, _, _)| *from >= frontier)
+            .filter(|(from, _, _)| *from > frontier)
             .map(|(from, to, _)| to - from)
             .sum()
     }
@@ -1189,12 +1189,13 @@ mod tests {
         let plan = Plan::new(2, 10).ranged(4, 40);
         let claims = Claims::new(&plan, 40, &[], 15);
         assert_eq!(claims.claim(), Some((0, 10)));
+        assert_eq!(claims.claim(), Some((10, 20)));
         thread::scope(|scope| {
             let ahead = scope.spawn(|| claims.claim());
             thread::sleep(Duration::from_millis(50));
             assert!(!ahead.is_finished());
             claims.finish(0);
-            assert_eq!(ahead.join().unwrap(), Some((10, 20)));
+            assert_eq!(ahead.join().unwrap(), Some((20, 30)));
         });
         claims.cancel();
         assert_eq!(claims.claim(), None);
