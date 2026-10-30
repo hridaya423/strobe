@@ -696,7 +696,7 @@ struct Shared<'a, T> {
     skip: Option<&'a Skip>,
     claims: Claims,
     done: AtomicU64,
-    on_frame: &'a (dyn Fn(u64) -> Result<()> + Sync),
+    on_frame: &'a (dyn Fn(u64, u64, &T) -> Result<()> + Sync),
     open: &'a (dyn Fn() -> Result<View> + Sync),
     seek: &'a (dyn Fn(&mut View, u64, bool) -> Result<(T, bool)> + Sync),
 }
@@ -832,9 +832,9 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
                     .with_context(|| format!("capture frame {frame}"))?;
                 handoff.send(index, paint.map_or(Job::Repeat, Job::Paint))?;
             }
-            worker.frames.push((index, value));
             let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
-            (shared.on_frame)(done)?;
+            (shared.on_frame)(done, index, &value)?;
+            worker.frames.push((index, value));
         }
         last = Some(shared.first + to - 1);
     }
@@ -848,8 +848,9 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
 /// each on its own thread. `open` makes a view and `seek` leaves it showing a frame and returns
 /// what the adapter collects for it, and, when its last argument asks, whether the frame is
 /// unchanged from the one before (see `skip::evaluate`); `seek` may replace the view. The first error any view hits
-/// stops the others and is the one returned. `on_frame` gets the number of frames done after each
-/// one, from whichever view finished it.
+/// stops the others and is the one returned. `on_frame` gets the number of frames done, the
+/// frame's index in the render and what `seek` returned for it, after each one, from whichever
+/// view finished it. Lead-in frames are not reported.
 pub fn render_runs<T: Send>(
     config: &Config,
     plan: Plan,
@@ -858,7 +859,7 @@ pub fn render_runs<T: Send>(
     warm: &mut Warm,
     open: impl Fn() -> Result<View> + Sync,
     seek: impl Fn(&mut View, u64, bool) -> Result<(T, bool)> + Sync,
-    on_frame: impl Fn(u64) -> Result<()> + Sync,
+    on_frame: impl Fn(u64, u64, &T) -> Result<()> + Sync,
 ) -> Result<Runs<T>> {
     let started = Instant::now();
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;

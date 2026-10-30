@@ -827,12 +827,6 @@ impl Renderer {
                     loop {
                         match Page::seek(view, frame, attempt, ask) {
                             Ok((assets, unchanged)) => {
-                                if let Some(live) = &live {
-                                    live.report(
-                                        (frame - first) as usize,
-                                        audio_assets(&assets).unwrap_or_default(),
-                                    );
-                                }
                                 return Ok((FrameAssets { frame, assets }, unchanged));
                             }
                             Err(error) if error.to_string().contains(RETRY_MARK) => {
@@ -850,7 +844,12 @@ impl Renderer {
                         }
                     }
                 },
-                |done| progress.frame(done),
+                |done, index, seen: &FrameAssets| {
+                    if let Some(live) = &live {
+                        live.report(index as usize, audio_assets(&seen.assets).unwrap_or_default());
+                    }
+                    progress.frame(done)
+                },
             )
         })?;
         let render_s = render_started.elapsed();

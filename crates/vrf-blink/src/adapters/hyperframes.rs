@@ -482,7 +482,7 @@ pub fn render(
                     Ok(()) => error,
                 })
         },
-        |done| progress.frame(done),
+        |done, _, _| progress.frame(done),
     )?;
     let render_s = render_started.elapsed();
     let Runs {

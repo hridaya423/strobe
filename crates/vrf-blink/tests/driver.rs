@@ -299,7 +299,7 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
             &mut warm,
             || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
             |view, frame, ask| seek(view, frame, ask),
-            |_| Ok(()),
+            |_, _, _| Ok(()),
         )?;
         runs.muxer.finish()?;
         ensure!(runs.plan.views == views, "{} views ran", runs.plan.views);
@@ -336,7 +336,7 @@ fn shrinking_runs_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
             &mut warm,
             || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
             |view, frame, ask| seek(view, frame, ask),
-            |_| Ok(()),
+            |_, _, _| Ok(()),
         )?;
         runs.muxer.finish()?;
         ensure!(runs.plan.views == views, "{} views ran", runs.plan.views);
@@ -373,7 +373,7 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
             &mut warm,
             || View::open_project(ui, &project, page, 640, 360, Some(TRACK_JS)),
             |view, frame, ask| seek(view, frame, ask),
-            |_| Ok(()),
+            |_, _, _| Ok(()),
         )?;
         runs.muxer.finish()?;
         let bytes = std::fs::read(&out)?;
@@ -436,7 +436,7 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
             &mut warm,
             || View::open_project(ui, &project, "flip.html", 640, 360, Some(TRACK_JS)),
             |view, frame, ask| seek(view, frame, ask),
-            |_| Ok(()),
+            |_, _, _| Ok(()),
         )?;
         runs.muxer.finish()?;
         let bytes = std::fs::read(&out)?;
@@ -474,7 +474,7 @@ fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
             ensure!(frame != 50, "frame 50 is broken");
             seek(view, frame, ask)
         },
-        |_| Ok(()),
+        |_, _, _| Ok(()),
     ) else {
         anyhow::bail!("a render with a broken frame succeeded");
     };
