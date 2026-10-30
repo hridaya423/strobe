@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 use vrf::audio::SAMPLE_RATE;
 use vrf::mux::{AudioTrack, Muxer};
 use vrf_encode::audiotoolbox::encode_aac;
-use vrf_encode::{AacConfig, Rational};
+use vrf_encode::{AacConfig, AacStream, Rational};
 
 use crate::driver::Summary;
 
+mod audio;
 pub mod hyperframes;
 pub mod remotion;
 
@@ -144,19 +145,26 @@ pub(crate) fn audio_samples(frames: u64, frame_rate: Rational) -> u64 {
     ((rate + frame_rate.num as u128 / 2) / frame_rate.num as u128) as u64
 }
 
-/// Encodes interleaved stereo `pcm` as AAC at `bit_rate` and adds the track to `muxer`. A mix
-/// that is silent everywhere adds no track, so a project with no audio stays video-only.
-pub(crate) fn add_audio(muxer: &mut Muxer, pcm: &[f32], bit_rate: u32) -> Result<()> {
+/// Encodes interleaved stereo `pcm` as AAC at `bit_rate`. A mix that is silent everywhere gives
+/// no track, so a project with no audio stays video-only.
+pub(crate) fn encode_track(pcm: &[f32], bit_rate: u32) -> Result<Option<AacStream>> {
     if pcm.iter().all(|sample| *sample == 0.0) {
-        return Ok(());
+        return Ok(None);
     }
-    let stream = encode_aac(
+    encode_aac(
         pcm,
         AacConfig {
             sample_rate: SAMPLE_RATE,
             channels: 2,
             bit_rate,
         },
-    )?;
-    muxer.set_audio(AudioTrack::from(&stream))
+    )
+    .map(Some)
+}
+
+pub(crate) fn add_track(muxer: &mut Muxer, stream: Option<AacStream>) -> Result<()> {
+    match stream {
+        Some(stream) => muxer.set_audio(AudioTrack::from(&stream)),
+        None => Ok(()),
+    }
 }

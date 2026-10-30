@@ -25,9 +25,12 @@ const SAMPLE_RATES: [u32; 13] = [
 ];
 
 struct Input<'a> {
-    samples: &'a [f32],
+    chunks: &'a mut dyn Iterator<Item = Vec<f32>>,
+    chunk: Vec<f32>,
     channels: u32,
     cursor: usize,
+    total: usize,
+    ragged: bool,
 }
 
 unsafe extern "C-unwind" fn feed(
@@ -39,14 +42,23 @@ unsafe extern "C-unwind" fn feed(
 ) -> i32 {
     let input = unsafe { &mut *(user as *mut Input) };
     let channels = input.channels as usize;
-    let remaining = (input.samples.len() - input.cursor) / channels;
+    while input.cursor == input.chunk.len() {
+        let Some(chunk) = input.chunks.next() else {
+            break;
+        };
+        input.ragged |= !chunk.len().is_multiple_of(channels);
+        input.total += chunk.len();
+        input.chunk = chunk;
+        input.cursor = 0;
+    }
+    let remaining = (input.chunk.len() - input.cursor) / channels;
     let count = (unsafe { *packets.as_ptr() } as usize).min(remaining);
     unsafe {
         *packets.as_ptr() = count as u32;
         let buffer = &mut (*data.as_ptr()).mBuffers[0];
         buffer.mNumberChannels = input.channels;
         buffer.mDataByteSize = (count * channels * size_of::<f32>()) as u32;
-        buffer.mData = input.samples.as_ptr().add(input.cursor) as *mut c_void;
+        buffer.mData = input.chunk.as_ptr().add(input.cursor) as *mut c_void;
     }
     input.cursor += count * channels;
     0
@@ -105,14 +117,25 @@ fn audio_specific_config(config: AacConfig) -> Result<Vec<u8>> {
 /// multiple of `config.channels`.
 pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
     ensure!(
-        (1..=2).contains(&config.channels),
-        "AAC-LC is mono or stereo here, got {} channels",
-        config.channels
-    );
-    ensure!(
         samples.len().is_multiple_of(config.channels as usize),
         "{} samples are not whole frames of {} channels",
         samples.len(),
+        config.channels
+    );
+    encode_aac_chunks(std::iter::once(samples.to_vec()), config)
+}
+
+/// Like [`encode_aac`], for samples that arrive in `chunks`. The iterator may block until the
+/// next chunk exists, so encoding can run while the samples are still being made; the stream is
+/// the one `encode_aac` gives for the chunks joined. Each chunk is whole frames of `channels`.
+pub fn encode_aac_chunks(
+    chunks: impl Iterator<Item = Vec<f32>>,
+    config: AacConfig,
+) -> Result<AacStream> {
+    let mut chunks = chunks;
+    ensure!(
+        (1..=2).contains(&config.channels),
+        "AAC-LC is mono or stereo here, got {} channels",
         config.channels
     );
     let audio_specific_config = audio_specific_config(config)?;
@@ -179,9 +202,12 @@ pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
     })?;
 
     let mut input = Input {
-        samples,
+        chunks: &mut chunks,
+        chunk: Vec::new(),
         channels: config.channels,
         cursor: 0,
+        total: 0,
+        ragged: false,
     };
     let mut packets = Vec::new();
     let mut out = vec![0u8; max_packet_bytes as usize];
@@ -217,6 +243,12 @@ pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
         packets.push(out[start..start + description.mDataByteSize as usize].to_vec());
     }
 
+    ensure!(
+        !input.ragged,
+        "a chunk is not whole frames of {} channels",
+        config.channels
+    );
+    let total = input.total;
     let mut prime = AudioConverterPrimeInfo {
         leadingFrames: 0,
         trailingFrames: 0,
@@ -237,6 +269,6 @@ pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
         max_packet_bytes: packets.iter().map(Vec::len).max().unwrap_or(0) as u32,
         packets,
         priming_frames: prime.leadingFrames,
-        frames: (samples.len() / config.channels as usize) as u64,
+        frames: (total / config.channels as usize) as u64,
     })
 }

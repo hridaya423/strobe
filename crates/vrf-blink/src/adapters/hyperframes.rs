@@ -4,9 +4,10 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::thread;
 use std::time::{Instant, SystemTime};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,12 +15,12 @@ use vrf::audio::{HyperframesTrack, hyperframes_clips, mix};
 use vrf_encode::{Codec, Rational};
 
 use super::{
-    PerFrame, Progress, StageStats, add_audio, audio_samples, cache_dir, hash_tree, short_hex,
+    PerFrame, Progress, StageStats, add_track, encode_track, audio_samples, cache_dir, hash_tree, short_hex,
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
 use crate::video::NativeVideos;
-use crate::skip::{Skip, TRACK_JS};
+use crate::skip::{self, Skip, TRACK_JS};
 use crate::{Mode, Project, Ui, View};
 
 const HYPERFRAMES_JS: &str = include_str!("../../js/hyperframes.js");
@@ -313,10 +314,11 @@ impl Page {
     }
 
     /// Leaves the view showing `frame`.
-    pub fn seek(view: &mut View, frame: u64, videos: Option<Value>) -> Result<()> {
+    pub fn seek(view: &mut View, frame: u64, videos: Option<Value>, ask: bool) -> Result<bool> {
         let options = videos.map_or_else(|| json!({}), |videos| json!({ "videos": videos }));
-        view.evaluate(&format!("__vrf.hf.seek({frame}, {options})"))?;
-        Ok(())
+        let (_, unchanged) =
+            skip::evaluate(view, &format!("__vrf.hf.seek({frame}, {options})"), ask)?;
+        Ok(unchanged)
     }
 }
 
@@ -444,6 +446,22 @@ pub fn render(
     let (width, height) = (composition.width as i32, composition.height as i32);
     let progress = Progress::new(progress, count, command_start);
     let first_ready = OnceLock::new();
+    let track = options
+        .audio
+        .then(|| -> Result<_> {
+            let project_dir = options.project.canonicalize()?;
+            let clips = hyperframes_clips(&page.tracks, track_file(&project_dir))?;
+            let (from, length) = (
+                audio_samples(first, frame_rate),
+                audio_samples(composition.frames, frame_rate),
+            );
+            let to = from + audio_samples(count, frame_rate);
+            Ok(thread::spawn(move || {
+                let timeline = mix(&clips, length)?;
+                encode_track(&timeline[from as usize * 2..to as usize * 2], AUDIO_BIT_RATE)
+            }))
+        })
+        .transpose()?;
     let render_started = Instant::now();
     let runs = render_runs(
         &config,
@@ -456,15 +474,15 @@ pub fn render(
             first_ready.get_or_init(|| since(command_start));
             Ok(view)
         },
-        |view, frame| {
-            Page::seek(view, frame, page.video.at(frame)).map_err(|error| {
-                match view.check_project() {
+        |view, frame, ask| {
+            Page::seek(view, frame, page.video.at(frame), ask)
+                .map(|unchanged| ((), unchanged))
+                .map_err(|error| match view.check_project() {
                     Err(refused) => error.context(refused.to_string()),
                     Ok(()) => error,
-                }
-            })
+                })
         },
-        |done| progress.frame(done),
+        |done, _, _| progress.frame(done),
     )?;
     let render_s = render_started.elapsed();
     let Runs {
@@ -476,13 +494,8 @@ pub fn render(
     } = runs;
 
     let step = Instant::now();
-    if options.audio {
-        let project_dir = options.project.canonicalize()?;
-        let clips = hyperframes_clips(&page.tracks, track_file(&project_dir))?;
-        let timeline = mix(&clips, audio_samples(composition.frames, frame_rate))?;
-        let from = audio_samples(first, frame_rate) as usize * 2;
-        let to = from + audio_samples(count, frame_rate) as usize * 2;
-        add_audio(&mut muxer, &timeline[from..to], AUDIO_BIT_RATE)?;
+    if let Some(track) = track {
+        add_track(&mut muxer, track.join().map_err(|_| anyhow!("the audio mix panicked"))??)?;
     }
     let audio_s = step.elapsed();
     let step = Instant::now();

@@ -15,7 +15,7 @@ use support::{
 use vrf_blink::driver::{
     Capture, Config, Pipeline, Plan, Stats, Summary, Warm, render, render_runs,
 };
-use vrf_blink::skip::{Skip, TRACK_JS};
+use vrf_blink::skip::{self, Skip, TRACK_JS};
 use vrf_blink::{Mode, Paint, Project, Ui, View, calibration};
 use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
@@ -330,6 +330,11 @@ fn ticking_view_leaves_every_level_untouched(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+fn seek(view: &mut View, frame: u64, ask: bool) -> Result<((), bool)> {
+    let (_, unchanged) = skip::evaluate(view, &format!("seek({frame})"), ask)?;
+    Ok(((), unchanged))
+}
+
 fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
@@ -344,8 +349,8 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
             &out,
             &mut warm,
             || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
-            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
-            |_| Ok(()),
+            |view, frame, ask| seek(view, frame, ask),
+            |_, _, _| Ok(()),
         )?;
         runs.muxer.finish()?;
         ensure!(runs.plan.views == views, "{} views ran", runs.plan.views);
@@ -354,6 +359,43 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
             "parallel {views}: {} lead-in frames, {} fps",
             runs.lead_in_frames,
             96.0 / runs.stats.elapsed.as_secs_f64()
+        );
+        files.push((views, std::fs::read(&out)?));
+        std::fs::remove_file(&out)?;
+    }
+    for (views, bytes) in &files[1..] {
+        ensure!(
+            *bytes == files[0].1,
+            "{views} views wrote different bytes from one view"
+        );
+    }
+    Ok(())
+}
+
+fn shrinking_runs_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 420);
+    let mut files = Vec::new();
+    let mut warm = Warm::new()?;
+    for views in [1, 2, 4, 5] {
+        let out = std::env::temp_dir().join(format!("vrf-blink-shrinking-{views}.mov"));
+        let runs = render_runs(
+            &config,
+            Plan { lead_in: 2, ..Plan::new(views, 200) },
+            0,
+            &out,
+            &mut warm,
+            || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
+            |view, frame, ask| seek(view, frame, ask),
+            |_, _, _| Ok(()),
+        )?;
+        runs.muxer.finish()?;
+        ensure!(runs.plan.views == views, "{} views ran", runs.plan.views);
+        ensure!(runs.stats.repeats == 0, "{} repeats", runs.stats.repeats);
+        println!(
+            "shrinking {views}: {} lead-in frames, {} fps",
+            runs.lead_in_frames,
+            420.0 / runs.stats.elapsed.as_secs_f64()
         );
         files.push((views, std::fs::read(&out)?));
         std::fs::remove_file(&out)?;
@@ -381,8 +423,8 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
             &out,
             &mut warm,
             || View::open_project(ui, &project, page, 640, 360, Some(TRACK_JS)),
-            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
-            |_| Ok(()),
+            |view, frame, ask| seek(view, frame, ask),
+            |_, _, _| Ok(()),
         )?;
         runs.muxer.finish()?;
         let bytes = std::fs::read(&out)?;
@@ -445,8 +487,8 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
             &out,
             &mut warm,
             || View::open_project(ui, &project, "flip.html", 640, 360, Some(TRACK_JS)),
-            |view, frame| view.evaluate(&format!("seek({frame})")).map(drop),
-            |_| Ok(()),
+            |view, frame, ask| seek(view, frame, ask),
+            |_, _, _| Ok(()),
         )?;
         runs.muxer.finish()?;
         let bytes = std::fs::read(&out)?;
@@ -483,11 +525,11 @@ fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
         &out,
         &mut Warm::new()?,
         || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
-        |view, frame| {
+        |view, frame, ask| {
             ensure!(frame != 50, "frame 50 is broken");
-            view.evaluate(&format!("seek({frame})")).map(drop)
+            seek(view, frame, ask)
         },
-        |_| Ok(()),
+        |_, _, _| Ok(()),
     ) else {
         anyhow::bail!("a render with a broken frame succeeded");
     };
@@ -571,6 +613,10 @@ fn main() -> ExitCode {
         (
             "driver_parallel_views_write_the_same_bytes_as_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "driver_shrinking_runs_write_the_same_bytes_as_one_view",
+            shrinking_runs_write_the_same_bytes_as_one_view,
         ),
         (
             "driver_back_to_back_begin_frames_are_all_delivered",

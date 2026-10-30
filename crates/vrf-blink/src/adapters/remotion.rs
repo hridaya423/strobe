@@ -14,16 +14,17 @@ use percent_encoding::percent_decode_str;
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use vrf::audio::{RemotionAsset, mix, remotion_clips, saturate};
+use vrf::audio::{RemotionAsset, remotion_clips};
 use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
 use super::hyperframes;
 use super::{
-    PerFrame, Progress, StageStats, add_audio, audio_samples, cache_dir, hash_tree, short_hex,
+    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, hash_tree, short_hex,
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
-use crate::skip::{Skip, TRACK_JS};
+use crate::adapters::audio::LiveAudio;
+use crate::skip::{self, Skip, TRACK_JS};
 use crate::video::{Clips, Link, StartFallback};
 use crate::{Mode, Project, Ui, View};
 
@@ -490,13 +491,22 @@ impl Page {
     /// Leaves the view showing `frame` once Remotion's barrier has cleared, and returns the
     /// assets the frame registered. Frames must be seeked in increasing order for Remotion's
     /// output to match its own renderer.
-    pub fn seek(view: &mut View, frame: u64, attempt: u32) -> Result<Vec<Value>> {
-        let result = view.evaluate(&format!("__vrf.rm.seek({frame}, {{ attempt: {attempt} }})"))?;
+    pub fn seek(
+        view: &mut View,
+        frame: u64,
+        attempt: u32,
+        ask: bool,
+    ) -> Result<(Vec<Value>, bool)> {
+        let (result, unchanged) = skip::evaluate(
+            view,
+            &format!("__vrf.rm.seek({frame}, {{ attempt: {attempt} }})"),
+            ask,
+        )?;
         ensure!(
             result["webgl"] != true || crate::software_webgl(),
             "{NEEDS_SOFTWARE_WEBGL}"
         );
-        Ok(serde_json::from_value(result["assets"].clone())?)
+        Ok((serde_json::from_value(result["assets"].clone())?, unchanged))
     }
 }
 
@@ -511,6 +521,14 @@ fn project_file(url: &str, roots: &[&Path]) -> Result<PathBuf> {
         .map(|root| root.join(&*relative))
         .find(|path| path.is_file())
         .with_context(|| format!("audio source {url} is not in the project or its bundle"))
+}
+
+fn audio_assets(assets: &[Value]) -> Result<Vec<RemotionAsset>, serde_json::Error> {
+    assets
+        .iter()
+        .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
+        .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
+        .collect()
 }
 
 fn resolve_references(frames: &mut [FrameAssets]) {
@@ -776,6 +794,16 @@ impl Renderer {
         config.colour = colour(codec);
         let (width, height) = (composition.width as i32, composition.height as i32);
         let page = &loaded.page;
+        let live = options.audio.then(|| {
+            let (bundle_dir, project) = (bundle.dir.clone(), loaded.key.project.clone());
+            LiveAudio::start(
+                count as usize,
+                composition.fps,
+                audio_samples(count, config.frame_rate),
+                AUDIO_BIT_RATE,
+                move |url| project_file(url, &[&bundle_dir, &project]),
+            )
+        });
         let seek_retries = AtomicU64::new(0);
         let first_ready = OnceLock::new();
         let progress = Progress::new(progress, count, command_start);
@@ -805,11 +833,13 @@ impl Renderer {
                     first_ready.get_or_init(|| (since(command_start), open_started.elapsed()));
                     Ok(view)
                 },
-                |view, frame| {
+                |view, frame, ask| {
                     let mut attempt = 1;
                     loop {
-                        match Page::seek(view, frame, attempt) {
-                            Ok(assets) => return Ok(FrameAssets { frame, assets }),
+                        match Page::seek(view, frame, attempt, ask) {
+                            Ok((assets, unchanged)) => {
+                                return Ok((FrameAssets { frame, assets }, unchanged));
+                            }
                             Err(error) if error.to_string().contains(RETRY_MARK) => {
                                 let (fresh, _) = page.open(ui, width, height)?;
                                 std::mem::replace(view, fresh).close()?;
@@ -825,7 +855,12 @@ impl Renderer {
                         }
                     }
                 },
-                |done| progress.frame(done),
+                |done, index, seen: &FrameAssets| {
+                    if let Some(live) = &live {
+                        live.report(index as usize, audio_assets(&seen.assets).unwrap_or_default());
+                    }
+                    progress.frame(done)
+                },
             )
         })?;
         let render_s = render_started.elapsed();
@@ -839,23 +874,15 @@ impl Renderer {
 
         resolve_references(&mut collected);
         let step = Instant::now();
-        if options.audio {
+        if let Some(live) = live {
             let per_frame_assets = collected
                 .iter()
-                .map(|f| {
-                    f.assets
-                        .iter()
-                        .filter(|asset| matches!(asset["type"].as_str(), Some("audio" | "video")))
-                        .map(|asset| serde_json::from_value::<RemotionAsset>(asset.clone()))
-                        .collect::<Result<Vec<_>, _>>()
-                })
+                .map(|f| audio_assets(&f.assets))
                 .collect::<Result<Vec<_>, _>>()?;
             let clips = remotion_clips(&per_frame_assets, composition.fps, |url| {
                 project_file(url, &[&bundle.dir, &loaded.key.project])
             })?;
-            let mut pcm = mix(&clips, audio_samples(count, config.frame_rate))?;
-            saturate(&mut pcm);
-            add_audio(&mut muxer, &pcm, AUDIO_BIT_RATE)?;
+            add_track(&mut muxer, live.finish(&clips)?)?;
         }
         let audio_s = step.elapsed();
         let step = Instant::now();

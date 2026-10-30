@@ -71,7 +71,9 @@ fn apply_flags(command_line: &mut CommandLine) {
         command_line
             .append_switch_with_value(Some(&"use-angle".into()), Some(&"swiftshader-webgl".into()));
     }
-    if command_line.has_switch(Some(&"disable-gpu-rasterization".into())) != 0 {
+    if command_line.has_switch(Some(&"disable-gpu-rasterization".into())) != 0
+        && !extra.contains("num-raster-threads")
+    {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         command_line.append_switch_with_value(
             Some(&"num-raster-threads".into()),
