@@ -22,6 +22,12 @@ const VT_HEADROOM: usize = 32;
 const VT_PRIOR_PIXELS_PER_SECOND: f64 = 480e6;
 const X264_PRIOR_SHARE: f64 = 0.5;
 
+/// A renderer whose frames have arrived, over at least `ARRIVAL_WINDOW`, at under this share of
+/// VideoToolbox's rate never gets the CPU lane: its bursts drain on the media engine before the
+/// render ends, and the CPU it would take belongs to the pages.
+const SLOW_ARRIVAL_SHARE: f64 = 0.6;
+const ARRIVAL_WINDOW: Duration = Duration::from_millis(500);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurboOptions {
     /// Frames per closed GOP. Each chunk starts with an IDR frame and goes whole to one lane.
@@ -277,8 +283,9 @@ struct Lane {
 /// Frames come in order, as for any [`Encoder`]. The first frame of every chunk is an IDR frame
 /// and the chunk goes whole to one lane, picked when it starts: the CPU lane gets it only when
 /// VideoToolbox has more than a pipeline's worth of frames waiting and the CPU lane would finish
-/// the chunk sooner, by the rates the lanes have shown. A renderer that is slower than the media
-/// engine therefore never touches the CPU lane. Lanes buffer whole chunks, so
+/// the chunk sooner, by the rates the lanes have shown, and frames have not been arriving well
+/// below the media engine's rate. A renderer that is slower than the media engine therefore
+/// never touches the CPU lane. Lanes buffer whole chunks, so
 /// [`TurboEncoder::pool`] is larger than a single encoder's.
 ///
 /// Packets leave in presentation order with `dts` equal to `pts`, and the stream parameters are
@@ -292,6 +299,7 @@ pub struct TurboEncoder {
     lanes: Vec<Lane>,
     pool: PixelPool,
     first: Option<u64>,
+    started: Option<Instant>,
     submitted: u64,
     current: usize,
     x264_record: Option<AvcRecord>,
@@ -421,6 +429,7 @@ impl TurboEncoder {
             lanes,
             pool,
             first: None,
+            started: None,
             submitted: 0,
             current: 0,
             x264_record,
@@ -460,9 +469,17 @@ impl TurboEncoder {
             .filter(|&i| self.lanes[i].kind == LaneKind::VideoToolbox)
             .min_by(|&a, &b| finish(a).total_cmp(&finish(b)))
             .expect("a VideoToolbox lane exists");
+        let pixels = f64::from(self.config.width) * f64::from(self.config.height);
+        let slow = self.started.is_some_and(|started| {
+            let elapsed = started.elapsed();
+            elapsed >= ARRIVAL_WINDOW
+                && (self.submitted as f64 / elapsed.as_secs_f64())
+                    < SLOW_ARRIVAL_SHARE * VT_PRIOR_PIXELS_PER_SECOND / pixels
+        });
         match self.lanes.iter().position(|l| l.kind == LaneKind::X264) {
             Some(cpu)
-                if backlog(video_toolbox) > self.options.vt_headroom
+                if !slow
+                    && backlog(video_toolbox) > self.options.vt_headroom
                     && finish(cpu) < finish(video_toolbox) =>
             {
                 cpu
@@ -499,6 +516,7 @@ impl Encoder for TurboEncoder {
             self.shared.lock().next = index;
             index
         });
+        self.started.get_or_insert_with(Instant::now);
         ensure!(
             index == first + self.submitted,
             "frame {index} is out of order; expected {}",
