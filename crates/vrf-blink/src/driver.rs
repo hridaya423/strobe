@@ -142,6 +142,8 @@ pub(crate) fn submit_loop<F: Clone + Into<EncoderFrame>>(
     Ok((sink.into_muxer(), encode))
 }
 
+const FENCED_CAPTURES: usize = 8;
+
 /// Takes one begin frame at a time from a view and checks the delivery against CEF's capture
 /// counter. Replacing the view it captures from is allowed: the counter restarts with the new
 /// view.
@@ -149,6 +151,7 @@ pub(crate) fn submit_loop<F: Clone + Into<EncoderFrame>>(
 pub struct Capture {
     view: Option<u64>,
     last_counter: Option<u64>,
+    captured: usize,
     pub retries: u64,
     pub begin_to_paint: Vec<Duration>,
 }
@@ -157,18 +160,22 @@ impl Capture {
     /// Sends begin frames until a delivery arrives, and returns `None` when none arrives within
     /// `watchdog` of a begin frame on a view that has already delivered once, which means the
     /// page did not change. A ticking view always delivers, so there a missing delivery within
-    /// 30 s is an error.
+    /// 30 s is an error. Among the first captures of a ticking view, a delivery that repainted
+    /// nothing but the tick layer may be a begin frame answered before the page's commit landed,
+    /// so one such delivery is skipped per call.
     pub fn next(&mut self, view: &View, watchdog: Duration) -> Result<Option<Paint>> {
         if self.view != Some(view.serial()) {
             self.view = Some(view.serial());
             self.last_counter = None;
+            self.captured = 0;
         }
         let wait = if view.ticking() {
             TICKING_TIMEOUT
         } else {
             watchdog
         };
-        for _ in 0..2 {
+        let mut ticked = false;
+        for _ in 0..3 {
             let sent = view.begin_frame();
             let mut delivery = view.recv_paint(wait);
             while let Some(stale) = delivery.as_ref().filter(|paint| paint.at < sent) {
@@ -188,18 +195,24 @@ impl Capture {
                 view.invalidate();
                 continue;
             };
-            self.begin_to_paint.push(paint.at - sent);
+            self.begin_to_paint.push(paint.at.saturating_duration_since(sent));
             let gap = self
                 .last_counter
                 .is_some_and(|last| paint.counter != last + 1);
             self.last_counter = Some(paint.counter);
-            if !gap {
-                return Ok(Some(paint));
+            if gap {
+                self.retries += 1;
+                view.invalidate();
+                continue;
             }
-            self.retries += 1;
-            view.invalidate();
+            if view.ticking() && paint.tick_only && !ticked && self.captured < FENCED_CAPTURES {
+                ticked = true;
+                continue;
+            }
+            self.captured += 1;
+            return Ok(Some(paint));
         }
-        bail!("no clean delivery in two attempts")
+        bail!("no clean delivery in three attempts")
     }
 }
 

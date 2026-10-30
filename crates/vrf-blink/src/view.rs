@@ -24,15 +24,11 @@ use crate::video::{self, Pusher};
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const EVALUATE_TIMEOUT: Duration = Duration::from_secs(60);
-const SETTLE_DELIVERY: [Duration; 3] = [
-    Duration::from_millis(60),
-    Duration::from_millis(120),
-    Duration::from_millis(250),
-];
+const SETTLE_FIRST_DELIVERY: Duration = Duration::from_secs(5);
+const SETTLE_DELIVERY: Duration = Duration::from_secs(1);
 const ALIVE_TIMEOUT: Duration = Duration::from_secs(1);
 const SETTLE_QUIET: Duration = Duration::from_millis(20);
 const BEGIN_FRAME_GAP: Duration = Duration::from_millis(1);
-const SETTLE_ROUNDS: usize = 10;
 const SETTLE_CLEAN: usize = 2;
 
 #[cfg(windows)]
@@ -74,6 +70,9 @@ pub struct Paint {
     pub format: wgpu::TextureFormat,
     pub visible: colour::Rect,
     pub counter: u64,
+    /// Whether nothing but a single pixel changed since the previous capture, which on a ticking
+    /// view is the tick layer alone.
+    pub tick_only: bool,
     pub at: Instant,
     _lease: Option<Arc<()>>,
 }
@@ -162,6 +161,7 @@ wrap_render_handler! {
                 format: wgpu::TextureFormat::Bgra8Unorm,
                 visible: colour::Rect { x: 0, y: 0, width: w as u32, height: h as u32 },
                 counter,
+                tick_only: false,
                 at,
                 _lease: Some(lease),
             });
@@ -199,6 +199,10 @@ wrap_render_handler! {
                     height: visible.height as u32,
                 },
                 counter: info.extra.capture_counter,
+                tick_only: info.extra.has_capture_update_rect != 0
+                    && i64::from(info.extra.capture_update_rect.width)
+                        * i64::from(info.extra.capture_update_rect.height)
+                        <= 1,
                 at,
                 _lease: None,
             });
@@ -498,32 +502,42 @@ impl View {
         Ok(view)
     }
 
-    /// The first begin frames after a load are unreliable. The first is usually lost, and a late
-    /// delivery can follow one that came on time. This sends begin frames until `SETTLE_CLEAN`
-    /// in a row give exactly one delivery at the view's size. The wait for a delivery starts
-    /// short and doubles, so a lost frame costs tens of milliseconds, not a fixed quarter second.
+    /// The first begin frame after a load is slow, not lost: its delivery can take most of a
+    /// second on a loaded machine, and deliveries answer begin frames in order. A begin frame
+    /// sent while an earlier one is still unanswered leaves a delivery in flight after this
+    /// returns, which the first capture then takes for its own and shows the page before its
+    /// first seek. So this keeps one begin frame outstanding and waits for its delivery, until
+    /// `SETTLE_CLEAN` in a row give exactly one delivery at the view's size. A begin frame that
+    /// gets no delivery in time adds a round, since its delivery may still arrive.
     pub fn settle(&self) -> Result<()> {
         let (width, height) = (
             self.size.width.load(Ordering::Relaxed) as u32,
             self.size.height.load(Ordering::Relaxed) as u32,
         );
-        let mut clean = 0;
-        for round in 0..SETTLE_ROUNDS {
+        let started = Instant::now();
+        let (mut clean, mut missed, mut rounds) = (0, 0, 0);
+        while started.elapsed() < LOAD_TIMEOUT {
             if !self.ticking {
                 self.invalidate();
             }
             self.begin_frame();
-            let wait = SETTLE_DELIVERY[round.min(SETTLE_DELIVERY.len() - 1)];
-            let delivered = self.recv_paint(wait).is_some_and(|paint| {
-                (paint.visible.width, paint.visible.height) == (width, height)
-            });
-            let extra = self.recv_paint(SETTLE_QUIET).is_some();
+            let wait = if rounds == 0 {
+                SETTLE_FIRST_DELIVERY
+            } else {
+                SETTLE_DELIVERY
+            };
+            rounds += 1;
+            let delivery = self.recv_paint(wait);
+            missed += usize::from(delivery.is_none());
+            let delivered = delivery
+                .is_some_and(|paint| (paint.visible.width, paint.visible.height) == (width, height));
+            let extra = delivered && self.recv_paint(SETTLE_QUIET).is_some();
             clean = if delivered && !extra { clean + 1 } else { 0 };
-            if clean == SETTLE_CLEAN {
+            if clean == SETTLE_CLEAN + missed {
                 return Ok(());
             }
         }
-        bail!("begin frames never settled after {SETTLE_ROUNDS} rounds")
+        bail!("begin frames never settled after {rounds} rounds")
     }
 
     /// Changes the size of the view. Call it before the page has painted anything that matters,
