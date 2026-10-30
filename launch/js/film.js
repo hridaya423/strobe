@@ -134,38 +134,163 @@ function setup() {
     c.restore();
   }
 
-  const LINE_Y = 520;
-  const W1 = layout("Rendering", GEIST(800, 132), "-6px", 0);
-  const W2 = layout("takes", GEIST(800, 132), "-6px", 0);
-  const W3 = layout("forever.", SERIF(168), "0px", 0);
-  const GAP = 44;
-  const LINE_W = W1.width + W2.width + W3.width + GAP * 2;
-  const X1 = W / 2 - LINE_W / 2, X2 = X1 + W1.width + GAP, X3 = X2 + W2.width + GAP;
-  for (const q of W1.letters) q.x += X1;
-  for (const q of W2.letters) q.x += X2;
-  for (const q of W3.letters) q.x += X3;
+  const LINE_Y = 560;
+  const SANS = GEIST(600, 150);
+  const W1 = layout("Rendering", SANS, "-7px", 0);
+  const W2 = layout("takes", SANS, "-7px", 0);
+  const GAP = 40;
+  const LINE_W = W1.width + GAP + W2.width;
+  const T_CUT = b(2);
   const T_STRIKE = b(4);
-  const stretch = (i, t) => i * 30 * E.qo(seg(t, b(3.1), T_STRIKE));
-  const FOREVER_CX = X3 + W3.width / 2 + 3.5 * 30;
+  const F_Y = 640;
+  const F_FONT = SERIF(300);
+  const W3 = layout("forever.", F_FONT, "0px", 0);
+  for (const q of W3.letters) q.x += W / 2 - W3.width / 2;
+  const FOREVER_CX = W / 2;
+  const stretch = (i, t) => (i - 3.5) * 26 * E.qo(seg(t, b(2.4), T_STRIKE));
   const SHARDS = cellsOf(
     "shards",
     (c) => {
-      c.font = SERIF(168);
+      c.font = F_FONT;
       c.textBaseline = "alphabetic";
-      for (const q of W3.letters) c.fillText(q.ch, q.x + stretch(q.i, T_STRIKE), LINE_Y);
+      for (const q of W3.letters) c.fillText(q.ch, q.x + stretch(q.i, T_STRIKE), F_Y);
     },
     9,
   );
-  const STRIKE = [[1580, -40], [1430, 230], [1510, 300], [FOREVER_CX + 30, LINE_Y - 70], [FOREVER_CX + 95, LINE_Y - 10], [1230, 820], [1300, 860], [1150, 1140]];
 
   function shardPos(q, n, t) {
     const dt = Math.max(0, t - T_STRIKE);
-    const dx = q.x - (FOREVER_CX + 60), dy = q.y - (LINE_Y - 40);
+    const dx = q.x - FOREVER_CX, dy = q.y - (F_Y - 100);
     const sp = 900 + 1600 * hash(n, 3);
     const ang = Math.atan2(dy, dx) + (hash(n, 5) - 0.5) * 1.2;
     const k = 4.2;
     const travel = (sp * (1 - Math.exp(-k * dt))) / k;
     return { x: q.x + Math.cos(ang) * travel, y: q.y + Math.sin(ang) * travel + 40 * dt * dt * (hash(n, 9) - 0.3) };
+  }
+
+  const BOLT_HIT = { x: FOREVER_CX + 30, y: F_Y - 110 };
+  const LIGHTNING = (() => {
+    let seed = 11;
+    const rnd = () => hash(seed++, 4242);
+    function channel(a, z, rough, depth) {
+      let pts = [a, z];
+      for (let d = 0; d < depth; d++) {
+        const next = [pts[0]];
+        for (let i = 1; i < pts.length; i++) {
+          const p = pts[i - 1], q = pts[i];
+          const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+          const nx = -(q[1] - p[1]) / len, ny = (q[0] - p[0]) / len;
+          const off = (rnd() - 0.5) * len * rough;
+          next.push([(p[0] + q[0]) / 2 + nx * off, (p[1] + q[1]) / 2 + ny * off], q);
+        }
+        pts = next;
+      }
+      return pts;
+    }
+    const main = channel([BOLT_HIT.x + 260, -60], [BOLT_HIT.x, BOLT_HIT.y], 0.55, 7);
+    const branches = [];
+    for (let i = 8; i < main.length - 12; i += 7 + Math.floor(rnd() * 8)) {
+      const [x, y] = main[i];
+      const side = rnd() < 0.5 ? -1 : 1;
+      const len = 120 + 260 * rnd() * (1 - i / main.length);
+      const ang = Math.PI / 2 + side * (0.4 + 0.6 * rnd());
+      const pts = channel([x, y], [x + Math.cos(ang) * len, y + Math.sin(ang) * len], 0.6, 5);
+      branches.push({ pts, from: i, w: 0.35 + 0.35 * rnd() });
+      if (rnd() < 0.5) {
+        const k = Math.floor(pts.length * (0.3 + 0.4 * rnd()));
+        const [bx, by] = pts[k];
+        const a2 = ang + side * (0.3 + 0.5 * rnd());
+        branches.push({ pts: channel([bx, by], [bx + Math.cos(a2) * len * 0.45, by + Math.sin(a2) * len * 0.45], 0.6, 4), from: i, w: 0.2 });
+      }
+    }
+    const fork = [];
+    for (let k = 0; k < 4; k++) {
+      const a = -Math.PI / 2 + (k - 1.5) * 0.9 + (rnd() - 0.5) * 0.3;
+      fork.push({ pts: channel([BOLT_HIT.x, BOLT_HIT.y], [BOLT_HIT.x + Math.cos(a + Math.PI) * 140, BOLT_HIT.y + Math.abs(Math.sin(a)) * 160], 0.7, 4), from: main.length - 1, w: 0.3 });
+    }
+    return { main, branches: branches.concat(fork) };
+  })();
+
+  function strikeLevel(t) {
+    const d = t - T_STRIKE;
+    if (d < -0.12) return 0;
+    if (d < 0) return 0.12 + 0.1 * hash(Math.floor(t * 240), 9);
+    if (d < 0.05) return 1;
+    if (d < 0.085) return 0.3;
+    if (d < 0.13) return 0.85;
+    if (d < 0.16) return 0.25;
+    if (d < 0.19) return 0.55;
+    return 0.55 * Math.exp(-24 * (d - 0.19));
+  }
+
+  function tracePath(c, pts, n, k = 1) {
+    c.beginPath();
+    c.moveTo(pts[0][0] * k, pts[0][1] * k);
+    for (let i = 1; i < Math.min(n, pts.length); i++) c.lineTo(pts[i][0] * k, pts[i][1] * k);
+  }
+
+  function lightning(c, t, k, mode) {
+    const lv = strikeLevel(t);
+    if (lv <= 0.003) return;
+    const lead = t < T_STRIKE ? seg(t, T_STRIKE - 0.12, T_STRIKE) : 1;
+    const nMain = Math.max(2, Math.floor(LIGHTNING.main.length * lead));
+    c.save();
+    c.lineCap = "round";
+    c.lineJoin = "round";
+    const all = [{ pts: LIGHTNING.main, n: nMain, w: 1 }];
+    for (const br of LIGHTNING.branches) if (br.from < nMain) all.push({ pts: br.pts, n: Math.floor(br.pts.length * Math.min(1, (nMain - br.from) / 30)), w: br.w });
+    if (mode === "glow") {
+      c.globalCompositeOperation = "lighter";
+      for (const [blur, gain, width] of [[22, 0.22, 36], [7, 0.4, 12], [1.5, 0.8, 4]]) {
+        c.filter = `blur(${blur}px)`;
+        for (const br of all) {
+          light(c, gain * lv * (br.w === 1 ? 1 : br.w * 1.2));
+          c.lineWidth = width * k * (br.w === 1 ? 1 : 0.6);
+          tracePath(c, br.pts, br.n, k);
+          c.stroke();
+        }
+      }
+      c.filter = "none";
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      light(c, 0.006 * lv * lv);
+      c.fillRect(0, 0, W, H);
+    } else {
+      for (const br of all) {
+        const main = br.w === 1;
+        c.globalAlpha = Math.min(1, lv * (main ? 1.2 : br.w * 1.8));
+        c.strokeStyle = HEX.ice;
+        c.lineWidth = main ? 9 : 4;
+        tracePath(c, br.pts, br.n);
+        c.stroke();
+        c.strokeStyle = HEX.core;
+        c.lineWidth = main ? 3.5 : 1.6;
+        tracePath(c, br.pts, br.n);
+        c.stroke();
+      }
+    }
+    c.restore();
+  }
+
+  function scribble(x0, x1, y, p, seed) {
+    const n = 48;
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const u = i / n;
+      pts.push([lerp(x0, x1, u), y + Math.sin(u * Math.PI * 5.5 + seed) * 9 + (hash(i, seed) - 0.5) * 4 - u * 10]);
+    }
+    const m = Math.floor(p * n);
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = HEX.electric;
+    for (let i = 1; i <= m; i++) {
+      ctx.lineWidth = 11 + 4 * Math.sin(i * 0.7 + seed) - 5 * (i / n);
+      ctx.beginPath();
+      ctx.moveTo(...pts[i - 1]);
+      ctx.lineTo(...pts[i]);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   const BOLT_C = { x: 960, y: 540, h: 640 };
@@ -245,29 +370,29 @@ function setup() {
   }
 
   function sceneOpen(t) {
-    const pull = E.eo(seg(t, 0, 0.7));
-    const shake = t >= T_STRIKE && t < T_STRIKE + 0.2 ? Math.sin(t * 190) * 16 * (1 - seg(t, T_STRIKE, T_STRIKE + 0.2)) : 0;
+    if (t < T_CUT) return sceneType(t);
+    const shake = t >= T_STRIKE && t < T_STRIKE + 0.25 ? Math.sin(t * 190) * 18 * (1 - seg(t, T_STRIKE, T_STRIKE + 0.25)) : 0;
     const assemble = t >= T_GATHER;
     const dive = E.ei(seg(t, b(7.35), b(8)));
     const cam = assemble
       ? { s: tw(t, T_GATHER, b(7.35), 0.9, 1.08, E.lin) * (1 + dive * 15), fx: BOLT_C.x, fy: BOLT_C.y + 30 * dive, r: tw(t, T_GATHER, b(6.6), 0.16, 0, E.eo) - 0.02 * dive }
       : {
-          s: lerp(3.6, 1, pull) * tw(t, 0.7, T_STRIKE, 1, 1.13, E.lin),
-          fx: lerp(X1 + 260, W / 2, pull) + tw(t, 0.7, T_STRIKE, 0, 40, E.lin),
-          fy: LINE_Y - 40,
-          r: lerp(-0.07, 0, pull) + tw(t, 0.7, T_STRIKE, 0, 0.012, E.lin),
+          s: lerp(1.25, 1, E.eo(seg(t, T_CUT, T_CUT + 0.3))) * tw(t, T_CUT, T_STRIKE, 1, 1.1, E.lin),
+          fx: W / 2,
+          fy: F_Y - 110,
+          r: tw(t, T_CUT, T_STRIKE, 0, 0.018, E.lin),
           ox: shake,
-          oy: shake * 0.4,
+          oy: shake * 0.5,
         };
 
     const glowOn = E.eo(seg(t, b(6), b(6.8)));
     const res = t < b(7) ? 12 : t < b(7.5) ? 6 : 3;
     dither(ctx, 3, (c, k) => {
-      if (t >= T_STRIKE && t < T_STRIKE + 0.16) {
-        light(c, 0.035 * Math.pow(1 - seg(t, T_STRIKE, T_STRIKE + 0.16), 2));
-        c.fillRect(0, 0, W * k, H * k);
+      if (!assemble) {
+        camera(c, k, cam);
+        lightning(c, t, 1, "glow");
+        return;
       }
-      if (!assemble) return;
       camera(c, k, cam);
       if (glowOn > 0) boltGlow(c, 1, BOLT_C.x, BOLT_C.y, BOLT_C.h, glowOn * (1 + 0.6 * dive));
       if (dive > 0) {
@@ -282,73 +407,32 @@ function setup() {
     ctx.save();
     camera(ctx, 1, cam);
     if (!assemble) {
-      const knock = E.eo(seg(t, T_STRIKE, T_STRIKE + 0.35));
-      drawLetters(W1, GEIST(800, 132), "0px", LINE_Y, HEX.core, (q) => {
-        const d = 0.012 * q.i;
-        const u = E.eo(seg(t, d, d + 0.22));
-        return { a: u * (1 - knock), dx: (1 - u) * 90 - knock * 320, blur: (1 - u) * 10 };
-      });
-      drawLetters(W2, GEIST(800, 132), "0px", LINE_Y, HEX.ice, (q) => {
-        const d = b(2) + 0.017 * q.i;
-        const u = E.eo(seg(t, d, d + 0.3));
-        return { a: Math.min(1, u * 3) * (1 - knock), dy: -(1 - u) * 120 - knock * 40, dx: -knock * 320, r: (1 - u) * -0.25 };
-      });
       if (t < T_STRIKE) {
-        drawLetters(W3, SERIF(168), "0px", LINE_Y, HEX.core, (q) => {
-          const d = b(3) + 0.025 * q.i;
-          const u = E.eo(seg(t, d, d + 0.25));
-          return { a: u, dx: stretch(q.i, t), blur: (1 - u) * 14, s: 1 + 0.25 * (1 - u) };
+        const ECHO = [[-1, b(2.5), HEX.deep], [1, b(2.85), HEX.deep], [-2, b(3.2), "#081d4d"], [2, b(3.45), "#081d4d"]];
+        for (const [row, on, col] of ECHO) {
+          if (t < on) continue;
+          const u = E.eo(seg(t, on, on + 0.18));
+          drawLetters(W3, F_FONT, "0px", F_Y + row * 230 * u, col, (q) => ({ dx: stretch(q.i, t) * (1 + 0.15 * Math.abs(row)) }));
+        }
+        drawLetters(W3, F_FONT, "0px", F_Y, HEX.core, (q) => {
+          const d = T_CUT + 0.022 * q.i;
+          const u = E.eo(seg(t, d, d + 0.28));
+          return { a: Math.min(1, u * 2), dx: stretch(q.i, t), dy: (1 - u) * 60, blur: (1 - u) * 16, s: 1 + 0.4 * (1 - u) };
         });
+        const la = E.eo(seg(t, b(2.3), b(2.6)));
+        const fr = 131 + Math.floor(seg(t, T_CUT, T_STRIKE) * 3);
+        const lx = W / 2 - 560, rx = W / 2 + 560, ty = F_Y - 330, by = F_Y + 110;
+        label(`frame ${String(fr).padStart(4, "0")} / 1692`, lx, ty, HEX.electric, { size: 22, a: la });
+        label(`eta 00:44:${String(12 - Math.floor(seg(t, T_CUT, T_STRIKE) * 2)).padStart(2, "0")}`, rx, ty, HEX.electric, { size: 22, align: "right", a: la });
+        label("chrome --headless  encoding", lx, by, HEX.deep, { size: 22, a: la });
+        label(`queue ${14 + Math.floor(seg(t, T_CUT, T_STRIKE) * 2)}`, rx, by, HEX.deep, { size: 22, align: "right", a: la });
       }
-
-      const barA = E.eo(seg(t, 0.35, 0.6)) * (1 - knock);
-      if (barA > 0) {
-        const bx = W / 2 - 440, by = LINE_Y + 120, bw = 880, sx = -knock * 320;
-        ctx.globalAlpha = barA;
-        ctx.fillStyle = "rgba(47,123,255,0.28)";
-        ctx.fillRect(bx + sx, by, bw, 4);
-        ctx.fillStyle = HEX.ice;
-        ctx.fillRect(bx + sx, by, bw * (0.02 + 0.05 * seg(t, 0.35, T_STRIKE)), 4);
-        const frame = 112 + Math.floor(seg(t, 0.35, T_STRIKE) * 19);
-        label(`frame ${String(frame).padStart(4, "0")} / 1692`, bx + sx, by + 40, HEX.electric, { a: barA });
-        label(`eta 00:${String(44 - Math.floor(seg(t, 0.35, T_STRIKE) * 2)).padStart(2, "0")}`, bx + bw + sx, by + 40, HEX.electric, { align: "right", a: barA });
-        ctx.globalAlpha = 1;
-      }
-
       if (t >= T_STRIKE) {
         ctx.globalAlpha = Math.max(0.35, 1 - seg(t, T_STRIKE + 0.25, T_GATHER));
         squares(ctx, SHARDS.map((q, n) => shardPos(q, n, t)), 8, HEX.core);
         ctx.globalAlpha = 1;
       }
-
-      if (t >= T_STRIKE && t < T_STRIKE + 0.2) {
-        const p = seg(t, T_STRIKE, T_STRIKE + 0.05);
-        const fade = 1 - seg(t, T_STRIKE + 0.08, T_STRIKE + 0.2);
-        const lens = [];
-        let total = 0;
-        for (let i = 1; i < STRIKE.length; i++) {
-          lens.push(Math.hypot(STRIKE[i][0] - STRIKE[i - 1][0], STRIKE[i][1] - STRIKE[i - 1][1]));
-          total += lens[i - 1];
-        }
-        let left = total * p;
-        ctx.beginPath();
-        ctx.moveTo(...STRIKE[0]);
-        for (let i = 1; i < STRIKE.length && left > 0; i++) {
-          const u = Math.min(1, left / lens[i - 1]);
-          ctx.lineTo(lerp(STRIKE[i - 1][0], STRIKE[i][0], u), lerp(STRIKE[i - 1][1], STRIKE[i][1], u));
-          left -= lens[i - 1];
-        }
-        ctx.lineJoin = "miter";
-        ctx.lineCap = "square";
-        ctx.globalAlpha = fade;
-        ctx.strokeStyle = HEX.ice;
-        ctx.lineWidth = 34;
-        ctx.stroke();
-        ctx.strokeStyle = HEX.core;
-        ctx.lineWidth = 12;
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
+      lightning(ctx, t, 1, "core");
     } else {
       const landed = [], flying = [];
       for (const pr of PAIRS) {
@@ -364,10 +448,52 @@ function setup() {
     }
     ctx.restore();
 
-    if (t >= T_STRIKE && t < T_STRIKE + 0.05) {
-      ctx.fillStyle = core(t < T_STRIKE + 0.017 ? 0.9 : 0.45);
+    if (t >= T_STRIKE && t < T_STRIKE + 1 / 60) {
+      ctx.fillStyle = "rgba(143,227,255,0.22)";
       ctx.fillRect(0, 0, W, H);
     }
+  }
+
+  function sceneType(t) {
+    const zoom = E.eo(seg(t, 0, 0.55));
+    const slide = E.eio(seg(t, b(1) - 0.05, b(1) + 0.25));
+    const x1 = lerp(W / 2 - W1.width / 2, W / 2 - LINE_W / 2, slide);
+    const x2 = x1 + W1.width + GAP;
+    const cam = {
+      s: lerp(5.2, 1, zoom) * tw(t, 0.55, T_CUT, 1, 1.07, E.lin),
+      fx: lerp(W / 2 - W1.width * 0.18, W / 2, zoom),
+      fy: LINE_Y - 50,
+      r: lerp(-0.05, 0, zoom),
+    };
+    ctx.fillStyle = HEX.core;
+    ctx.fillRect(0, 0, W, H);
+    grid(cam, "rgba(4,6,13,0.06)");
+    ctx.save();
+    camera(ctx, 1, cam);
+    ctx.font = SANS;
+    ctx.letterSpacing = "-7px";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = HEX.night;
+    ctx.fillText("Rendering", x1, LINE_Y);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x2 - 20, LINE_Y - 170, W2.width + 60, 215);
+    ctx.clip();
+    for (const q of W2.letters) {
+      const d = b(1) + 0.035 * q.i;
+      const u = E.eo(seg(t, d, d + 0.3));
+      if (u <= 0) continue;
+      ctx.letterSpacing = "0px";
+      ctx.fillText(q.ch, x2 + q.x, LINE_Y + (1 - u) * 190);
+    }
+    ctx.restore();
+    ctx.letterSpacing = "0px";
+    const sp = seg(t, b(1.4), T_CUT - 0.04);
+    scribble(x2 - 6, x2 + W2.width + 6, LINE_Y + 44, sp < 0.55 ? sp * 1.2 : 0.66 + (sp - 0.55) * 0.75, 3);
+    const la = E.eo(seg(t, b(1.2), b(1.5)));
+    label("render.mp4", x1, LINE_Y - 190, "rgba(4,6,13,0.55)", { size: 20, a: la });
+    label("1692 frames", x2 + W2.width, LINE_Y - 190, "rgba(4,6,13,0.55)", { size: 20, align: "right", a: la });
+    ctx.restore();
   }
 
   function brandMark(t, bloom, boltT) {
@@ -733,15 +859,6 @@ function setup() {
       ctx.drawImage(glint, 0, 0);
     }
     ctx.restore();
-
-    if (t >= 11.8) {
-      const f = Math.floor((t - 11.8) * 60);
-      const v = [1, 1, 0, 0, 1, 0, 2, 2, 2, 2, 2, 2][Math.min(11, f)];
-      if (v) {
-        ctx.fillStyle = v === 1 ? HEX.core : HEX.night;
-        ctx.fillRect(0, 0, W, H);
-      }
-    }
   }
 
   const tl = gsap.timeline({ paused: true });

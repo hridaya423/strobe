@@ -173,7 +173,28 @@ for t, g in ((B(8), 1.0), (B(8.75), 0.6), (B(12), 0.9), (B(15), 0.7), (B(18), 0.
 
 sx_ = lambda n: S.load(os.path.join(HERE, "sfx", n + ".wav"))
 sfx.add(S.noise_riser(B(4) - 0.3, 0.6, 2.6), 0.3, 0.3)
-sfx.add(sx_("shatter"), B(4) - 0.02, 0.9)
+sfx.add(sx_("shatter"), B(4) - 0.02, 0.6)
+sfx.add(sx_("cut_dark"), B(2), 0.8)
+
+
+def thunder():
+    n = int(2.6 * SR)
+    tt_ = (np.arange(n) / SR)[:, None]
+    nz = lambda: rng.standard_normal((n, 2))
+    crack = np.zeros((n, 2))
+    for t0, g in ((-0.1, 0.12), (-0.06, 0.15), (-0.03, 0.2), (0.0, 1.0), (0.085, 0.75), (0.16, 0.5)):
+        i = int((t0 + 0.12) * SR)
+        m = int(0.18 * SR)
+        crack[i:i + m] += rng.standard_normal((m, 2)) * np.exp(-np.arange(m) / (0.025 * SR))[:, None] * g
+    crack = S.hp(crack, 1800, 2)
+    after = np.maximum(0, tt_ - 0.12)
+    rumble = S.lp(S.lp(nz() * np.minimum(1, after / 0.06) * np.exp(-after / 0.7), 160), 160) * 6
+    mid = S.lp(S.hp(nz(), 300, 2), 2500) * np.exp(-after / 0.18) * (tt_ > 0.12) * 0.5
+    x = crack + rumble + mid
+    return x / (np.abs(x).max() + 1e-9)
+
+
+sfx.add(fx(thunder(), pb.Reverb(room_size=0.95, wet_level=0.35, dry_level=0.85)), B(4) - 0.12, 0.95)
 sfx.add(sx_("gather"), B(4.75) + 0.3 - 0.45, 0.7)
 sfx.add(sx_("dive"), B(8) - 0.78, 0.8)
 sfx.add(S.noise_riser(B(8) - B(6.5), 0.7, 2.8), B(6.5), 0.35)
@@ -208,10 +229,6 @@ for i, c in enumerate(tag):
         sfx.add(S.blip(2600 + 400 * S.jhash(i, 1), 0.008, 0.9, 200), B(26.6) + i / 75, 0.05, pan=-0.3 + 0.6 * i / len(tag))
 for i, c in enumerate(cmd):
     sfx.add(S.blip(1800 + 300 * S.jhash(i, 2), 0.012, 0.9, 160), B(27.4) + i / 45, 0.07, pan=0.1)
-for f, v in enumerate([1, 1, 0, 0, 1]):
-    if v:
-        sfx.add(S.blip(5000, 0.012, 0.9, 120), 11.8 + f / 60, 0.1)
-sfx.add(S.taiko(1.0), 11.8, 0.3)
 
 a = fx(ac.x[:N], pb.Compressor(threshold_db=-12, ratio=2.5, attack_ms=8, release_ms=120), pb.Reverb(room_size=0.8, damping=0.4, wet_level=0.25, dry_level=0.85))
 i_ = fx(imp.x[:N], pb.Reverb(room_size=0.9, wet_level=0.25, dry_level=0.9))
@@ -236,7 +253,7 @@ mixd.astype(np.float32).tofile(tmp)
 pre = ["-f", "f32le", "-ar", str(SR), "-ac", "2", "-i", tmp]
 r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats"] + pre + ["-af", "ebur128", "-f", "null", "-"], capture_output=True, text=True).stderr
 I = float(re.findall(r"I:\s+(-?[\d.]+) LUFS", r)[-1])
-subprocess.check_call(["ffmpeg", "-v", "error", "-y"] + pre + ["-af", f"volume={-9.5 - I:.2f}dB,alimiter=limit=0.89:attack=1:release=60:level=false",
+subprocess.check_call(["ffmpeg", "-v", "error", "-y"] + pre + ["-af", f"volume={-9.5 - I:.2f}dB,alimiter=limit=0.84:attack=1:release=60:level=false",
                                                        "-ar", "48000", os.path.join(HERE, "score.wav")])
 os.remove(tmp)
 print("wrote score.wav")
