@@ -31,6 +31,7 @@ const MEMORY_BUDGET: u64 = 3 << 29;
 const MAX_MEMORY_BUDGET: u64 = 3 << 30;
 const MIN_RUN: u64 = 80;
 const LEAD_IN_RUNS: u64 = 10;
+const MIN_RUN_LEAD_INS: u64 = 4;
 const TICKING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
@@ -607,6 +608,12 @@ impl Plan {
         lead_in.saturating_mul(LEAD_IN_RUNS).max(MIN_RUN)
     }
 
+    /// The smallest run a claim may take near the end of a render, so that no view idles while
+    /// another finishes a long run.
+    fn min_run(&self) -> u64 {
+        self.run.min(self.lead_in.saturating_mul(MIN_RUN_LEAD_INS)).max(1)
+    }
+
     /// Cuts a long `run` to an even share of `frames`, but not below `MIN_RUN`, so a short
     /// render still spreads over its views.
     fn sized(mut self, frames: u64) -> Plan {
@@ -630,6 +637,50 @@ impl Plan {
     }
 }
 
+/// Hands out contiguous runs of frames. A claim takes about `remaining / (2 * views)` frames, at
+/// most `plan.run` (so long renders keep their long runs and little lead-in) and at least
+/// `plan.min_run()` (so the last claims are short and every view finishes together).
+struct Claims {
+    next: Mutex<u64>,
+    count: u64,
+    views: u64,
+    max: u64,
+    min: u64,
+}
+
+impl Claims {
+    fn new(plan: &Plan, count: u64) -> Claims {
+        Claims {
+            next: Mutex::new(0),
+            count,
+            views: plan.views as u64,
+            max: plan.run,
+            min: plan.min_run(),
+        }
+    }
+
+    fn size(&self, remaining: u64) -> u64 {
+        if self.views == 1 {
+            return remaining.min(self.max);
+        }
+        (remaining / (2 * self.views))
+            .clamp(self.min, self.max)
+            .min(remaining)
+    }
+
+    fn claim(&self) -> Option<(u64, u64)> {
+        let mut next = self.next.lock().unwrap();
+        let from = *next;
+        let remaining = self.count.saturating_sub(from);
+        if remaining == 0 {
+            return None;
+        }
+        let to = from + self.size(remaining);
+        *next = to;
+        Some((from, to))
+    }
+}
+
 pub struct Runs<T> {
     pub plan: Plan,
     pub muxer: Muxer,
@@ -640,11 +691,10 @@ pub struct Runs<T> {
 
 struct Shared<'a, T> {
     first: u64,
-    count: u64,
     plan: Plan,
     watchdog: Duration,
     skip: Option<&'a Skip>,
-    next_run: AtomicU64,
+    claims: Claims,
     done: AtomicU64,
     on_frame: &'a (dyn Fn(u64) -> Result<()> + Sync),
     open: &'a (dyn Fn() -> Result<View> + Sync),
@@ -748,12 +798,9 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
     let mut view = (shared.open)()?;
     let mut last = None;
     loop {
-        let run = shared.next_run.fetch_add(1, Ordering::Relaxed);
-        let from = run.saturating_mul(shared.plan.run);
-        if from >= shared.count {
+        let Some((from, to)) = shared.claims.claim() else {
             break;
-        }
-        let to = from.saturating_add(shared.plan.run).min(shared.count);
+        };
         let start = shared.first + from;
         let resume = start
             .saturating_sub(shared.plan.lead_in)
@@ -829,11 +876,10 @@ pub fn render_runs<T: Send>(
     let aborter = pipeline.producer.clone();
     let shared = Shared {
         first,
-        count: config.frames,
         plan,
         watchdog: config.watchdog,
         skip: config.skip.as_ref(),
-        next_run: AtomicU64::new(0),
+        claims: Claims::new(&Plan { views, ..plan }, config.frames),
         done: AtomicU64::new(0),
         on_frame: &on_frame,
         open: &open,
@@ -911,6 +957,39 @@ mod tests {
     fn a_long_run_keeps_the_lead_in_near_a_tenth() {
         assert_eq!(Plan::auto_run(20), 200);
         assert_eq!(Plan::auto_run(0), MIN_RUN);
+    }
+
+    fn sizes(plan: Plan, frames: u64) -> Vec<u64> {
+        let claims = Claims::new(&plan, frames);
+        let mut sizes = Vec::new();
+        let mut at = 0;
+        while let Some((from, to)) = claims.claim() {
+            assert_eq!(from, at);
+            sizes.push(to - from);
+            at = to;
+        }
+        assert_eq!(at, frames);
+        sizes
+    }
+
+    #[test]
+    fn claims_shrink_towards_the_end_so_no_view_idles() {
+        let plan = Plan::new(4, 200);
+        let long = sizes(plan, 1692);
+        assert_eq!(long[0], 200);
+        assert!(long.windows(2).all(|pair| pair[0] >= pair[1]));
+        let min = plan.min_run();
+        assert_eq!(min, 80);
+        assert!(long[..long.len() - 1].iter().all(|size| *size >= min));
+        assert!(long.iter().rev().skip(1).take(2).all(|size| *size == min));
+        assert!(long.iter().filter(|size| **size < 200).count() >= 3);
+    }
+
+    #[test]
+    fn a_fixed_run_stays_fixed_and_a_short_render_is_one_claim_per_view() {
+        assert_eq!(sizes(Plan::new(4, 7), 96), [vec![7; 13], vec![5]].concat());
+        assert_eq!(sizes(Plan::single(), 300), vec![300]);
+        assert_eq!(sizes(Plan::new(4, 200).sized(300), 300), vec![80, 80, 80, 60]);
     }
 
     #[test]

@@ -321,6 +321,43 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn shrinking_runs_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 420);
+    let mut files = Vec::new();
+    let mut warm = Warm::new()?;
+    for views in [1, 2, 4, 5] {
+        let out = std::env::temp_dir().join(format!("vrf-blink-shrinking-{views}.mov"));
+        let runs = render_runs(
+            &config,
+            Plan { lead_in: 2, ..Plan::new(views, 200) },
+            0,
+            &out,
+            &mut warm,
+            || View::open_project(ui, &project, "colour.html", 640, 360, Some("")),
+            |view, frame, ask| seek(view, frame, ask),
+            |_| Ok(()),
+        )?;
+        runs.muxer.finish()?;
+        ensure!(runs.plan.views == views, "{} views ran", runs.plan.views);
+        ensure!(runs.stats.repeats == 0, "{} repeats", runs.stats.repeats);
+        println!(
+            "shrinking {views}: {} lead-in frames, {} fps",
+            runs.lead_in_frames,
+            420.0 / runs.stats.elapsed.as_secs_f64()
+        );
+        files.push((views, std::fs::read(&out)?));
+        std::fs::remove_file(&out)?;
+    }
+    for (views, bytes) in &files[1..] {
+        ensure!(
+            *bytes == files[0].1,
+            "{views} views wrote different bytes from one view"
+        );
+    }
+    Ok(())
+}
+
 fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let mut warm = Warm::new()?;
@@ -517,6 +554,10 @@ fn main() -> ExitCode {
         (
             "driver_parallel_views_write_the_same_bytes_as_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "driver_shrinking_runs_write_the_same_bytes_as_one_view",
+            shrinking_runs_write_the_same_bytes_as_one_view,
         ),
         (
             "driver_back_to_back_begin_frames_are_all_delivered",
