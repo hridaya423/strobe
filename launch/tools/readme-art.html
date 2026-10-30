@@ -66,39 +66,50 @@
         return { ox, oy: y - oh * 0.5, oh, width };
       }
 
-      function banner(c) {
+      async function banner(c) {
         const BH = 600;
         c.width = W;
         c.height = BH;
         const ctx = c.getContext("2d");
         ctx.fillStyle = HEX.night;
         ctx.fillRect(0, 0, W, BH);
-        const size = 300, base = 352, step = 170, shots = [0.08, 0.14, 0.24];
-        const fx = 1180;
-        const layer = (alpha, x, ink, bolt) => {
-          const t = document.createElement("canvas");
-          t.width = W;
-          t.height = BH;
-          wordmark(t.getContext("2d"), size, x, base, ink, bolt);
-          ctx.globalAlpha = alpha;
-          ctx.drawImage(t, 0, 0);
-          ctx.globalAlpha = 1;
-        };
-        shots.forEach((a, i) => layer(a, fx - (shots.length - i) * step, HEX.electric, HEX.electric));
-        layer(1, fx, HEX.core, HEX.electric);
-        const y = 426;
-        ctx.fillStyle = "rgba(143,227,255,0.18)";
-        ctx.fillRect(fx - shots.length * step, y, shots.length * step, 1);
-        shots.forEach((a, i) => {
-          ctx.fillStyle = `rgba(143,227,255,${0.2 + a * 1.5})`;
-          ctx.fillRect(fx - (shots.length - i) * step, y - 6, 1, 13);
-        });
-        ctx.fillStyle = HEX.electric;
-        ctx.fillRect(fx - 1, y - 10, 3, 21);
+        const size = 210, base = 318;
+        ctx.font = `italic 400 ${size}px "Instrument Serif"`;
+        ctx.letterSpacing = `${-0.01 * size}px`;
+        const ww = ctx.measureText("strobe").width;
+        ctx.letterSpacing = "0px";
+        const ink = document.createElement("canvas");
+        ink.width = W;
+        ink.height = BH;
+        wordmark(ink.getContext("2d"), size, 120 + ww / 2, base, HEX.core, HEX.electric);
+        ctx.drawImage(ink, 0, 0);
         ctx.font = '500 34px "Geist"';
         ctx.textAlign = "left";
         ctx.fillStyle = "rgba(244,251,255,0.62)";
-        ctx.fillText("A render engine for Remotion and HyperFrames.", fx - shots.length * step, 506);
+        ctx.fillText("A render engine for Remotion", 128, base + 84);
+        ctx.fillText("and HyperFrames.", 128, base + 128);
+        const dir = new URLSearchParams(location.search).get("frames");
+        const shots = [["1.0", "00:01"], ["3.0", "00:03"], ["12.0", "00:12"]];
+        const fw = 300, fh = 169, gap = 16, fy = 216;
+        const x0 = W - 120 - shots.length * fw - (shots.length - 1) * gap;
+        const imgs = await Promise.all(shots.map(([t]) => new Promise((r) => { const im = new Image(); im.onload = () => r(im); im.src = `${dir}/${t}.png`; })));
+        imgs.forEach((im, i) => {
+          const x = x0 + i * (fw + gap);
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(x, fy, fw, fh, 6);
+          ctx.clip();
+          ctx.drawImage(im, x, fy, fw, fh);
+          ctx.restore();
+          ctx.strokeStyle = "rgba(143,227,255,0.16)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(x + 0.5, fy + 0.5, fw - 1, fh - 1, 6);
+          ctx.stroke();
+          ctx.font = '18px "Departure Mono"';
+          ctx.fillStyle = "rgba(143,227,255,0.45)";
+          ctx.fillText(shots[i][1], x, fy + fh + 32);
+        });
       }
 
       function chart(c, dark) {
@@ -163,9 +174,7 @@
       document.fonts.load('italic 330px "Instrument Serif"').then(() =>
         Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 34px "Geist"')]).then(() => {
           const c = document.getElementById("c");
-          if (art === "banner") banner(c);
-          else chart(c, art === "chart-dark");
-          document.title = "ready";
+          (art === "banner" ? banner(c) : Promise.resolve(chart(c, art === "chart-dark"))).then(() => (document.title = "ready"));
         }),
       );
     </script>
