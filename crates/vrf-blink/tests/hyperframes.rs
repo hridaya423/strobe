@@ -21,7 +21,7 @@ const ID_BITS: u32 = 16;
 const ID_CELL: u32 = 16;
 
 fn work_dir() -> PathBuf {
-    std::env::temp_dir().join("vrf-hyperframes-tests")
+    std::env::temp_dir().join(format!("vrf-hyperframes-tests-{}", std::process::id()))
 }
 
 fn hyperframes_package() -> PathBuf {

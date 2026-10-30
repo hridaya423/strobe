@@ -385,7 +385,7 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
     let mut render = |skip: Option<Skip>| -> Result<(Vec<u8>, u64)> {
         let mut config = Config::new(640, 360, FRAME_RATE, Codec::ProRes422, 96);
         config.skip = skip;
-        let out = std::env::temp_dir().join("vrf-blink-skip-flip.mov");
+        let out = std::env::temp_dir().join(format!("vrf-blink-skip-flip-{}.mov", std::process::id()));
         let runs = render_runs(
             &config,
             Plan::new(3, 7),
@@ -419,7 +419,7 @@ fn a_frame_is_never_skipped_against_another_runs_frame(ui: &Ui) -> Result<()> {
 fn a_failing_view_stops_the_others_and_names_its_frame(ui: &Ui) -> Result<()> {
     let project = pages()?;
     let config = Config::new(640, 360, FRAME_RATE, Codec::H264, 96);
-    let out = std::env::temp_dir().join("vrf-blink-parallel-failure.mp4");
+    let out = std::env::temp_dir().join(format!("vrf-blink-parallel-failure-{}.mp4", std::process::id()));
     let started = Instant::now();
     let Err(error) = render_runs(
         &config,
