@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use vrf::colour::{Chroma, Format};
 use vrf::gpu::Gpu;
@@ -28,6 +28,9 @@ const WINDOW: usize = 32;
 const MAX_IMPORTS: usize = 16;
 const POOL_MARGIN: usize = 32;
 const MEMORY_BUDGET: u64 = 3 << 29;
+const MAX_MEMORY_BUDGET: u64 = 3 << 30;
+const MIN_RUN: u64 = 80;
+const LEAD_IN_RUNS: u64 = 10;
 const TICKING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
@@ -527,6 +530,34 @@ pub fn render(
 
 pub const LEAD_IN: u64 = 20;
 
+#[cfg(target_os = "macos")]
+fn physical_memory() -> Option<u64> {
+    let mut bytes = 0u64;
+    let mut size = std::mem::size_of::<u64>();
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            (&raw mut bytes).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0).then_some(bytes)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn physical_memory() -> Option<u64> {
+    None
+}
+
+/// An eighth of the machine's memory for frames waiting on the encoder, between 1.5 and 3 GB.
+fn memory_budget() -> u64 {
+    physical_memory().map_or(MEMORY_BUDGET, |bytes| {
+        (bytes / 8).clamp(MEMORY_BUDGET, MAX_MEMORY_BUDGET)
+    })
+}
+
 /// How a render is split across views: frames are dealt in contiguous runs of `run`, and each
 /// view seeks and paints `lead_in` frames before its run and discards them, because a page's
 /// output can depend on the frames before it, and on their having been painted, not only seeked.
@@ -571,9 +602,23 @@ impl Plan {
         ahead.max(WINDOW as u64) as usize
     }
 
-    /// Cuts `run` until the buffers the window needs fit in `MEMORY_BUDGET`.
+    /// The run that keeps the discarded lead-in near a tenth of the frames each view paints.
+    pub fn auto_run(lead_in: u64) -> u64 {
+        lead_in.saturating_mul(LEAD_IN_RUNS).max(MIN_RUN)
+    }
+
+    /// Cuts a long `run` to an even share of `frames`, but not below `MIN_RUN`, so a short
+    /// render still spreads over its views.
+    fn sized(mut self, frames: u64) -> Plan {
+        if self.run > MIN_RUN {
+            self.run = self.run.min(frames.div_ceil(self.views as u64).max(MIN_RUN));
+        }
+        self
+    }
+
+    /// Cuts `run` until the buffers the window needs fit in the memory budget.
     fn fit(mut self, frame_bytes: u64) -> Plan {
-        let buffers = (MEMORY_BUDGET / frame_bytes) as usize;
+        let buffers = (memory_budget() / frame_bytes) as usize;
         let allowed = buffers.saturating_sub(POOL_MARGIN).max(WINDOW);
         if self.views > 1 {
             let views = self.views as u64;
@@ -616,7 +661,81 @@ struct Worker<T> {
     convert: Vec<Duration>,
 }
 
+enum Job {
+    Paint(Paint),
+    Repeat,
+    Skip,
+}
+
+struct Handoff {
+    jobs: mpsc::Sender<(u64, Job)>,
+    finished: mpsc::Receiver<Result<()>>,
+    pending: usize,
+}
+
+impl Handoff {
+    fn send(&mut self, index: u64, job: Job) -> Result<()> {
+        self.jobs
+            .send((index, job))
+            .map_err(|_| anyhow!("the converter stopped"))?;
+        self.pending += 1;
+        Ok(())
+    }
+
+    fn wait(&mut self) -> Result<()> {
+        while self.pending > 0 {
+            self.finished
+                .recv()
+                .map_err(|_| anyhow!("the converter stopped"))??;
+            self.pending -= 1;
+        }
+        Ok(())
+    }
+}
+
+fn convert_frames(
+    lane: &mut Lane,
+    queued: mpsc::Receiver<(u64, Job)>,
+    finished: mpsc::Sender<Result<()>>,
+) {
+    for (index, job) in queued {
+        let result = match job {
+            Job::Paint(paint) => lane.frame(index, &paint),
+            Job::Repeat => lane.repeat(index),
+            Job::Skip => lane.skip(index),
+        };
+        let failed = result.is_err();
+        let _ = finished.send(result);
+        if failed {
+            break;
+        }
+    }
+}
+
 fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
+    let (jobs, queued) = mpsc::channel();
+    let (acks, finished) = mpsc::channel();
+    let mut worker = thread::scope(|scope| {
+        scope.spawn(|| convert_frames(lane, queued, acks));
+        drive(
+            shared,
+            Handoff {
+                jobs,
+                finished,
+                pending: 0,
+            },
+        )
+    })?;
+    worker.repeats = lane.repeats;
+    worker.skipped = lane.skipped;
+    worker.convert = std::mem::take(&mut lane.convert);
+    Ok(worker)
+}
+
+/// Seeks and captures the view's runs. A delivered surface stays valid until the next begin
+/// frame, so its conversion runs on the lane's thread while the page seeks the next frame, and
+/// is awaited just before that begin frame.
+fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
     let mut worker = Worker {
         frames: Vec::new(),
         seek: Vec::new(),
@@ -641,6 +760,7 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
             .max(last.map_or(0, |last| last + 1));
         for before in resume..start {
             (shared.seek)(&mut view, before).with_context(|| format!("seek to frame {before}"))?;
+            handoff.wait()?;
             worker
                 .capture
                 .next(&view, shared.watchdog)
@@ -657,16 +777,14 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
                 .skip
                 .map_or(Ok(false), |skip| skip.unchanged(&mut view, frame))?;
             if unchanged && index > from {
-                lane.skip(index)?;
+                handoff.send(index, Job::Skip)?;
             } else {
-                match worker
+                handoff.wait()?;
+                let paint = worker
                     .capture
                     .next(&view, shared.watchdog)
-                    .with_context(|| format!("capture frame {frame}"))?
-                {
-                    Some(paint) => lane.frame(index, &paint)?,
-                    None => lane.repeat(index)?,
-                }
+                    .with_context(|| format!("capture frame {frame}"))?;
+                handoff.send(index, paint.map_or(Job::Repeat, Job::Paint))?;
             }
             worker.frames.push((index, value));
             let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -674,11 +792,9 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
         }
         last = Some(shared.first + to - 1);
     }
+    handoff.wait()?;
     view.check_project()?;
     view.close()?;
-    worker.repeats = lane.repeats;
-    worker.skipped = lane.skipped;
-    worker.convert = std::mem::take(&mut lane.convert);
     Ok(worker)
 }
 
@@ -699,7 +815,7 @@ pub fn render_runs<T: Send>(
 ) -> Result<Runs<T>> {
     let started = Instant::now();
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
-    let plan = plan.fit(frame_bytes);
+    let plan = plan.fit(frame_bytes).sized(config.frames);
     let mut config = config.clone();
     config.window = config.window.max(plan.window());
     config.turbo &= plan.turbo;
@@ -785,4 +901,25 @@ pub fn render_runs<T: Send>(
         stats,
         lead_in_frames,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_run_keeps_the_lead_in_near_a_tenth() {
+        assert_eq!(Plan::auto_run(20), 200);
+        assert_eq!(Plan::auto_run(0), MIN_RUN);
+    }
+
+    #[test]
+    fn a_run_is_cut_to_an_even_share_but_not_below_the_minimum() {
+        let plan = Plan::new(4, 200);
+        assert_eq!(plan.sized(1900).run, 200);
+        assert_eq!(plan.sized(400).run, 100);
+        assert_eq!(plan.sized(150).run, MIN_RUN);
+        assert_eq!(Plan::new(4, 7).sized(1000).run, 7);
+        assert_eq!(Plan::single().sized(300).run, 300);
+    }
 }
