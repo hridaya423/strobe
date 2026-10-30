@@ -300,7 +300,13 @@ impl Capture {
         };
         for _ in 0..2 {
             let sent = view.begin_frame();
-            let Some(paint) = view.recv_paint(wait) else {
+            let mut delivery = view.recv_paint(wait);
+            while let Some(stale) = delivery.as_ref().filter(|paint| paint.at < sent) {
+                self.retries += 1;
+                self.last_counter = Some(stale.counter);
+                delivery = view.recv_paint(wait);
+            }
+            let Some(paint) = delivery else {
                 ensure!(
                     !view.ticking(),
                     "no delivery within {wait:?} of a begin frame"
@@ -312,10 +318,6 @@ impl Capture {
                 view.invalidate();
                 continue;
             };
-            ensure!(
-                paint.at >= sent,
-                "a delivery from before this begin frame arrived; the watchdog of {watchdog:?} is too short"
-            );
             self.begin_to_paint.push(paint.at - sent);
             let gap = self
                 .last_counter
