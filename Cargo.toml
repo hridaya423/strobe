@@ -7,3 +7,6 @@ exclude = ["spikes"]
 edition = "2024"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
+
+[workspace.metadata.blaze.sandbox]
+unsandboxed-build-scripts = ["cef-dll-sys"]
