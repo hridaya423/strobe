@@ -11,11 +11,23 @@ const QUANT: [i32; 64] = [
     11, 14, 17, 20,
 ];
 
-const RECIPROCAL: [u64; 64] = {
+/// `n / (8 * QUANT[i])` is `(n * RECIPROCAL[i]) >> 22` for every `n` below 2^15. A coefficient's
+/// magnitude is at most 8 x 2048.
+const RECIPROCAL: [u32; 64] = {
     let mut table = [0; 64];
     let mut i = 0;
     while i < 64 {
-        table[i] = (1 << 32) / (8 * QUANT[i] as u64) + 1;
+        table[i] = (1 << 22) / (8 * QUANT[i] as u32) + 1;
+        i += 1;
+    }
+    table
+};
+
+const NATURAL_TO_ZIGZAG: [usize; 64] = {
+    let mut table = [0; 64];
+    let mut i = 0;
+    while i < 64 {
+        table[ZIGZAG[i]] = i;
         i += 1;
     }
     table
@@ -131,45 +143,81 @@ struct Source<'a> {
     width: usize,
     height: usize,
     chroma_row: usize,
-    base: [i64; 256],
-    red: [i64; 256],
-    green_v: [i64; 256],
-    green_u: [i64; 256],
-    blue: [i64; 256],
+    k: Conversion,
 }
 
 impl Source<'_> {
-    fn new(nv12: &[u8], width: usize, height: usize, k: Conversion) -> Source<'_> {
-        let table = |f: &dyn Fn(i64) -> i64| std::array::from_fn(|i| f(i as i64));
-        let chroma = |c: i64| (c - 128) << 9;
-        Source {
-            nv12,
-            width,
-            height,
-            chroma_row: width.div_ceil(2) * 2,
-            base: table(&|y| ((y << 9) - i64::from(k.offset)) * i64::from(k.luma) + 2_097_152),
-            red: table(&|v| chroma(v) * i64::from(k.red)),
-            green_v: table(&|v| chroma(v) * i64::from(k.green_v)),
-            green_u: table(&|u| chroma(u) * i64::from(k.green_u)),
-            blue: table(&|u| chroma(u) * i64::from(k.blue)),
+    /// swscale's YUV to RGB for one pixel. Sums that leave `i32` saturate, and those clamp to 0
+    /// or 255 either way.
+    #[inline(always)]
+    fn rgb(&self, y: u8, u: u8, v: u8) -> [i32; 3] {
+        let k = &self.k;
+        let base = ((i32::from(y) << 9) - k.offset) * k.luma + 2_097_152;
+        let (u, v) = ((i32::from(u) - 128) << 9, (i32::from(v) - 128) << 9);
+        let level = |value: i32| (value >> 22).clamp(0, 255);
+        [
+            level(base.saturating_add(v * k.red)),
+            level(base + v * k.green_v + u * k.green_u),
+            level(base.saturating_add(u * k.blue)),
+        ]
+    }
+
+    fn lines(&self, y: usize) -> (&[u8], &[u8]) {
+        let at = self.width * self.height + (y >> 1) * self.chroma_row;
+        (
+            &self.nv12[y * self.width..(y + 1) * self.width],
+            &self.nv12[at..at + self.chroma_row],
+        )
+    }
+
+    fn luma_row(&self, y: usize, out: &mut [u8]) {
+        let (luma, chroma) = self.lines(y);
+        let pairs = out
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(luma.as_chunks::<2>().0)
+            .zip(chroma.as_chunks::<2>().0);
+        for ((out, luma), uv) in pairs {
+            out[0] = to_luma(self.rgb(luma[0], uv[0], uv[1]));
+            out[1] = to_luma(self.rgb(luma[1], uv[0], uv[1]));
+        }
+        if self.width % 2 == 1 {
+            let x = self.width - 1;
+            out[x] = to_luma(self.rgb(luma[x], chroma[x], chroma[x + 1]));
         }
     }
 
-    fn row(&self, y: usize, out: &mut [[i32; 3]]) {
-        let luma = &self.nv12[y * self.width..(y + 1) * self.width];
-        let at = self.width * self.height + (y >> 1) * self.chroma_row;
-        let chroma = &self.nv12[at..at + self.chroma_row];
-        let level = |value: i64| (value >> 22).clamp(0, 255) as i32;
-        for (x, pixel) in out.iter_mut().enumerate() {
-            let base = self.base[luma[x] as usize];
-            let (u, v) = (chroma[x & !1] as usize, chroma[x | 1] as usize);
-            *pixel = [
-                level(base + self.red[v]),
-                level(base + self.green_v[v] + self.green_u[u]),
-                level(base + self.blue[u]),
-            ];
+    /// Luma of row `y`, and the chroma ffmpeg takes from it: each pair's RGB sum.
+    fn chroma_row(&self, y: usize, out: &mut [u8], cb: &mut [u8], cr: &mut [u8]) {
+        let (luma, chroma) = self.lines(y);
+        let pairs = out
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(luma.as_chunks::<2>().0)
+            .zip(chroma.as_chunks::<2>().0);
+        for (((out, luma), uv), (cb, cr)) in pairs.zip(cb.iter_mut().zip(cr.iter_mut())) {
+            let a = self.rgb(luma[0], uv[0], uv[1]);
+            let b = self.rgb(luma[1], uv[0], uv[1]);
+            out[0] = to_luma(a);
+            out[1] = to_luma(b);
+            let sum = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+            *cb = ((-5537 * sum[0] - 10848 * sum[1] + 16385 * sum[2] + 8_388_608) >> 16)
+                .clamp(0, 255) as u8;
+            *cr = ((16386 * sum[0] - 13730 * sum[1] - 2656 * sum[2] + 8_388_608) >> 16)
+                .clamp(0, 255) as u8;
+        }
+        if self.width % 2 == 1 {
+            let x = self.width - 1;
+            out[x] = to_luma(self.rgb(luma[x], chroma[x], chroma[x + 1]));
         }
     }
+}
+
+#[inline(always)]
+fn to_luma([r, g, b]: [i32; 3]) -> u8 {
+    ((9798 * r + 19235 * g + 3735 * b + 16383) >> 15).clamp(0, 255) as u8
 }
 
 struct Plane {
@@ -179,75 +227,101 @@ struct Plane {
 }
 
 impl Plane {
+    /// The quantised levels of block (`bx`, `by`) in zigzag order. Samples past the edge repeat
+    /// the last row and column.
     fn block(&self, bx: usize, by: usize) -> [i32; 64] {
-        let mut rows = [[0i32; 8]; 8];
-        for (r, row) in rows.iter_mut().enumerate() {
-            let y = (by * 8 + r).min(self.height - 1);
-            let line = &self.samples[y * self.width..(y + 1) * self.width];
-            *row = fdct(
-                std::array::from_fn(|j| i32::from(line[(bx * 8 + j).min(self.width - 1)]) - 128),
-                false,
-            );
-        }
-        let mut levels = [0i32; 64];
-        for column in 0..8 {
-            let c = fdct(rows.map(|row| row[column]), true);
-            for (r, value) in c.into_iter().enumerate() {
-                let i = r * 8 + column;
-                levels[i] = level(value, i);
+        let mut samples = [[0i32; 8]; 8];
+        let (x0, y0) = (bx * 8, by * 8);
+        if x0 + 8 <= self.width && y0 + 8 <= self.height {
+            for (j, column) in samples.iter_mut().enumerate() {
+                for (r, sample) in column.iter_mut().enumerate() {
+                    *sample = i32::from(self.samples[(y0 + r) * self.width + x0 + j]) - 128;
+                }
+            }
+        } else {
+            for (j, column) in samples.iter_mut().enumerate() {
+                for (r, sample) in column.iter_mut().enumerate() {
+                    let y = (y0 + r).min(self.height - 1);
+                    let x = (x0 + j).min(self.width - 1);
+                    *sample = i32::from(self.samples[y * self.width + x]) - 128;
+                }
             }
         }
+        let rows = fdct::<false>(&samples);
+        let mut transposed = [[0i32; 8]; 8];
+        for (u, row) in rows.iter().enumerate() {
+            for (r, &value) in row.iter().enumerate() {
+                transposed[r][u] = value;
+            }
+        }
+        let columns = fdct::<true>(&transposed);
+        let mut levels = [0i32; 64];
+        for (v, row) in columns.iter().enumerate() {
+            let quantised = quantise(row, v);
+            for (u, &value) in quantised.iter().enumerate() {
+                levels[NATURAL_TO_ZIGZAG[v * 8 + u]] = value;
+            }
+        }
+        levels[0] = (columns[0][0] + 32) >> 6;
         levels
     }
 }
 
-fn descale(x: i32, n: u32) -> i32 {
-    (x + (1 << (n - 1))) >> n
-}
+type Block = [[i32; 8]; 8];
 
-fn fdct(d: [i32; 8], second: bool) -> [i32; 8] {
-    let (t0, t7) = (d[0] + d[7], d[0] - d[7]);
-    let (t1, t6) = (d[1] + d[6], d[1] - d[6]);
-    let (t2, t5) = (d[2] + d[5], d[2] - d[5]);
-    let (t3, t4) = (d[3] + d[4], d[3] - d[4]);
-    let (t10, t13, t11, t12) = (t0 + t3, t0 - t3, t1 + t2, t1 - t2);
-    let shift = if second { 14 } else { 12 };
-    let mut o = [0i32; 8];
-    o[0] = if second {
-        descale(t10 + t11, 1)
-    } else {
-        (t10 + t11) << 1
-    };
-    o[4] = if second {
-        descale(t10 - t11, 1)
-    } else {
-        (t10 - t11) << 1
-    };
-    let z1 = (t12 + t13) * 4433;
-    o[2] = descale(z1 + t13 * 6270, shift);
-    o[6] = descale(z1 + t12 * -15137, shift);
-    let (t10, t11, t12, t13) = (t4 + t7, t5 + t6, t4 + t6, t5 + t7);
-    let z5 = (t12 + t13) * 9633;
-    let (t4, t5, t6, t7) = (t4 * 2446, t5 * 16819, t6 * 25172, t7 * 12299);
-    let (z1, z2) = (t10 * -7373, t11 * -20995);
-    let (z3, z4) = (t12 * -16069 + z5, t13 * -3196 + z5);
-    o[7] = descale(t4 + z1 + z3, shift);
-    o[5] = descale(t5 + z2 + z4, shift);
-    o[3] = descale(t6 + z2 + z3, shift);
-    o[1] = descale(t7 + z1 + z4, shift);
+/// ffmpeg's `jfdctint` butterfly on the eight columns of `d` at once: row `k` holds sample `k` of
+/// each one-dimensional transform. `SECOND` is the column pass, which descales by the pass-one
+/// scale as well.
+#[inline(always)]
+fn fdct<const SECOND: bool>(d: &Block) -> Block {
+    let shift = if SECOND { 14 } else { 12 };
+    let descale = |x: i32, n: u32| (x + (1 << (n - 1))) >> n;
+    let mut o = [[0i32; 8]; 8];
+    for i in 0..8 {
+        let (t0, t7) = (d[0][i] + d[7][i], d[0][i] - d[7][i]);
+        let (t1, t6) = (d[1][i] + d[6][i], d[1][i] - d[6][i]);
+        let (t2, t5) = (d[2][i] + d[5][i], d[2][i] - d[5][i]);
+        let (t3, t4) = (d[3][i] + d[4][i], d[3][i] - d[4][i]);
+        let (t10, t13, t11, t12) = (t0 + t3, t0 - t3, t1 + t2, t1 - t2);
+        if SECOND {
+            o[0][i] = descale(t10 + t11, 1);
+            o[4][i] = descale(t10 - t11, 1);
+        } else {
+            o[0][i] = (t10 + t11) << 1;
+            o[4][i] = (t10 - t11) << 1;
+        }
+        let z1 = (t12 + t13) * 4433;
+        o[2][i] = descale(z1 + t13 * 6270, shift);
+        o[6][i] = descale(z1 + t12 * -15137, shift);
+        let (t10, t11, t12, t13) = (t4 + t7, t5 + t6, t4 + t6, t5 + t7);
+        let z5 = (t12 + t13) * 9633;
+        let (t4, t5, t6, t7) = (t4 * 2446, t5 * 16819, t6 * 25172, t7 * 12299);
+        let (z1, z2) = (t10 * -7373, t11 * -20995);
+        let (z3, z4) = (t12 * -16069 + z5, t13 * -3196 + z5);
+        o[7][i] = descale(t4 + z1 + z3, shift);
+        o[5][i] = descale(t5 + z2 + z4, shift);
+        o[3][i] = descale(t6 + z2 + z3, shift);
+        o[1][i] = descale(t7 + z1 + z4, shift);
+    }
     o
 }
 
-fn level(c: i32, i: usize) -> i32 {
-    if i == 0 {
-        return (c + 32) >> 6;
+/// ffmpeg's AC quantiser for row `v` of a block: bias 3/8, with ties rounded up only where the
+/// step is 4 or 8.
+#[inline(always)]
+fn quantise(c: &[i32; 8], v: usize) -> [i32; 8] {
+    let mut out = [0; 8];
+    for u in 0..8 {
+        let i = v * 8 + u;
+        let (n, q) = (c[u].abs(), QUANT[i]);
+        let step = 8 * q;
+        let k = ((n as u32 * RECIPROCAL[i]) >> 22) as i32;
+        let rem = 8 * (n - k * step);
+        let up = (rem > 5 * step) | ((rem == 5 * step) & ((q == 4) | (q == 8)));
+        let magnitude = k + i32::from(up);
+        out[u] = if c[u] < 0 { -magnitude } else { magnitude };
     }
-    let (n, q) = (c.abs(), QUANT[i]);
-    let step = 8 * q;
-    let k = ((n as u64 * RECIPROCAL[i]) >> 32) as i32;
-    let rem = 8 * (n - k * step);
-    let up = rem > 5 * step || (rem == 5 * step && (q == 4 || q == 8));
-    c.signum() * (k + i32::from(up))
+    out
 }
 
 #[derive(Default)]
@@ -261,21 +335,35 @@ impl Bits {
     fn put(&mut self, code: u32, length: u32) {
         self.acc = (self.acc << length) | u64::from(code);
         self.count += length;
-        while self.count >= 8 {
-            self.count -= 8;
-            let byte = (self.acc >> self.count) as u8;
-            self.out.push(byte);
-            if byte == 0xff {
-                self.out.push(0);
+        if self.count < 32 {
+            return;
+        }
+        self.count -= 32;
+        let word = (self.acc >> self.count) as u32;
+        if (word & 0x8080_8080) & !word.wrapping_add(0x0101_0101) == 0 {
+            self.out.extend(word.to_be_bytes());
+        } else {
+            for byte in word.to_be_bytes() {
+                self.out.push(byte);
+                if byte == 0xff {
+                    self.out.push(0);
+                }
             }
         }
         self.acc &= (1 << self.count) - 1;
     }
 
     fn finish(mut self) -> Vec<u8> {
-        if self.count > 0 {
-            let pad = 8 - self.count;
-            self.put((1 << pad) - 1, pad);
+        let pad = (8 - self.count % 8) % 8;
+        self.acc = (self.acc << pad) | ((1 << pad) - 1);
+        self.count += pad;
+        while self.count > 0 {
+            self.count -= 8;
+            let byte = (self.acc >> self.count) as u8;
+            self.out.push(byte);
+            if byte == 0xff {
+                self.out.push(0);
+            }
         }
         self.out
     }
@@ -293,33 +381,38 @@ impl Coder {
         (size, bits)
     }
 
+    fn symbol(codes: &Codes, symbol: usize, size: u32, extra: u32, bits: &mut Bits) {
+        let (code, length) = codes.0[symbol];
+        bits.put((u32::from(code) << size) | extra, u32::from(length) + size);
+    }
+
+    /// Writes a block given in zigzag order.
     fn block(&self, bits: &mut Bits, levels: &[i32; 64], predictor: &mut i32) {
         let (size, extra) = Coder::magnitude(levels[0] - *predictor);
         *predictor = levels[0];
-        let (code, length) = self.dc.0[size as usize];
-        bits.put(code.into(), length.into());
-        bits.put(extra, size);
-        let mut run = 0;
-        for &natural in &ZIGZAG[1..] {
-            let value = levels[natural];
-            if value == 0 {
-                run += 1;
-                continue;
-            }
+        Coder::symbol(&self.dc, size as usize, size, extra, bits);
+        let mut nonzero = levels
+            .iter()
+            .enumerate()
+            .skip(1)
+            .fold(0u64, |mask, (i, &value)| {
+                mask | (u64::from(value != 0) << i)
+            });
+        let mut last = 0;
+        while nonzero != 0 {
+            let at = nonzero.trailing_zeros();
+            nonzero &= nonzero - 1;
+            let mut run = at - last - 1;
             while run > 15 {
-                let (code, length) = self.ac.0[0xf0];
-                bits.put(code.into(), length.into());
+                Coder::symbol(&self.ac, 0xf0, 0, 0, bits);
                 run -= 16;
             }
-            let (size, extra) = Coder::magnitude(value);
-            let (code, length) = self.ac.0[(run << 4 | size) as usize];
-            bits.put(code.into(), length.into());
-            bits.put(extra, size);
-            run = 0;
+            let (size, extra) = Coder::magnitude(levels[at as usize]);
+            Coder::symbol(&self.ac, (run << 4 | size) as usize, size, extra, bits);
+            last = at;
         }
-        if run > 0 {
-            let (code, length) = self.ac.0[0];
-            bits.put(code.into(), length.into());
+        if last < 63 {
+            Coder::symbol(&self.ac, 0, 0, 0, bits);
         }
     }
 }
@@ -328,13 +421,17 @@ impl Coder {
 /// (chroma rows of `2 * ceil(width / 2)` bytes) in the clip's matrix and range.
 pub fn encode(nv12: &[u8], width: u32, height: u32, bt709: bool, full: bool) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
-    let source = Source::new(nv12, w, h, Conversion::new(bt709, full));
+    let source = Source {
+        nv12,
+        width: w,
+        height: h,
+        chroma_row: w.div_ceil(2) * 2,
+        k: Conversion::new(bt709, full),
+    };
     let (cw, ch) = (w / 2, h / 2);
     let mut luma = vec![0u8; w * h];
     let mut cb = vec![0u8; cw * ch];
     let mut cr = vec![0u8; cw * ch];
-    let to_luma =
-        |[r, g, b]: [i32; 3]| ((9798 * r + 19235 * g + 3735 * b + 16383) >> 15).clamp(0, 255) as u8;
     let band = ch.div_ceil(THREADS).max(1);
     thread::scope(|scope| {
         let luma_bands = luma.chunks_mut(2 * band * w);
@@ -342,35 +439,21 @@ pub fn encode(nv12: &[u8], width: u32, height: u32, bt709: bool, full: bool) -> 
         for (index, (luma, (cb, cr))) in luma_bands.zip(chroma_bands).enumerate() {
             let source = &source;
             scope.spawn(move || {
-                let (mut even, mut odd) = (vec![[0i32; 3]; w], vec![[0i32; 3]; w]);
-                for (row, (cb, cr)) in cb.chunks_mut(cw).zip(cr.chunks_mut(cw)).enumerate() {
+                let rows = luma.chunks_mut(2 * w);
+                for (row, (luma, (cb, cr))) in rows
+                    .zip(cb.chunks_mut(cw).zip(cr.chunks_mut(cw)))
+                    .enumerate()
+                {
                     let y = 2 * (index * band + row);
-                    source.row(y, &mut even);
-                    source.row(y + 1, &mut odd);
-                    for (out, &pixel) in luma[2 * row * w..(2 * row + 2) * w]
-                        .iter_mut()
-                        .zip(even.iter().chain(&odd))
-                    {
-                        *out = to_luma(pixel);
-                    }
-                    for x in 0..cw {
-                        let (a, b) = (odd[2 * x], odd[(2 * x + 1).min(w - 1)]);
-                        let s = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-                        cb[x] = ((-5537 * s[0] - 10848 * s[1] + 16385 * s[2] + 8_388_608) >> 16)
-                            .clamp(0, 255) as u8;
-                        cr[x] = ((16386 * s[0] - 13730 * s[1] - 2656 * s[2] + 8_388_608) >> 16)
-                            .clamp(0, 255) as u8;
-                    }
+                    let (even, odd) = luma.split_at_mut(w);
+                    source.luma_row(y, even);
+                    source.chroma_row(y + 1, odd, cb, cr);
                 }
             });
         }
     });
     if h % 2 == 1 {
-        let mut last = vec![[0i32; 3]; w];
-        source.row(h - 1, &mut last);
-        for (out, &pixel) in luma[(h - 1) * w..].iter_mut().zip(&last) {
-            *out = to_luma(pixel);
-        }
+        source.luma_row(h - 1, &mut luma[(h - 1) * w..]);
     }
     let luma = Plane {
         samples: luma,
@@ -466,13 +549,88 @@ pub fn encode(nv12: &[u8], width: u32, height: u32, bt709: bool, full: bool) -> 
 mod tests {
     use super::*;
 
+    fn frame(width: usize, height: usize, seed: u32) -> Vec<u8> {
+        let chroma_row = width.div_ceil(2) * 2;
+        let mut state = seed;
+        let mut noise = move || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        };
+        let mut nv12 = vec![0u8; width * height + chroma_row * height.div_ceil(2)];
+        for y in 0..height {
+            for x in 0..width {
+                let smooth = ((x * 255 / width + y * 255 / height) / 2) as u8;
+                nv12[y * width + x] = if (x / 64 + y / 64) % 3 == 0 {
+                    noise()
+                } else {
+                    smooth
+                };
+            }
+        }
+        for (i, sample) in nv12[width * height..].iter_mut().enumerate() {
+            *sample = if (i / 97) % 2 == 0 {
+                noise()
+            } else {
+                (i % 256) as u8
+            };
+        }
+        nv12
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn files_are_unchanged() {
+        for (width, height, bt709, full, seed, expected) in [
+            (
+                1920,
+                1080,
+                true,
+                false,
+                1,
+                "a251e9541e1dcf5b619c0f28b19867e7027d2ca3339173edc83637885c769045",
+            ),
+            (
+                641,
+                359,
+                false,
+                true,
+                2,
+                "c5da99e0122bef250707c34bc51621b19500d1ce22a1aaf1d07649840d9d420c",
+            ),
+            (
+                1280,
+                720,
+                false,
+                false,
+                3,
+                "40fbc66622f50ac421c799b830a5ff67de4559422c11ac6ff6b3238aeefebf4e",
+            ),
+        ] {
+            let file = encode(
+                &frame(width, height, seed),
+                width as u32,
+                height as u32,
+                bt709,
+                full,
+            );
+            assert_eq!(digest(&file), expected, "{width}x{height}");
+        }
+    }
+
     #[test]
     fn reciprocal_quantisation_equals_division() {
         for i in 1..64 {
             let step = 8 * QUANT[i];
-            for n in 0..1 << 17 {
+            for n in 0..1 << 15 {
                 assert_eq!(
-                    ((n as u64 * RECIPROCAL[i]) >> 32) as i32,
+                    ((n as u32 * RECIPROCAL[i]) >> 22) as i32,
                     n / step,
                     "n {n} q {}",
                     QUANT[i]
