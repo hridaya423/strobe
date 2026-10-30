@@ -350,7 +350,7 @@ fn calibration_is_measured_once_and_flags_override_it(ui: &Ui) -> Result<()> {
     let _ = std::fs::remove_file(&cache);
     let measured = calibration::calibrated(ui, &cache)?;
     ensure!(
-        [1, 2, 4, 8].contains(&measured.views) && measured.run >= 1 && measured.fps.len() >= 2,
+        [1, 2, 4, 8].contains(&measured.views) && measured.fps.len() >= 2,
         "{measured:?}"
     );
     let cached = calibration::calibrated(ui, &cache)?;
@@ -365,6 +365,8 @@ fn calibration_is_measured_once_and_flags_override_it(ui: &Ui) -> Result<()> {
         (plan.views, plan.run, plan.lead_in) == (3, 5, 7),
         "{plan:?}"
     );
+    let automatic = calibration::plan(ui, Some(3), None, 20)?;
+    ensure!(automatic.run == 200, "{automatic:?}");
     Ok(())
 }
 

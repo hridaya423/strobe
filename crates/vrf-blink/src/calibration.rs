@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::driver::{LEAD_IN, Plan};
+use crate::driver::Plan;
 use crate::{Ui, View};
 
 const PROBE: &str = include_str!("../js/calibrate.html");
@@ -18,14 +18,12 @@ const SAMPLE: Duration = Duration::from_millis(300);
 const WARMUP: Duration = Duration::from_millis(50);
 const GAIN: f64 = 1.25;
 const BASE: u64 = 1_000_003;
-const LEAD_IN_SHARE: f64 = 0.25;
 
-/// What a machine's measurement settles on: the views to run, the frames each renders in a row,
-/// and the frame rate measured at each view count.
+/// What a machine's measurement settles on: the views to run, and the frame rate measured at each
+/// view count.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Calibration {
     pub views: usize,
-    pub run: u64,
     pub fps: BTreeMap<usize, f64>,
 }
 
@@ -123,7 +121,6 @@ pub fn measure(ui: &Ui) -> Result<Calibration> {
     }
     Ok(Calibration {
         views: chosen,
-        run: (LEAD_IN as f64 / LEAD_IN_SHARE).ceil() as u64,
         fps,
     })
 }
@@ -164,26 +161,24 @@ fn plan_from(
         views != Some(0) && run != Some(0),
         "views and run must be at least 1"
     );
-    let (views, run) = match (views, run) {
-        (Some(views), Some(run)) => (views, run),
-        _ => {
+    let views = match views {
+        Some(views) => views,
+        None => {
             let Some(calibration) = calibration()? else {
                 return Ok(None);
             };
-            (
-                views.unwrap_or(calibration.views),
-                run.unwrap_or(calibration.run),
-            )
+            calibration.views
         }
     };
+    let run = run.unwrap_or_else(|| Plan::auto_run(lead_in));
     Ok(Some(Plan {
         lead_in,
         ..Plan::new(views, run)
     }))
 }
 
-/// The plan for a render: the flags' values where given, and the calibration's where not. Nothing
-/// is measured when both are given.
+/// The plan for a render: the flags' values where given, and the calibration's view count where
+/// not. Nothing is measured when the view count is given.
 pub fn plan(ui: &Ui, views: Option<usize>, run: Option<u64>, lead_in: u64) -> Result<Plan> {
     plan_from(views, run, lead_in, || {
         calibrated(ui, &cache_path()).map(Some)
