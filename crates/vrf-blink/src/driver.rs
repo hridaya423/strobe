@@ -603,28 +603,71 @@ impl Plan {
 /// most `plan.run` (so long renders keep their long runs and little lead-in) and at least
 /// `plan.min_run()` (so the last claims are short and every view finishes together). A plan with
 /// ranges hands out exactly `plan.run` frames each time.
+///
+/// Frames past the first unfinished one wait for the encoder in pool buffers, so a claim waits
+/// until its run fits in `capacity` beside them. A view ahead of a slow one would otherwise take
+/// every buffer, and the slow view's next frame would wait for a buffer forever. The run that
+/// starts at that first unfinished frame never waits.
 struct Claims {
-    next: Mutex<u64>,
-    first: Mutex<Vec<u64>>,
+    state: Mutex<ClaimState>,
+    freed: Condvar,
     moved: Vec<u64>,
     count: u64,
     views: u64,
     max: u64,
     min: u64,
     fixed: bool,
+    capacity: u64,
+}
+
+struct ClaimState {
+    next: u64,
+    first: Vec<u64>,
+    runs: Vec<(u64, u64, bool)>,
+    cancelled: bool,
+}
+
+impl ClaimState {
+    /// The first frame of a run not yet finished, or of the frames nobody claimed yet.
+    fn frontier(&self) -> u64 {
+        let mut runs = self.runs.clone();
+        runs.sort_unstable();
+        let mut at = 0;
+        for (from, to, finished) in runs {
+            if from != at || !finished {
+                break;
+            }
+            at = to;
+        }
+        at
+    }
+
+    fn held(&self, frontier: u64) -> u64 {
+        self.runs
+            .iter()
+            .filter(|(from, _, _)| *from >= frontier)
+            .map(|(from, to, _)| to - from)
+            .sum()
+    }
 }
 
 impl Claims {
-    fn new(plan: &Plan, count: u64, moved: &[u64]) -> Claims {
+    fn new(plan: &Plan, count: u64, moved: &[u64], capacity: usize) -> Claims {
         Claims {
-            next: Mutex::new(0),
-            first: Mutex::new(moved.iter().rev().copied().collect()),
+            state: Mutex::new(ClaimState {
+                next: 0,
+                first: moved.iter().rev().copied().collect(),
+                runs: Vec::new(),
+                cancelled: false,
+            }),
+            freed: Condvar::new(),
             moved: moved.to_vec(),
             count,
             fixed: plan.ranges.is_some(),
             views: plan.views as u64,
             max: plan.run,
             min: plan.min_run(),
+            capacity: capacity as u64,
         }
     }
 
@@ -637,35 +680,59 @@ impl Claims {
             .min(remaining)
     }
 
-    /// Whether a claim may still get frames.
-    fn remaining(&self) -> bool {
-        if !self.first.lock().unwrap().is_empty() {
-            return true;
-        }
-        let mut next = *self.next.lock().unwrap();
+    fn skip_moved(&self, mut next: u64) -> u64 {
         while self.moved.contains(&(next / self.max)) {
             next += self.max;
         }
-        next < self.count
+        next
     }
 
-    fn claim(&self) -> Option<(u64, u64)> {
-        if let Some(range) = self.first.lock().unwrap().pop() {
+    /// Whether a claim may still get frames.
+    fn remaining(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        !state.first.is_empty() || self.skip_moved(state.next) < self.count
+    }
+
+    fn peek(&self, state: &ClaimState) -> Option<(u64, u64)> {
+        if let Some(&range) = state.first.last() {
             let from = range * self.max;
             return Some((from, (from + self.max).min(self.count)));
         }
-        let mut next = self.next.lock().unwrap();
-        while self.moved.contains(&(*next / self.max)) {
-            *next += self.max;
-        }
-        let from = *next;
+        let from = self.skip_moved(state.next);
         let remaining = self.count.saturating_sub(from);
-        if remaining == 0 {
-            return None;
+        (remaining > 0).then(|| (from, from + self.size(remaining)))
+    }
+
+    fn claim(&self) -> Option<(u64, u64)> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if state.cancelled {
+                return None;
+            }
+            let (from, to) = self.peek(&state)?;
+            let frontier = state.frontier();
+            if from == frontier || state.held(frontier) + (to - from) <= self.capacity {
+                if state.first.pop().is_none() {
+                    state.next = to;
+                }
+                state.runs.push((from, to, false));
+                return Some((from, to));
+            }
+            state = self.freed.wait(state).unwrap();
         }
-        let to = from + self.size(remaining);
-        *next = to;
-        Some((from, to))
+    }
+
+    fn finish(&self, from: u64) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(run) = state.runs.iter_mut().find(|run| run.0 == from) {
+            run.2 = true;
+        }
+        self.freed.notify_all();
+    }
+
+    fn cancel(&self) {
+        self.state.lock().unwrap().cancelled = true;
+        self.freed.notify_all();
     }
 }
 
@@ -908,6 +975,7 @@ fn drive_in<'s, T>(
         }
         tl(format_args!("ranged seek {ts:?} wait {tw:?} capture {tc:?}"));
         worker.runs.push((from, to - from, run_started.elapsed()));
+        shared.claims.finish(from);
         last = Some(shared.first + to - 1);
     }
     handoff.wait()?;
@@ -963,7 +1031,7 @@ pub fn render_runs<T: Send>(
         plan,
         watchdog: config.watchdog,
         skip: config.skip.as_ref(),
-        claims: Claims::new(&Plan { views, ..plan }, config.frames, &moved),
+        claims: Claims::new(&Plan { views, ..plan }, config.frames, &moved, config.window),
         done: AtomicU64::new(0),
         on_frame: &on_frame,
         open: &open,
@@ -974,6 +1042,7 @@ pub fn render_runs<T: Send>(
         Ok(worker) => Some(worker),
         Err(error) => {
             failure.lock().unwrap().get_or_insert(error);
+            shared.claims.cancel();
             aborter.abort();
             None
         }
@@ -1047,7 +1116,7 @@ mod tests {
     }
 
     fn sizes(plan: Plan, frames: u64) -> Vec<u64> {
-        let claims = Claims::new(&plan, frames, &[]);
+        let claims = Claims::new(&plan, frames, &[], usize::MAX);
         let mut sizes = Vec::new();
         let mut at = 0;
         while let Some((from, to)) = claims.claim() {
@@ -1109,10 +1178,26 @@ mod tests {
         costs[20..40].fill(3.0);
         let moved = plan.moved(Some(&costs), 1920 * 1080 * 3 / 2);
         assert_eq!(moved[..2], [4, 1]);
-        let claims = Claims::new(&plan, 100, &moved[..2]);
+        let claims = Claims::new(&plan, 100, &moved[..2], usize::MAX);
         let order: Vec<_> = std::iter::from_fn(|| claims.claim()).collect();
         assert_eq!(order, [(80, 100), (20, 40), (0, 20), (40, 60), (60, 80)]);
         assert!(Plan::new(5, 7).ranged(5, 100).moved(Some(&costs), 1).is_empty());
+    }
+
+    #[test]
+    fn a_claim_past_the_buffers_waits_for_the_slow_run_before_it() {
+        let plan = Plan::new(2, 10).ranged(4, 40);
+        let claims = Claims::new(&plan, 40, &[], 15);
+        assert_eq!(claims.claim(), Some((0, 10)));
+        thread::scope(|scope| {
+            let ahead = scope.spawn(|| claims.claim());
+            thread::sleep(Duration::from_millis(50));
+            assert!(!ahead.is_finished());
+            claims.finish(0);
+            assert_eq!(ahead.join().unwrap(), Some((10, 20)));
+        });
+        claims.cancel();
+        assert_eq!(claims.claim(), None);
     }
 
     #[test]
