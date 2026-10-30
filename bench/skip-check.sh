@@ -7,7 +7,7 @@ shift
 dir=${SKIP_CHECK_DIR:-$(mktemp -d)}
 
 render() {
-  "$vrf" render "$@" --json -o "$dir/$label-$run.mp4" >"$dir/$label-$run.json" || return 1
+  "$vrf" render "$@" --no-turbo --json -o "$dir/$label-$run.mp4" >"$dir/$label-$run.json" || return 1
   ffmpeg -v error -i "$dir/$label-$run.mp4" -map 0:v:0 -f framemd5 - | grep -v '^#' | awk -F', *' '{print $NF}' >"$dir/$label-$run.md5"
 }
 
