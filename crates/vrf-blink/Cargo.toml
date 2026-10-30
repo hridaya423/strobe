@@ -62,3 +62,7 @@ harness = false
 [[test]]
 name = "hyperframes"
 harness = false
+
+[[test]]
+name = "webgl"
+harness = false

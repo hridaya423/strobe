@@ -219,12 +219,44 @@ globalThis.process.env.NODE_ENV = 'production';
     await waitReady(null);
     compositionId = resolving;
     compositionFps = resolved.fps;
+    watchTilts();
   };
 
   const init = async (options) => {
     const meta = await resolve(options);
     await mount();
     return meta;
+  };
+
+  let sawWebgl = false;
+
+  const noteWebgl = (prototype) => {
+    const getContext = prototype.getContext;
+    prototype.getContext = function (type, ...rest) {
+      if (/^(experimental-)?webgl/.test(type) && this.width * this.height > 1) sawWebgl = true;
+      return getContext.call(this, type, ...rest);
+    };
+  };
+  noteWebgl(HTMLCanvasElement.prototype);
+  if (typeof OffscreenCanvas !== 'undefined') noteWebgl(OffscreenCanvas.prototype);
+
+  const TILTED = /rotate|skew|matrix|perspective/i;
+  const IDENTITY = 'matrix(1, 0, 0, 1, 0, 0)';
+  const tilted = new Set();
+
+  const noteTilts = (records) => {
+    for (const record of records) if (record.oldValue && TILTED.test(record.oldValue)) tilted.add(record.target);
+  };
+
+  const tilts = new MutationObserver(noteTilts);
+  const watchTilts = () => tilts.observe(document.documentElement, { attributes: true, attributeFilter: ['style'], attributeOldValue: true, subtree: true });
+
+  const settleTilts = () => {
+    noteTilts(tilts.takeRecords());
+    for (const element of tilted) {
+      if (element.style.transform !== 'none' && getComputedStyle(element).transform === IDENTITY) element.style.transform = 'none';
+    }
+    tilted.clear();
   };
 
   const pendingImages = () => [...document.images].filter((img) => !img.complete);
@@ -242,8 +274,9 @@ globalThis.process.env.NODE_ENV = 'production';
     await document.fonts.ready;
     await Promise.all(pendingImages().map((img) => img.decode().catch(() => {})));
     globalThis.__vrf.video?.present();
+    settleTilts();
     document.body.style.background = config.captureMode === 'png' ? 'transparent' : 'black';
-    return { frame, assets: collectAssets() };
+    return { frame, assets: collectAssets(), webgl: sawWebgl };
   };
 
   const seek = (frame, { attempt = 1 } = {}) => {
