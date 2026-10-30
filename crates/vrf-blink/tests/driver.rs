@@ -3,6 +3,7 @@ mod support;
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
@@ -351,6 +352,38 @@ fn calibration_is_measured_once_and_flags_override_it(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+fn back_to_back_begin_frames_are_all_delivered(ui: &Ui) -> Result<()> {
+    let project = pages()?;
+    let views = (0..2)
+        .map(|_| View::open_project(ui, &project, "colour.html", 640, 360, Some("")))
+        .collect::<Result<Vec<_>>>()?;
+    let missing: Vec<u64> = thread::scope(|scope| {
+        let handles: Vec<_> = views
+            .into_iter()
+            .map(|view| {
+                scope.spawn(move || {
+                    let mut missing = 0;
+                    for _ in 0..1000 {
+                        view.begin_frame();
+                        if view.recv_paint(Duration::from_millis(500)).is_none() {
+                            missing += 1;
+                            view.begin_frame();
+                            view.recv_paint(Duration::from_secs(5));
+                        }
+                    }
+                    missing
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    ensure!(
+        missing == [0, 0],
+        "begin frames without a delivery: {missing:?}"
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     support::run(&[
         ("driver_colour_per_frame_300", colour_per_frame_300),
@@ -360,6 +393,10 @@ fn main() -> ExitCode {
         (
             "driver_parallel_views_write_the_same_bytes_as_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
+        ),
+        (
+            "driver_back_to_back_begin_frames_are_all_delivered",
+            back_to_back_begin_frames_are_all_delivered,
         ),
         (
             "driver_calibration_is_cached_and_flags_override_it",
