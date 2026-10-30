@@ -46,11 +46,16 @@ pub fn key() -> String {
         .trim_end_matches('\0')
         .to_owned();
     format!(
-        "{} {} cores {} bytes cef {cef} {} raster",
+        "{} {} cores {} bytes cef {cef} {} raster{}",
         sysctl("machdep.cpu.brand_string"),
         sysctl("hw.ncpu"),
         sysctl("hw.memsize"),
-        if crate::cpu_raster() { "cpu" } else { "gpu" }
+        if crate::cpu_raster() { "cpu" } else { "gpu" },
+        if crate::software_webgl() {
+            " swiftshader"
+        } else {
+            ""
+        }
     )
 }
 

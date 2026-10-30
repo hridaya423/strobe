@@ -170,6 +170,11 @@ pub struct Report {
     pub assets: Vec<FrameAssets>,
 }
 
+/// The error of a render whose page creates a WebGL context while CEF runs WebGL on the GPU.
+/// Remotion's own renderer runs it on SwiftShader, and a shader that hashes with `sin()` gives
+/// other values there, so the caller renders again after [`crate::set_software_webgl`].
+pub const NEEDS_SOFTWARE_WEBGL: &str = "the page uses WebGL; render again with software WebGL";
+
 pub struct Bundle {
     pub dir: PathBuf,
     pub cached: bool,
@@ -487,6 +492,10 @@ impl Page {
     /// output to match its own renderer.
     pub fn seek(view: &mut View, frame: u64, attempt: u32) -> Result<Vec<Value>> {
         let result = view.evaluate(&format!("__vrf.rm.seek({frame}, {{ attempt: {attempt} }})"))?;
+        ensure!(
+            result["webgl"] != true || crate::software_webgl(),
+            "{NEEDS_SOFTWARE_WEBGL}"
+        );
         Ok(serde_json::from_value(result["assets"].clone())?)
     }
 }

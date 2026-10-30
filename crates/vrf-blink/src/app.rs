@@ -29,12 +29,25 @@ const FLAGS: [&str; 14] = [
 const MAX_IDLE: Duration = Duration::from_millis(10);
 
 static CPU_RASTER: AtomicBool = AtomicBool::new(false);
+static SOFTWARE_WEBGL: AtomicBool = AtomicBool::new(false);
 
 /// Rasterises in software, as `chrome-headless-shell` does, before [`run`] starts CEF. Frames are
 /// then bit-identical to its output; GPU raster differs from it by a few levels on glyph and
 /// shape edges. Has no effect once CEF is running.
 pub fn set_cpu_raster(on: bool) {
     CPU_RASTER.store(on, Ordering::Relaxed);
+}
+
+/// Runs WebGL on SwiftShader, as Remotion's `chrome-headless-shell` does, before [`run`] starts
+/// CEF. WebGL output is then bit-identical to its output; on Metal it differs wherever a shader
+/// depends on the GPU's maths. Chromium composites in software in this mode and frames arrive
+/// through `OnPaint`. Has no effect once CEF is running.
+pub fn set_software_webgl(on: bool) {
+    SOFTWARE_WEBGL.store(on, Ordering::Relaxed);
+}
+
+pub fn software_webgl() -> bool {
+    SOFTWARE_WEBGL.load(Ordering::Relaxed)
 }
 
 pub fn cpu_raster() -> bool {
@@ -53,6 +66,10 @@ fn apply_flags(command_line: &mut CommandLine) {
     }
     if CPU_RASTER.load(Ordering::Relaxed) {
         command_line.append_switch(Some(&"disable-gpu-rasterization".into()));
+    }
+    if SOFTWARE_WEBGL.load(Ordering::Relaxed) {
+        command_line
+            .append_switch_with_value(Some(&"use-angle".into()), Some(&"swiftshader-webgl".into()));
     }
     if command_line.has_switch(Some(&"disable-gpu-rasterization".into())) != 0 {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());

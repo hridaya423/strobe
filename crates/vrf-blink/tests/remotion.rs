@@ -116,6 +116,45 @@ fn reference_mode_pixels_equal_remotion_still(ui: &Ui) -> Result<()> {
     view.close()
 }
 
+fn text_that_stops_rotating_equals_remotion_still(ui: &Ui) -> Result<()> {
+    let project = fixture_project("tilt")?;
+    let last = 44;
+    let stills = stills_of(&project, "Tilt", &[last], "tilt-still")?;
+    let bundle = remotion::bundle(&project, Some(Path::new("src/index.jsx")))?;
+    let page = Page::new(
+        Project::open(&bundle.dir, Mode::Offline)?,
+        &options(&project, "Tilt"),
+        None,
+    )?;
+    let (mut view, _) = page.open(ui, 640, 360)?;
+    let gpu = Gpu::new()?;
+    let mut ours = None;
+    for frame in 0..=last {
+        Page::seek(&mut view, frame, 1)?;
+        view.begin_frame();
+        let paint = view
+            .recv_paint(Duration::from_secs(5))
+            .context("no delivery")?;
+        let texture = gpu.import_iosurface(&paint.surface, 0, paint.format)?;
+        ours = Some(score::Rgb8 {
+            width: 640,
+            height: 360,
+            data: gpu
+                .read_texture(&texture)?
+                .chunks_exact(4)
+                .flat_map(|bgra| [bgra[2], bgra[1], bgra[0]])
+                .collect(),
+        });
+    }
+    let theirs = score::Rgb8::load_png(&stills.join(format!("{last:06}.png")))?;
+    let delta = score::compare(&ours.context("no frames")?, &theirs)?.max_delta;
+    ensure!(
+        delta == 0,
+        "the frame after the rotation ended differs from remotion still by up to {delta}"
+    );
+    view.close()
+}
+
 fn h264_render_stays_near_the_codec_floor(ui: &Ui) -> Result<()> {
     let project = fixture_project("gray")?;
     let out = work_dir().join("gray.mp4");
@@ -421,6 +460,10 @@ fn main() -> ExitCode {
         (
             "remotion_reference_mode_pixels_equal_still",
             reference_mode_pixels_equal_remotion_still,
+        ),
+        (
+            "remotion_text_after_rotation_equals_still",
+            text_that_stops_rotating_equals_remotion_still,
         ),
         (
             "remotion_h264_stays_near_codec_floor",

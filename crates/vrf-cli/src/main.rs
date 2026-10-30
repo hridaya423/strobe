@@ -14,6 +14,7 @@ use vrf_blink::{Mode, Ui, calibration};
 use vrf_encode::Codec;
 
 const COMMAND_START: &str = "VRF_COMMAND_START_US";
+const SOFTWARE_WEBGL: &str = "VRF_SOFTWARE_WEBGL";
 
 #[derive(Parser)]
 #[command(name = "vrf", version)]
@@ -395,20 +396,43 @@ fn stop_daemon() -> Result<()> {
     Ok(())
 }
 
+fn needs_software_webgl(error: &anyhow::Error) -> bool {
+    !vrf_blink::software_webgl() && format!("{error:#}").contains(remotion::NEEDS_SOFTWARE_WEBGL)
+}
+
+fn render_again_with_software_webgl() -> Result<()> {
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .args(std::env::args_os().skip(1))
+        .env(SOFTWARE_WEBGL, "1")
+        .status()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn run_render(args: RenderArgs, cpu_raster: bool, command_start: SystemTime) -> Result<()> {
     let remote = if args.no_daemon || std::env::var_os("VRF_NO_DAEMON").is_some() {
         None
     } else {
-        render_remote(&args, cpu_raster, command_start)?
+        match render_remote(&args, cpu_raster, command_start) {
+            Err(error) if needs_software_webgl(&error) => {
+                return render_again_with_software_webgl();
+            }
+            remote => remote?,
+        }
     };
     let report = match remote {
         Some(report) => report,
         None => {
             unsafe { std::env::set_var("VRF_NO_DAEMON", "1") };
-            vrf_blink::run({
+            let outcome = vrf_blink::run({
                 let args = args.clone();
                 move |ui| render_local(&ui, &args, command_start)
-            })?
+            });
+            match outcome {
+                Err(error) if needs_software_webgl(&error) => {
+                    return render_again_with_software_webgl();
+                }
+                outcome => outcome?,
+            }
         }
     };
     print_report(&report, &args);
@@ -425,6 +449,7 @@ fn main() -> ExitCode {
         Command::Render(args) => {
             let cpu_raster = args.mode == ModeArg::Reference;
             vrf_blink::set_cpu_raster(cpu_raster);
+            vrf_blink::set_software_webgl(std::env::var_os(SOFTWARE_WEBGL).is_some());
             run_render(args, cpu_raster, command_start)
         }
         Command::Daemon(args) if args.stop => stop_daemon(),
