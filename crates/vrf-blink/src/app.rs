@@ -37,6 +37,10 @@ pub fn set_cpu_raster(on: bool) {
     CPU_RASTER.store(on, Ordering::Relaxed);
 }
 
+pub fn cpu_raster() -> bool {
+    CPU_RASTER.load(Ordering::Relaxed)
+}
+
 fn apply_flags(command_line: &mut CommandLine) {
     let extra = std::env::var("VRF_CEF_FLAGS").unwrap_or_default();
     for flag in FLAGS.into_iter().chain(extra.split_whitespace()) {
