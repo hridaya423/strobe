@@ -130,7 +130,7 @@ fn text_that_stops_rotating_equals_remotion_still(ui: &Ui) -> Result<()> {
     let gpu = Gpu::new()?;
     let mut ours = None;
     for frame in 0..=last {
-        Page::seek(&mut view, frame, 1)?;
+        Page::seek(&mut view, frame, 1, false)?;
         view.begin_frame();
         let paint = view
             .recv_paint(Duration::from_secs(5))

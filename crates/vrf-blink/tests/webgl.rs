@@ -39,7 +39,7 @@ fn software_webgl_equals_remotion_still(ui: &Ui) -> Result<()> {
     ensure!(output.status.success(), "remotion still failed");
     let gpu = Gpu::new()?;
     for frame in 0..=5 {
-        Page::seek(&mut view, frame, 1)?;
+        Page::seek(&mut view, frame, 1, false)?;
         view.begin_frame();
         view.recv_paint(Duration::from_secs(5))
             .context("no delivery")
@@ -84,7 +84,7 @@ fn main() -> ExitCode {
 
 fn gpu_webgl_is_reported(ui: &Ui) -> Result<()> {
     let (mut view, _) = open(ui)?;
-    let error = Page::seek(&mut view, 0, 1).expect_err("a GPU WebGL page was rendered");
+    let error = Page::seek(&mut view, 0, 1, false).expect_err("a GPU WebGL page was rendered");
     ensure!(
         format!("{error:#}").contains(NEEDS_SOFTWARE_WEBGL),
         "unexpected error: {error:#}"
