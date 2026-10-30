@@ -181,6 +181,8 @@
 
   const createSurface = () => {
     const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: false });
     const shader = (type, source) => {
       const object = gl.createShader(type);
