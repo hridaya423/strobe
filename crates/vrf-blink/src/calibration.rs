@@ -41,16 +41,18 @@ fn sysctl(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Names the machine and the CEF build, the two things a measurement is valid for.
+/// Names the machine, the CEF build and the rasteriser, the three things a measurement is valid
+/// for.
 pub fn key() -> String {
     let cef = String::from_utf8_lossy(cef::sys::CEF_VERSION)
         .trim_end_matches('\0')
         .to_owned();
     format!(
-        "{} {} cores {} bytes cef {cef}",
+        "{} {} cores {} bytes cef {cef} {} raster",
         sysctl("machdep.cpu.brand_string"),
         sysctl("hw.ncpu"),
-        sysctl("hw.memsize")
+        sysctl("hw.memsize"),
+        if crate::cpu_raster() { "cpu" } else { "gpu" }
     )
 }
 

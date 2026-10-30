@@ -40,9 +40,11 @@ struct RenderArgs {
     output: PathBuf,
     #[arg(long, value_enum, default_value = "h264")]
     codec: CodecArg,
-    /// `fast` rasterises on the GPU. `reference` rasterises in software and gives the pixels
-    /// of Remotion's own `chrome-headless-shell`.
-    #[arg(long, value_enum, default_value = "fast")]
+    /// `reference` rasterises in software and gives the pixels of Remotion's own
+    /// `chrome-headless-shell`, which the delivered-file fidelity rule needs. `fast` rasterises
+    /// on the GPU: up to 30% quicker on raster-bound pages, but blended fills and gradients land
+    /// a level off and `shape-rendering: crispEdges` is anti-aliased, so it fails the rule.
+    #[arg(long, value_enum, default_value = "reference")]
     mode: ModeArg,
     /// The frames to render, as `first-last` (inclusive) or one frame.
     #[arg(long, value_parser = parse_frames)]
@@ -86,7 +88,7 @@ struct DaemonArgs {
     idle_timeout: u64,
     /// The rasterisation the daemon renders with. A request for the other mode renders in its
     /// own process.
-    #[arg(long, value_enum, default_value = "fast")]
+    #[arg(long, value_enum, default_value = "reference")]
     mode: ModeArg,
     /// Projects whose bundle, frame server and views stay loaded.
     #[arg(long, default_value_t = 2)]

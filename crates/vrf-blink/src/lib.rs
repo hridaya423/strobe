@@ -8,6 +8,6 @@ mod mac;
 mod scheme;
 mod view;
 
-pub use app::{OnUi, Ui, run, set_cpu_raster};
+pub use app::{OnUi, Ui, cpu_raster, run, set_cpu_raster};
 pub use scheme::{Mode, Project};
 pub use view::{Paint, View};
