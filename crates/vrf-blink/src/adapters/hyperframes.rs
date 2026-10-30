@@ -324,7 +324,6 @@ impl Page {
     /// Opens a view of `width` x `height` with the adapter and the virtual clock injected, and
     /// initialises the composition in it.
     pub fn open(&self, ui: &Ui, width: i32, height: i32) -> Result<(View, Composition)> {
-        let t0 = Instant::now();
         let mut view = View::launch_project(
             ui,
             &self.project,
@@ -333,16 +332,13 @@ impl Page {
             height,
             Some(&self.script),
         )?;
-        let t1 = t0.elapsed();
         view.settle()?;
-        let t2 = t0.elapsed();
         if !self.native.is_empty() {
             self.native.attach(&mut view);
         }
         let meta = view
             .evaluate(&format!("__vrf.hf.init({})", self.init))
             .context("the composition did not initialise")?;
-        eprintln!("OPEN launch {:?} settle {:?} init {:?}", t1, t2 - t1, t0.elapsed() - t2);
         Ok((view, serde_json::from_value(meta)?))
     }
 

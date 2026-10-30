@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, mpsc};
+use std::sync::{Condvar, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -878,17 +878,20 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
     Ok(worker)
 }
 
-/// Seeks and captures the view's runs. A delivered surface stays valid until the next begin
-/// frame, so its conversion runs on the lane's thread while the page seeks the next frame, and
-/// is awaited just before that begin frame.
-static TL0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+/// With `VRF_TIMELINE` set, writes a timestamped event of the calling view's thread to stderr:
+/// opens, runs and each frame's seek, wait and paint in milliseconds.
 fn tl(what: std::fmt::Arguments) {
-    if std::env::var_os("VRF_TIMELINE").is_some() {
-        let t = TL0.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0;
-        eprintln!("TL {:?} {t:.1} {what}", thread::current().id());
+    static ON: OnceLock<bool> = OnceLock::new();
+    static START: OnceLock<Instant> = OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("VRF_TIMELINE").is_some()) {
+        let at = START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0;
+        eprintln!("TL {:?} {at:.1} {what}", thread::current().id());
     }
 }
 
+/// Seeks and captures the view's runs. A delivered surface stays valid until the next begin
+/// frame, so its conversion runs on the lane's thread while the page seeks the next frame, and
+/// is awaited just before that begin frame.
 fn drive<T>(shared: &Shared<T>, handoff: Handoff) -> Result<Worker<T>> {
     thread::scope(|scope| drive_in(scope, shared, handoff))
 }
