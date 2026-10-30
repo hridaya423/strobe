@@ -336,46 +336,6 @@ function setup() {
   const RACE_T = b(20.5);
   const RACE_D = 4.4;
 
-  function brush(pts, p, width, color) {
-    const n = pts.length - 1;
-    const m = p * n;
-    if (m <= 0) return;
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = color;
-    for (let i = 1; i <= Math.ceil(m); i++) {
-      const u = Math.min(1, m - (i - 1));
-      const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
-      const k = i / n;
-      ctx.lineWidth = width * (0.75 + 0.35 * Math.sin(k * Math.PI)) * (1 - 0.35 * k * k);
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(lerp(ax, bx, u), lerp(ay, by, u));
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function loopPts(cx, cy, rx, ry, seed, turns = 1.12) {
-    const n = 90, out = [];
-    for (let i = 0; i <= n; i++) {
-      const a = -2.2 + (i / n) * Math.PI * 2 * turns;
-      const wob = 1 + 0.04 * Math.sin(a * 3 + seed) + 0.05 * (i / n);
-      out.push([cx + Math.cos(a) * rx * wob, cy + Math.sin(a) * ry * wob + Math.sin(a * 2 + seed) * 6]);
-    }
-    return out;
-  }
-
-  function linePts(x0, y0, x1, y1, seed, bow = 10) {
-    const n = 24, out = [];
-    for (let i = 0; i <= n; i++) {
-      const u = i / n;
-      out.push([lerp(x0, x1, u), lerp(y0, y1, u) + Math.sin(u * Math.PI) * bow + (hash(i, seed) - 0.5) * 2]);
-    }
-    return out;
-  }
-
   const CUTS = [];
   {
     let t = b(26), n = 0;
@@ -640,7 +600,6 @@ function setup() {
       ctx.textAlign = "left";
       ctx.letterSpacing = "0px";
       label("STROBE / BENCHMARKS", 96, 80, HEX.night, { size: 22 });
-      label("7 LAUNCH VIDEOS", W - 96, 80, HEX.night, { size: 22, align: "right" });
       ctx.restore();
       if (iris <= 0) return;
       ctx.save();
@@ -698,7 +657,6 @@ function setup() {
       }
       x += w;
     }
-    label(scramble("BEST OF 7 LAUNCH VIDEOS, SAME MACHINE", t, b(15.3), 0.3, 4), 96, 80, HEX.electric, { size: 22, a: E.eo(seg(t, b(15.3), b(15.6))) });
     ctx.globalAlpha = 1;
     ctx.restore();
     if (iris < 1) ctx.restore();
@@ -721,7 +679,7 @@ function setup() {
     grid(cam, "rgba(47,123,255,0.08)");
     ctx.save();
     camera(ctx, 1, cam);
-    const L = 150, nameW = 380, cols = 56, cw = 16, gap = 4, stripX = L + nameW + 40, stripW = cols * (cw + gap);
+    const L = 150, nameW = 380, cols = 48, cw = 16, gap = 4, stripX = L + nameW + 40, stripW = cols * (cw + gap);
     const top = 300, rowH = 84;
     const elapsed = Math.max(0, t - RACE_T);
     label("LAUNCH VIDEO", L, top - 70, HEX.electric, { size: 20 });
@@ -779,8 +737,6 @@ function setup() {
       }
       ctx.restore();
     });
-    const ex = W - L - 70, ey = top - 2;
-    brush(loopPts(ex, ey, 120, 54, 7, 1.1), E.cio(seg(t, b(24.2), b(24.9))), 10, HEX.ice);
     ctx.restore();
     if (wipe < 1) {
       ctx.restore();

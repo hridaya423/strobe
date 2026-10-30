@@ -226,16 +226,6 @@ for k in range(10):
     sfx.add(S.blip(S.midi(88 + k), 0.015, 0.9, 140), B(15.1) + k * 0.03, 0.05)
 
 
-def pen(d):
-    n = int(d * SR)
-    u = np.linspace(0, 1, n)
-    e = np.minimum(1, u / 0.08) * np.minimum(1, (1 - u) / 0.15) * (0.7 + 0.3 * np.sin(u * 40) ** 2)
-    x = S.lp(S.hp(rng.standard_normal((n, 2)), 1200, 2), 6500) * e[:, None]
-    return x / (np.abs(x).max() + 1e-9)
-
-
-for b0, b1 in ((24.2, 24.9),):
-    sfx.add(pen(B(b1 - b0)), B(b0), 0.16, pan=0.3)
 for b in (17, 17.5, 18, 18.2):
     sfx.add(sx_("tick_b"), B(b), 0.3)
 sfx.add(sx_("whip"), B(19) + 0.2 - 0.25, 0.7)
