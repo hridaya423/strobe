@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::Ui;
 use crate::adapters::hyperframes;
 use crate::adapters::remotion::{FrameAssets, RenderJob, Renderer, Report};
-use transport::{Auth, Listener, Stream};
+pub use transport::Stream;
+use transport::{Auth, Listener};
 
 const BUILD_ID_BYTES: u64 = 64 * 1024;
 
@@ -150,22 +151,39 @@ mod transport {
     }
 }
 
-/// Where the daemon listens: `VRF_SOCKET`, or a socket in the temp directory. A process that runs
-/// WebGL on SwiftShader has a socket of its own, because a running CEF cannot change that. On
-/// Windows the file holds the loopback port and a token that the daemon expects as a connection's
-/// first line.
+/// Where the daemon listens: `VRF_SOCKET`, or a socket in the temp directory, with a suffix for
+/// the modes a running CEF cannot change. Rasterising on the GPU adds `-fast` and WebGL on
+/// SwiftShader adds `-swiftshader`, so each mode has a daemon of its own. On Windows the file
+/// holds the loopback port and a token that the daemon expects as a connection's first line.
+pub fn socket_for(cpu_raster: bool, software_webgl: bool) -> PathBuf {
+    socket_in(std::env::var_os("VRF_SOCKET"), cpu_raster, software_webgl)
+}
+
+fn socket_in(base: Option<std::ffi::OsString>, cpu_raster: bool, software_webgl: bool) -> PathBuf {
+    let suffix = format!(
+        "{}{}",
+        if cpu_raster { "" } else { "-fast" },
+        if software_webgl { "-swiftshader" } else { "" }
+    );
+    match base {
+        Some(mut base) => {
+            base.push(suffix);
+            PathBuf::from(base)
+        }
+        None => transport::socket_path(&suffix),
+    }
+}
+
+/// The socket of this process's modes.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("VRF_SOCKET").map_or_else(
-        || {
-            let mode = if crate::software_webgl() {
-                "-swiftshader"
-            } else {
-                ""
-            };
-            transport::socket_path(mode)
-        },
-        PathBuf::from,
-    )
+    socket_for(crate::cpu_raster(), crate::software_webgl())
+}
+
+/// The sockets of every mode, this process's or not.
+pub fn all_sockets() -> impl Iterator<Item = PathBuf> {
+    [true, false]
+        .into_iter()
+        .flat_map(|cpu| [false, true].map(|webgl| socket_for(cpu, webgl)))
 }
 
 /// Identifies the running binary: its length and a hash of its first 64 KiB, which holds the
@@ -508,4 +526,26 @@ pub fn serve(ui: &Ui, config: &Config) -> Result<()> {
     transport::remove(&config.socket);
     renderer.clear();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_mode_has_a_socket_of_its_own() {
+        let base = || Some("/tmp/vrf-x.sock".into());
+        let name = |cpu, webgl| socket_in(base(), cpu, webgl).display().to_string();
+        assert_eq!(name(true, false), "/tmp/vrf-x.sock");
+        assert_eq!(name(false, false), "/tmp/vrf-x.sock-fast");
+        assert_eq!(name(true, true), "/tmp/vrf-x.sock-swiftshader");
+        assert_eq!(name(false, true), "/tmp/vrf-x.sock-fast-swiftshader");
+        let defaults: Vec<_> = [(true, false), (false, false), (true, true), (false, true)]
+            .map(|(cpu, webgl)| socket_in(None, cpu, webgl))
+            .into();
+        for (index, socket) in defaults.iter().enumerate() {
+            assert!(!defaults[..index].contains(socket), "{socket:?} repeats");
+        }
+        assert_eq!(all_sockets().count(), 4);
+    }
 }
