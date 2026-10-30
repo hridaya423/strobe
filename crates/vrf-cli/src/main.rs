@@ -28,7 +28,8 @@ enum Command {
     /// Render a Remotion or HyperFrames project to a video file.
     Render(RenderArgs),
     /// Keep the renderer warm between renders. `vrf render` uses a running daemon and falls
-    /// back to rendering in its own process when there is none.
+    /// back to rendering in its own process when there is none. Projects that use WebGL render
+    /// on SwiftShader, which needs a daemon of its own: start it with `VRF_SOFTWARE_WEBGL=1`.
     Daemon(DaemonArgs),
 }
 
@@ -184,6 +185,12 @@ fn is_remotion(project: &Path) -> bool {
 }
 
 impl RenderArgs {
+    fn remembers_webgl(&self) -> bool {
+        self.composition.as_deref().is_some_and(|composition| {
+            remotion::known_webgl(&self.project, self.entry.as_deref(), composition)
+        })
+    }
+
     fn work(&self, plan: Plan) -> Result<Work> {
         let project = self.project.canonicalize().with_context(|| {
             format!(
@@ -449,11 +456,17 @@ fn main() -> ExitCode {
         Command::Render(args) => {
             let cpu_raster = args.mode == ModeArg::Reference;
             vrf_blink::set_cpu_raster(cpu_raster);
-            vrf_blink::set_software_webgl(std::env::var_os(SOFTWARE_WEBGL).is_some());
+            vrf_blink::set_software_webgl(
+                std::env::var_os(SOFTWARE_WEBGL).is_some() || args.remembers_webgl(),
+            );
             run_render(args, cpu_raster, command_start)
         }
-        Command::Daemon(args) if args.stop => stop_daemon(),
+        Command::Daemon(args) if args.stop => {
+            vrf_blink::set_software_webgl(std::env::var_os(SOFTWARE_WEBGL).is_some());
+            stop_daemon()
+        }
         Command::Daemon(args) => {
+            vrf_blink::set_software_webgl(std::env::var_os(SOFTWARE_WEBGL).is_some());
             let cpu_raster = args.mode == ModeArg::Reference;
             vrf_blink::set_cpu_raster(cpu_raster);
             let config = daemon::Config {

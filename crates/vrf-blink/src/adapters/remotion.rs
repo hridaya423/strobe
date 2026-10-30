@@ -230,10 +230,15 @@ fn input_hash(project: &Path, entry: &Path) -> Result<String> {
     Ok(short_hex(context))
 }
 
-/// Bundles the project with its own `@remotion/bundler` in a Node subprocess. The result is
-/// cached under `VRF_CACHE_DIR` (default: the system temp dir) by a hash of the project's files,
-/// the entry, the bundler version and the bundling script.
-pub fn bundle(project: &Path, entry: Option<&Path>) -> Result<Bundle> {
+struct Located {
+    project: PathBuf,
+    entry: PathBuf,
+    hash: String,
+    root: PathBuf,
+    dir: PathBuf,
+}
+
+fn locate(project: &Path, entry: Option<&Path>) -> Result<Located> {
     let project = project
         .canonicalize()
         .with_context(|| format!("project directory {} does not exist", project.display()))?;
@@ -254,6 +259,43 @@ pub fn bundle(project: &Path, entry: Option<&Path>) -> Result<Bundle> {
     let hash = input_hash(&project, &entry)?;
     let root = cache_dir().join("remotion");
     let dir = root.join(&hash);
+    Ok(Located {
+        project,
+        entry,
+        hash,
+        root,
+        dir,
+    })
+}
+
+fn webgl_mark(bundle: &Path, composition: &str) -> PathBuf {
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(composition.as_bytes());
+    bundle.join(format!("webgl-{}", short_hex(context)))
+}
+
+fn remember_webgl(bundle: &Path, composition: &str) {
+    let _ = fs::write(webgl_mark(bundle, composition), b"");
+}
+
+/// Whether an earlier render of this composition found that its page uses WebGL. The answer
+/// is kept beside the bundle, so it is known before CEF starts and the render can begin on
+/// SwiftShader instead of aborting on the GPU first.
+pub fn known_webgl(project: &Path, entry: Option<&Path>, composition: &str) -> bool {
+    locate(project, entry).is_ok_and(|found| webgl_mark(&found.dir, composition).is_file())
+}
+
+/// Bundles the project with its own `@remotion/bundler` in a Node subprocess. The result is
+/// cached under `VRF_CACHE_DIR` (default: the system temp dir) by a hash of the project's files,
+/// the entry, the bundler version and the bundling script.
+pub fn bundle(project: &Path, entry: Option<&Path>) -> Result<Bundle> {
+    let Located {
+        project,
+        entry,
+        hash,
+        root,
+        dir,
+    } = locate(project, entry)?;
     if dir.join("index.html").is_file() {
         return Ok(Bundle { dir, cached: true });
     }
@@ -442,6 +484,10 @@ impl Page {
                 self.composition
             ))
             .context("the composition did not initialise")?;
+        ensure!(
+            crate::software_webgl() || meta["webgl"] != true,
+            "{NEEDS_SOFTWARE_WEBGL}"
+        );
         Ok((view, serde_json::from_value(meta)?))
     }
 
@@ -484,6 +530,10 @@ impl Page {
         view.evaluate("__vrf.rm.mount()")
             .context("the composition did not mount")?;
         view.settle()?;
+        ensure!(
+            crate::software_webgl() || view.evaluate("__vrf.rm.webgl()")? != true,
+            "{NEEDS_SOFTWARE_WEBGL}"
+        );
         Ok(())
     }
 
@@ -825,6 +875,11 @@ impl Renderer {
                 },
                 |done| progress.frame(done),
             )
+        })
+        .inspect_err(|error| {
+            if format!("{error:#}").contains(NEEDS_SOFTWARE_WEBGL) {
+                remember_webgl(&bundle.dir, &options.composition);
+            }
         })?;
         let render_s = render_started.elapsed();
         let Runs {
@@ -907,5 +962,31 @@ impl Renderer {
             seek_retries: seek_retries.into_inner(),
             assets: collected,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_composition_that_used_webgl_is_remembered_for_its_bundle() -> Result<()> {
+        let project = std::env::temp_dir().join(format!("vrf-known-webgl-{}", std::process::id()));
+        let bundler = project.join("node_modules/@remotion/bundler");
+        fs::create_dir_all(&bundler)?;
+        fs::create_dir_all(project.join("src"))?;
+        fs::write(bundler.join("package.json"), "{}")?;
+        fs::write(project.join("src/index.ts"), "")?;
+        let found = locate(&project, None)?;
+        fs::create_dir_all(&found.dir)?;
+        assert!(!known_webgl(&project, None, "Shader"));
+        remember_webgl(&found.dir, "Shader");
+        assert!(known_webgl(&project, None, "Shader"));
+        assert!(!known_webgl(&project, None, "Other"));
+        fs::write(project.join("src/index.ts"), "changed")?;
+        assert!(!known_webgl(&project, None, "Shader"));
+        fs::remove_dir_all(&found.dir)?;
+        fs::remove_dir_all(&project)?;
+        Ok(())
     }
 }

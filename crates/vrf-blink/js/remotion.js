@@ -225,7 +225,7 @@ globalThis.process.env.NODE_ENV = 'production';
   const init = async (options) => {
     const meta = await resolve(options);
     await mount();
-    return meta;
+    return { ...meta, webgl: sawWebgl };
   };
 
   let sawWebgl = false;
@@ -289,6 +289,7 @@ globalThis.process.env.NODE_ENV = 'production';
   vrf.rm = {
     config,
     ready: () => waitReady(null),
+    webgl: () => sawWebgl,
     init,
     resolve,
     mount,
