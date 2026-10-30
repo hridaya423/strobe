@@ -30,6 +30,7 @@ const PREPARE_JS: &str = include_str!("../../js/hyperframes-prepare.mjs");
 const NATIVE_JS: &str = include_str!("../../js/hyperframes-native.mjs");
 
 const PROBE_SIZE: (i32, i32) = (640, 360);
+const COST_STEP: usize = 15;
 
 /// Whether a HyperFrames render rasterises in software. It does not: HyperFrames' own
 /// `chrome-headless-shell` rasterises on the GPU, and the pixels of Skia's GPU raster differ from
@@ -298,6 +299,8 @@ pub struct Page {
 struct Probe {
     composition: Composition,
     static_frames: Option<Vec<u64>>,
+    /// Seconds a seek takes at every `COST_STEP`th frame, the estimate of where the render is slow.
+    seek_costs: Vec<f64>,
 }
 
 impl Page {
@@ -348,7 +351,8 @@ impl Page {
     /// Opens a view of `width` x `height` with the adapter and the virtual clock injected, and
     /// initialises the composition in it.
     pub fn open(&self, ui: &Ui, width: i32, height: i32) -> Result<(View, Composition)> {
-        let mut view = View::open_project(
+        let t0 = Instant::now();
+        let mut view = View::launch_project(
             ui,
             &self.project,
             "index.html",
@@ -356,12 +360,16 @@ impl Page {
             height,
             Some(&self.script),
         )?;
+        let t1 = t0.elapsed();
+        view.settle()?;
+        let t2 = t0.elapsed();
         if !self.native.is_empty() {
             self.native.attach(&mut view);
         }
         let meta = view
             .evaluate(&format!("__vrf.hf.init({})", self.init))
             .context("the composition did not initialise")?;
+        eprintln!("OPEN launch {:?} settle {:?} init {:?}", t1, t2 - t1, t0.elapsed() - t2);
         Ok((view, serde_json::from_value(meta)?))
     }
 
@@ -377,10 +385,19 @@ impl Page {
         }
         let (mut view, composition) = self.open(ui, PROBE_SIZE.0, PROBE_SIZE.1)?;
         let static_frames = skip.then(|| static_frames(&mut view)).transpose()?;
+        let seek_costs = (0..composition.frames)
+            .step_by(COST_STEP)
+            .map(|frame| {
+                let started = Instant::now();
+                Page::seek(&mut view, frame, self.video.at(frame), false)?;
+                Ok(started.elapsed().as_secs_f64())
+            })
+            .collect::<Result<Vec<_>>>()?;
         view.close()?;
         let probe = Probe {
             composition,
             static_frames,
+            seek_costs,
         };
         let partial = self
             .probed
@@ -486,6 +503,7 @@ pub fn render(
     let Probe {
         composition,
         static_frames,
+        seek_costs,
     } = page.probe(ui, options.skip)?;
     let probe_s = step.elapsed();
     ensure!(
@@ -518,6 +536,11 @@ pub fn render(
         count,
     );
     config.skip = static_frames.map(Skip::planned);
+    config.costs = Some(
+        (first..=last)
+            .map(|frame| seek_costs.get(frame as usize / COST_STEP).copied().unwrap_or_default())
+            .collect(),
+    );
     config.jpeg_capture = matches!(codec, Codec::H264 | Codec::Hevc);
     let (width, height) = (composition.width as i32, composition.height as i32);
     let progress = Progress::new(progress, count, command_start);

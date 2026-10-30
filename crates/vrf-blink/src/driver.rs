@@ -50,6 +50,9 @@ pub struct Config {
     pub skip: Option<Skip>,
     pub colour: ColourSpace,
     pub jpeg_capture: bool,
+    /// An estimate of what each frame costs to render, used to claim the slowest fixed ranges
+    /// first.
+    pub costs: Option<Vec<f64>>,
 }
 
 impl Config {
@@ -67,6 +70,7 @@ impl Config {
             skip: None,
             colour: ColourSpace::BT709,
             jpeg_capture: false,
+            costs: None,
         }
     }
 
@@ -320,7 +324,7 @@ impl DerefMut for Pipeline<'_> {
 
 impl<'w> Pipeline<'w> {
     pub fn new(config: &Config, out: &Path, warm: &'w mut Warm) -> Result<Pipeline<'w>> {
-        let (producer, consumer) = sched::ordered::<Frame>(config.window);
+        let (producer, consumer) = sched::ordered::<Frame>(config.window.max(config.frames as usize));
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
             Codec::H264 | Codec::Hevc | Codec::Av1 => Container::Mp4,
@@ -428,9 +432,26 @@ fn physical_memory() -> Option<u64> {
     (status == 0).then_some(bytes)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn physical_memory() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    Some(status.ullTotalPhys)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn physical_memory() -> Option<u64> {
     None
+}
+
+/// Frame buffers the memory budget holds beyond the pool's margin.
+fn allowed(frame_bytes: u64) -> usize {
+    let buffers = (memory_budget() / frame_bytes) as usize;
+    buffers.saturating_sub(POOL_MARGIN).max(WINDOW)
 }
 
 /// An eighth of the machine's memory for frames waiting on the encoder, between 1.5 and 3 GB.
@@ -536,12 +557,36 @@ impl Plan {
     }
 
     /// Cuts `run` until the buffers the window needs fit in the memory budget.
+    /// The heaviest fixed ranges by `costs`, as many as the memory budget holds beside the
+    /// window, to be claimed before the rest. A range claimed early waits whole in the reorder
+    /// buffer, and the slowest range no longer runs alone at the end.
+    fn moved(&self, costs: Option<&[f64]>, frame_bytes: u64) -> Vec<u64> {
+        let (Some(ranges), Some(costs)) = (self.ranges, costs) else {
+            return Vec::new();
+        };
+        if ranges <= self.views as u64 {
+            return Vec::new();
+        }
+        let spare = (allowed(frame_bytes) as u64).saturating_sub(self.window() as u64) / self.run;
+        let cost = |range: u64| -> f64 {
+            costs
+                .iter()
+                .skip((range * self.run) as usize)
+                .take(self.run as usize)
+                .sum()
+        };
+        let mut order: Vec<u64> = (0..ranges).collect();
+        order.sort_by(|a, b| cost(*b).total_cmp(&cost(*a)));
+        order.truncate(spare as usize);
+        order
+    }
+
     fn fit(mut self, frame_bytes: u64) -> Plan {
-        let buffers = (memory_budget() / frame_bytes) as usize;
-        let allowed = buffers.saturating_sub(POOL_MARGIN).max(WINDOW);
-        if self.ranges.is_some() {
+        let allowed = allowed(frame_bytes);
+        if let Some(ranges) = self.ranges {
             let fits = 1 + (allowed as u64).saturating_sub(1) / (self.run + 1);
-            self.views = self.views.min(fits as usize).max(1);
+            let views = (self.views as u64).min(fits).max(1);
+            self.views = ranges.div_ceil(ranges.div_ceil(views)) as usize;
         } else if self.views > 1 {
             let views = self.views as u64;
             self.run = self
@@ -558,6 +603,8 @@ impl Plan {
 /// ranges hands out exactly `plan.run` frames each time.
 struct Claims {
     next: Mutex<u64>,
+    first: Mutex<Vec<u64>>,
+    moved: Vec<u64>,
     count: u64,
     views: u64,
     max: u64,
@@ -566,9 +613,11 @@ struct Claims {
 }
 
 impl Claims {
-    fn new(plan: &Plan, count: u64) -> Claims {
+    fn new(plan: &Plan, count: u64, moved: &[u64]) -> Claims {
         Claims {
             next: Mutex::new(0),
+            first: Mutex::new(moved.iter().rev().copied().collect()),
+            moved: moved.to_vec(),
             count,
             fixed: plan.ranges.is_some(),
             views: plan.views as u64,
@@ -587,7 +636,14 @@ impl Claims {
     }
 
     fn claim(&self) -> Option<(u64, u64)> {
+        if let Some(range) = self.first.lock().unwrap().pop() {
+            let from = range * self.max;
+            return Some((from, (from + self.max).min(self.count)));
+        }
         let mut next = self.next.lock().unwrap();
+        while self.moved.contains(&(*next / self.max)) {
+            *next += self.max;
+        }
         let from = *next;
         let remaining = self.count.saturating_sub(from);
         if remaining == 0 {
@@ -703,6 +759,14 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
 /// Seeks and captures the view's runs. A delivered surface stays valid until the next begin
 /// frame, so its conversion runs on the lane's thread while the page seeks the next frame, and
 /// is awaited just before that begin frame.
+static TL0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+fn tl(what: std::fmt::Arguments) {
+    if std::env::var_os("VRF_TIMELINE").is_some() {
+        let t = TL0.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0;
+        eprintln!("TL {:?} {t:.1} {what}", thread::current().id());
+    }
+}
+
 fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
     let mut worker = Worker {
         frames: Vec::new(),
@@ -713,7 +777,9 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
         skipped: 0,
         convert: Vec::new(),
     };
+    tl(format_args!("open0"));
     let mut view = (shared.open)()?;
+    tl(format_args!("opened"));
     let mut last = None;
     loop {
         let Some((from, to)) = shared.claims.claim() else {
@@ -721,9 +787,15 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
         };
         if shared.plan.ranges.is_some() && last.is_some() {
             handoff.wait()?;
-            std::mem::replace(&mut view, (shared.open)()?).close()?;
+            tl(format_args!("open"));
+            let fresh = (shared.open)()?;
+            tl(format_args!("opened"));
+            std::mem::replace(&mut view, fresh).close()?;
+            tl(format_args!("closed"));
             last = None;
         }
+        tl(format_args!("range {from} {to}"));
+        let (mut ts, mut tw, mut tc) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
         let start = shared.first + from;
         let resume = start
             .saturating_sub(shared.plan.lead_in)
@@ -745,23 +817,30 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
             let (value, unchanged) = (shared.seek)(&mut view, frame, ask)
                 .with_context(|| format!("seek to frame {frame}"))?;
             worker.seek.push(step.elapsed());
+            ts += step.elapsed();
             if unchanged && index > from {
                 handoff.send(index, Job::Skip)?;
             } else {
+                let w = Instant::now();
                 handoff.wait()?;
+                tw += w.elapsed();
+                let c = Instant::now();
                 let paint = worker
                     .capture
                     .next(&view, shared.watchdog)
                     .with_context(|| format!("capture frame {frame}"))?;
+                tc += c.elapsed();
                 handoff.send(index, paint.map_or(Job::Repeat, Job::Paint))?;
             }
             let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
             (shared.on_frame)(done, index, &value)?;
             worker.frames.push((index, value));
         }
+        tl(format_args!("ranged seek {ts:?} wait {tw:?} capture {tc:?}"));
         last = Some(shared.first + to - 1);
     }
     handoff.wait()?;
+    tl(format_args!("done"));
     view.check_project()?;
     view.close()?;
     Ok(worker)
@@ -788,12 +867,16 @@ pub fn render_runs<T: Send>(
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
     let plan = plan.fit(frame_bytes).sized(config.frames);
     let mut config = config.clone();
-    config.window = config.window.max(plan.window());
+    let moved = plan.moved(config.costs.as_deref(), frame_bytes);
+    tl(format_args!("moved {moved:?}"));
+    config.window = config.window.max(plan.window() + moved.len() * plan.run as usize);
     config.turbo &= plan.turbo;
     config.sessions = plan.sessions.max(1);
+    tl(format_args!("render_runs"));
     let step = Instant::now();
     let mut pipeline = Pipeline::new(&config, out, warm)?;
     let pipeline_s = step.elapsed();
+    tl(format_args!("pipeline {pipeline_s:?}"));
     let views = (plan.views as u64)
         .min(config.frames.div_ceil(plan.run))
         .max(1) as usize;
@@ -804,7 +887,7 @@ pub fn render_runs<T: Send>(
         plan,
         watchdog: config.watchdog,
         skip: config.skip.as_ref(),
-        claims: Claims::new(&Plan { views, ..plan }, config.frames),
+        claims: Claims::new(&Plan { views, ..plan }, config.frames, &moved),
         done: AtomicU64::new(0),
         on_frame: &on_frame,
         open: &open,
@@ -835,7 +918,9 @@ pub fn render_runs<T: Send>(
         workers
     });
     drop(aborter);
+    tl(format_args!("workers joined"));
     let finished = pipeline.finish();
+    tl(format_args!("finished"));
     if let Some(error) = failure.into_inner().unwrap() {
         return Err(error);
     }
@@ -885,7 +970,7 @@ mod tests {
     }
 
     fn sizes(plan: Plan, frames: u64) -> Vec<u64> {
-        let claims = Claims::new(&plan, frames);
+        let claims = Claims::new(&plan, frames, &[]);
         let mut sizes = Vec::new();
         let mut at = 0;
         while let Some((from, to)) = claims.claim() {
@@ -926,6 +1011,20 @@ mod tests {
             assert_eq!(plan.sized(1185), plan);
         }
         assert_eq!(Plan::single().ranged(8, 5).run, 1);
+    }
+
+    #[test]
+    fn the_slowest_ranges_are_claimed_first_and_every_range_once() {
+        let plan = Plan::new(2, 7).ranged(5, 100);
+        let mut costs = vec![1.0; 100];
+        costs[80..].fill(5.0);
+        costs[20..40].fill(3.0);
+        let moved = plan.moved(Some(&costs), 1920 * 1080 * 3 / 2);
+        assert_eq!(moved[..2], [4, 1]);
+        let claims = Claims::new(&plan, 100, &moved[..2]);
+        let order: Vec<_> = std::iter::from_fn(|| claims.claim()).collect();
+        assert_eq!(order, [(80, 100), (20, 40), (0, 20), (40, 60), (60, 80)]);
+        assert!(Plan::new(5, 7).ranged(5, 100).moved(Some(&costs), 1).is_empty());
     }
 
     #[test]
