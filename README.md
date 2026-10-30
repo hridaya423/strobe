@@ -111,7 +111,7 @@ There are no release binaries yet, so you build from source. You need these tool
 - x264 for the second H.264 lane. On macOS, run `brew install x264`. If the library is not at `/opt/homebrew/lib/libx264.dylib`, set `VRF_LIBX264` to its path.
 
 ```sh
-git clone <repository-url> strobe
+git clone https://github.com/hridaya423/strobe
 cd strobe
 cargo build --release -p vrf-cli
 ```
