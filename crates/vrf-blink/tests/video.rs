@@ -162,9 +162,5 @@ const CASES: &[support::Case] = &[
 ];
 
 fn main() -> ExitCode {
-    if cfg!(windows) {
-        println!("native video decoding is macOS only; skipped");
-        return ExitCode::SUCCESS;
-    }
     support::run(CASES)
 }
