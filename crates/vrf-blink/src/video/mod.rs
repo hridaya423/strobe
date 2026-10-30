@@ -1,3 +1,4 @@
+#[cfg_attr(windows, path = "decoder_win.rs")]
 mod decoder;
 mod hyperframes;
 mod link;

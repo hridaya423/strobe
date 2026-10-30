@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -15,6 +16,26 @@ const FIXTURES: &str = concat!(
 );
 const VRF: &str = env!("CARGO_BIN_EXE_vrf");
 const WARM_BAR_MS: f64 = 500.0;
+
+#[cfg(windows)]
+fn symlink(target: PathBuf, link: &Path) -> std::io::Result<()> {
+    let target = fs::canonicalize(target)?;
+    let target = target
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string();
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(std::path::absolute(link)?)
+        .arg(target)
+        .stdout(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("mklink /J failed"))
+    }
+}
 
 type Case = (&'static str, fn() -> Result<()>);
 
@@ -45,8 +66,16 @@ fn fixture_project(name: &str) -> Result<PathBuf> {
     Ok(project)
 }
 
+fn socket_dir() -> PathBuf {
+    if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    }
+}
+
 fn socket() -> PathBuf {
-    PathBuf::from(format!("/tmp/vrf-cli-{}.sock", std::process::id()))
+    socket_dir().join(format!("vrf-cli-{}.sock", std::process::id()))
 }
 
 fn vrf(socket: &Path) -> Command {
@@ -200,7 +229,7 @@ fn fallback_without_a_daemon() -> Result<()> {
     let project = fixture_project("gray")?;
     let out = work_dir().join("fallback.mp4");
     let report = render(
-        Path::new("/tmp/vrf-cli-nothing.sock"),
+        &socket_dir().join("vrf-cli-nothing.sock"),
         &project,
         "Gray",
         &out,

@@ -9,7 +9,10 @@ use ring::digest;
 use serde::{Deserialize, Serialize};
 use vrf::audio::SAMPLE_RATE;
 use vrf::mux::{AudioTrack, Muxer};
+#[cfg(target_os = "macos")]
 use vrf_encode::audiotoolbox::encode_aac;
+#[cfg(windows)]
+use vrf_encode::mediafoundation::encode_aac;
 use vrf_encode::{AacConfig, AacStream, Rational};
 
 use crate::driver::Summary;
