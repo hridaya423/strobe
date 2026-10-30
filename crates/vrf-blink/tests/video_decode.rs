@@ -14,6 +14,7 @@ const NAMES: [&str; 4] = [
 ];
 
 #[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "native video decoding is macOS only")]
 fn the_pts_table_is_what_ffprobe_reports() -> Result<()> {
     for name in NAMES {
         let path = clip(name)?;
@@ -24,6 +25,7 @@ fn the_pts_table_is_what_ffprobe_reports() -> Result<()> {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "native video decoding is macOS only")]
 fn a_reader_started_at_any_frame_yields_that_frame_first() -> Result<()> {
     for name in NAMES {
         let decoded = Clip::open(&clip(name)?)?;
@@ -47,6 +49,7 @@ fn a_reader_started_at_any_frame_yields_that_frame_first() -> Result<()> {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "native video decoding is macOS only")]
 fn a_stream_never_hands_out_the_wrong_frame_when_jumping() -> Result<()> {
     for name in NAMES {
         let decoded = Arc::new(Clip::open(&clip(name)?)?);
@@ -84,6 +87,7 @@ fn a_stream_never_hands_out_the_wrong_frame_when_jumping() -> Result<()> {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "native video decoding is macOS only")]
 fn a_sequential_run_decodes_ahead_on_one_reader() -> Result<()> {
     let decoded = Arc::new(Clip::open(&clip("cfr1080.mp4")?)?);
     let stream = Stream::new(decoded.clone());
@@ -96,6 +100,7 @@ fn a_sequential_run_decodes_ahead_on_one_reader() -> Result<()> {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "native video decoding is macOS only")]
 fn the_matrix_and_range_come_from_the_tags() -> Result<()> {
     let bt709 = Clip::open(&clip("cfr1080.mp4")?)?;
     let bt601 = Clip::open(&clip("cfr1080-601.mp4")?)?;

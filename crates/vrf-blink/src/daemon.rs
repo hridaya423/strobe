@@ -1,7 +1,5 @@
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,18 +15,145 @@ use serde::{Deserialize, Serialize};
 use crate::Ui;
 use crate::adapters::hyperframes;
 use crate::adapters::remotion::{FrameAssets, RenderJob, Renderer, Report};
+use transport::{Auth, Listener, Stream};
 
 const BUILD_ID_BYTES: u64 = 64 * 1024;
 
-/// Where the daemon listens: `VRF_SOCKET`, or a socket in the temp directory.
+#[cfg(unix)]
+mod transport {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+
+    use anyhow::{Context, Result, bail};
+
+    pub type Stream = UnixStream;
+    pub type Listener = UnixListener;
+
+    pub fn socket_path() -> PathBuf {
+        let user = unsafe { libc::getuid() };
+        std::env::temp_dir().join(format!("vrf-daemon-{user}.sock"))
+    }
+
+    pub fn connect(socket: &Path) -> Option<Stream> {
+        UnixStream::connect(socket).ok()
+    }
+
+    pub fn bind(socket: &Path) -> Result<Listener> {
+        if socket.exists() {
+            if UnixStream::connect(socket).is_ok() {
+                bail!("a daemon already listens on {}", socket.display());
+            }
+            fs::remove_file(socket)?;
+        }
+        let listener = UnixListener::bind(socket)
+            .with_context(|| format!("listen on {}", socket.display()))?;
+        fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+        Ok(listener)
+    }
+
+    pub fn incoming(listener: &Listener) -> impl Iterator<Item = std::io::Result<Stream>> {
+        listener.incoming()
+    }
+
+    #[derive(Clone)]
+    pub struct Auth;
+
+    impl Auth {
+        pub fn of(_: &Listener) -> Auth {
+            Auth
+        }
+
+        pub fn check(&self, _: &mut std::io::BufReader<Stream>) -> bool {
+            true
+        }
+    }
+
+    pub fn remove(socket: &Path) {
+        let _ = fs::remove_file(socket);
+    }
+}
+
+#[cfg(windows)]
+mod transport {
+    use std::fs;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+
+    use anyhow::{Context, Result, bail};
+    use ring::rand::{SecureRandom, SystemRandom};
+
+    pub type Stream = TcpStream;
+
+    pub struct Listener {
+        inner: TcpListener,
+        token: String,
+    }
+
+    pub fn socket_path() -> PathBuf {
+        std::env::temp_dir().join("vrf-daemon.port")
+    }
+
+    fn read(socket: &Path) -> Option<(u16, String)> {
+        let text = fs::read_to_string(socket).ok()?;
+        let (port, token) = text.trim().split_once(' ')?;
+        Some((port.parse().ok()?, token.to_owned()))
+    }
+
+    pub fn connect(socket: &Path) -> Option<Stream> {
+        let (port, token) = read(socket)?;
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).ok()?;
+        stream.write_all(format!("{token}\n").as_bytes()).ok()?;
+        Some(stream)
+    }
+
+    pub fn bind(socket: &Path) -> Result<Listener> {
+        if connect(socket).is_some() {
+            bail!("a daemon already listens on {}", socket.display());
+        }
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).context("listen on loopback")?;
+        let mut bytes = [0u8; 16];
+        SystemRandom::new()
+            .fill(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("no random bytes"))?;
+        let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let port = listener.local_addr()?.port();
+        fs::write(socket, format!("{port} {token}"))?;
+        Ok(Listener {
+            inner: listener,
+            token,
+        })
+    }
+
+    pub fn incoming(listener: &Listener) -> impl Iterator<Item = std::io::Result<Stream>> {
+        listener.inner.incoming()
+    }
+
+    #[derive(Clone)]
+    pub struct Auth(String);
+
+    impl Auth {
+        pub fn of(listener: &Listener) -> Auth {
+            Auth(listener.token.clone())
+        }
+
+        pub fn check(&self, reader: &mut BufReader<Stream>) -> bool {
+            let mut line = String::new();
+            reader.read_line(&mut line).is_ok() && line.trim() == self.0
+        }
+    }
+
+    pub fn remove(socket: &Path) {
+        let _ = fs::remove_file(socket);
+    }
+}
+
+/// Where the daemon listens: `VRF_SOCKET`, or a socket in the temp directory. On Windows the
+/// file holds the loopback port and a token that the daemon expects as a connection's first line.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("VRF_SOCKET").map_or_else(
-        || {
-            let user = unsafe { libc::getuid() };
-            std::env::temp_dir().join(format!("vrf-daemon-{user}.sock"))
-        },
-        PathBuf::from,
-    )
+    std::env::var_os("VRF_SOCKET").map_or_else(transport::socket_path, PathBuf::from)
 }
 
 /// Identifies the running binary: its length and a hash of its first 64 KiB, which holds the
@@ -108,7 +233,7 @@ enum Event {
     },
 }
 
-fn send(mut stream: &UnixStream, event: &Event) -> std::io::Result<()> {
+fn send(mut stream: &Stream, event: &Event) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(event).expect("an event serialises");
     line.push(b'\n');
     stream.write_all(&line)
@@ -127,15 +252,15 @@ pub enum Reply {
 }
 
 /// Connects to the daemon at `socket`, if one is listening.
-pub fn connect(socket: &Path) -> Option<UnixStream> {
-    UnixStream::connect(socket).ok()
+pub fn connect(socket: &Path) -> Option<Stream> {
+    transport::connect(socket)
 }
 
 /// Sends `request` and follows the daemon's events to the end. `queued` gets the number of
 /// renders ahead of this one, and `progress` the frames done and the total. Fails if the render
 /// failed, or the daemon vanished during it.
 pub fn call(
-    stream: UnixStream,
+    stream: Stream,
     request: &Request,
     queued: &mut dyn FnMut(usize),
     progress: &mut dyn FnMut(u64, u64),
@@ -178,42 +303,33 @@ pub struct Config {
 
 struct Queued {
     request: Request,
-    stream: UnixStream,
-}
-
-fn bind(socket: &Path) -> Result<UnixListener> {
-    if socket.exists() {
-        if UnixStream::connect(socket).is_ok() {
-            bail!("a daemon already listens on {}", socket.display());
-        }
-        fs::remove_file(socket)?;
-    }
-    let listener =
-        UnixListener::bind(socket).with_context(|| format!("listen on {}", socket.display()))?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
+    stream: Stream,
 }
 
 fn accept(
-    listener: UnixListener,
+    listener: Listener,
     build: String,
     cpu_raster: bool,
     pending: Arc<AtomicUsize>,
     jobs: mpsc::Sender<Queued>,
     stopping: Arc<AtomicBool>,
 ) {
-    for stream in listener.incoming() {
+    let auth = Auth::of(&listener);
+    for stream in transport::incoming(&listener) {
         if stopping.load(Ordering::Acquire) {
             return;
         }
         let Ok(stream) = stream else { continue };
         let (build, pending, jobs) = (build.clone(), pending.clone(), jobs.clone());
+        let auth = auth.clone();
         thread::spawn(move || {
+            let Ok(copy) = stream.try_clone() else { return };
+            let mut reader = BufReader::new(copy);
+            if !auth.check(&mut reader) {
+                return;
+            }
             let mut line = String::new();
-            let read = stream
-                .try_clone()
-                .and_then(|reader| BufReader::new(reader).read_line(&mut line));
-            if read.is_err() {
+            if reader.read_line(&mut line).is_err() {
                 return;
             }
             let request = match serde_json::from_str::<Request>(&line) {
@@ -279,7 +395,7 @@ fn render(
     ui: &Ui,
     job: RenderJob,
     command_start: SystemTime,
-    stream: &UnixStream,
+    stream: &Stream,
 ) -> Event {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         renderer.render(ui, &job, command_start, &mut |frame, frames| {
@@ -300,7 +416,7 @@ fn render_hyperframes(
     ui: &Ui,
     job: hyperframes::RenderJob,
     command_start: SystemTime,
-    stream: &UnixStream,
+    stream: &Stream,
 ) -> Event {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         renderer.render_hyperframes(ui, &job, command_start, &mut |frame, frames| {
@@ -317,7 +433,7 @@ fn render_hyperframes(
 /// frame servers and ready views stay loaded between requests. One render runs at a time and
 /// the rest wait in order. A render that fails drops only the project it used.
 pub fn serve(ui: &Ui, config: &Config) -> Result<()> {
-    let listener = bind(&config.socket)?;
+    let listener = transport::bind(&config.socket)?;
     let build = build_id()?;
     let mut renderer = Renderer::new(config.projects);
     renderer.prepare()?;
@@ -363,9 +479,9 @@ pub fn serve(ui: &Ui, config: &Config) -> Result<()> {
     };
 
     stopping.store(true, Ordering::Release);
-    let _ = UnixStream::connect(&config.socket);
+    let _ = transport::connect(&config.socket);
     let _ = acceptor.join();
-    let _ = fs::remove_file(&config.socket);
+    transport::remove(&config.socket);
     renderer.clear();
     result
 }

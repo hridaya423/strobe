@@ -8,6 +8,10 @@ mod avcc;
 #[cfg(any(windows, test))]
 mod bitstream;
 #[cfg(windows)]
+pub mod d3d12ve;
+#[cfg(windows)]
+pub mod mediafoundation;
+#[cfg(windows)]
 pub mod nvenc;
 #[cfg(target_os = "macos")]
 pub mod turbo;
@@ -148,6 +152,20 @@ pub enum EncoderFrame {
     PixelBuffer(videotoolbox::pool::PoolBuffer),
     #[cfg(windows)]
     D3d12(nvenc::PoolFrame),
+}
+
+#[cfg(target_os = "macos")]
+impl From<videotoolbox::pool::PoolBuffer> for EncoderFrame {
+    fn from(buffer: videotoolbox::pool::PoolBuffer) -> Self {
+        EncoderFrame::PixelBuffer(buffer)
+    }
+}
+
+#[cfg(windows)]
+impl From<nvenc::PoolFrame> for EncoderFrame {
+    fn from(frame: nvenc::PoolFrame) -> Self {
+        EncoderFrame::D3d12(frame)
+    }
 }
 
 /// Packets queue without bound until `drain`; the pixel-buffer pool bounds frames in flight.

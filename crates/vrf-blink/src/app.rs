@@ -6,8 +6,12 @@ use std::time::{Duration, Instant};
 
 use cef::{args::Args, rc::Rc as _, *};
 
+use crate::scheme;
 use crate::video::VideoRenderHandler;
-use crate::{bundle, mac, scheme};
+#[cfg(windows)]
+use crate::win;
+#[cfg(target_os = "macos")]
+use crate::{bundle, mac};
 
 const FLAGS: [&str; 14] = [
     "disable-features=LocalNetworkAccessChecks",
@@ -51,6 +55,8 @@ fn apply_flags(command_line: &mut CommandLine) {
             None => command_line.append_switch(Some(&flag.into())),
         }
     }
+    #[cfg(windows)]
+    command_line.append_switch(Some(&"hide-scrollbars".into()));
     if CPU_RASTER.load(Ordering::Relaxed) {
         command_line.append_switch(Some(&"disable-gpu-rasterization".into()));
     }
@@ -100,6 +106,10 @@ wrap_app! {
         ) {
             if let Some(command_line) = command_line {
                 apply_flags(command_line);
+                #[cfg(windows)]
+                if command_line.has_switch(Some(&"type".into())) == 0 {
+                    win::append_adapter(command_line);
+                }
             }
         }
 
@@ -128,6 +138,8 @@ wrap_browser_process_handler! {
         fn on_before_child_process_launch(&self, command_line: Option<&mut CommandLine>) {
             if let Some(command_line) = command_line {
                 apply_flags(command_line);
+                #[cfg(windows)]
+                win::append_adapter(command_line);
             }
         }
 
@@ -224,7 +236,9 @@ impl<T: Clone> Clone for OnUi<T> {
 /// Runs `work` on a worker thread while the calling thread, which must be the process main
 /// thread, serves CEF as its UI thread. Helper processes never return from this call.
 pub fn run<R: Send + 'static>(work: impl FnOnce(Ui) -> R + Send + 'static) -> R {
+    #[cfg(target_os = "macos")]
     let exe = std::env::current_exe().expect("no executable path");
+    #[cfg(target_os = "macos")]
     if !bundle::is_bundled(&exe) {
         let bundled = bundle::build(&exe).expect("cannot build the CEF app bundle");
         let status = std::process::Command::new(bundled)
@@ -235,11 +249,19 @@ pub fn run<R: Send + 'static>(work: impl FnOnce(Ui) -> R + Send + 'static) -> R 
     }
 
     let is_helper = std::env::args().any(|arg| arg.starts_with("--type="));
-    let loader = library_loader::LibraryLoader::new(&exe, is_helper);
-    assert!(loader.load(), "cannot load the CEF framework");
+    #[cfg(target_os = "macos")]
+    {
+        let loader = library_loader::LibraryLoader::new(&exe, is_helper);
+        assert!(loader.load(), "cannot load the CEF framework");
+    }
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+    #[cfg(target_os = "macos")]
     if !is_helper {
         mac::setup_application();
+    }
+    #[cfg(windows)]
+    if !is_helper || std::env::args().any(|arg| arg == "--type=gpu-process") {
+        win::raise_timer_resolution();
     }
 
     let wake = Arc::new(Wake::default());

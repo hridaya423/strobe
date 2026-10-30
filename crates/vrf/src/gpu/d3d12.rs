@@ -1,16 +1,30 @@
 use std::ffi::c_void;
 use std::fmt;
+use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result, bail};
+use vrf_encode::nvenc::PoolFrame;
 use wgpu::hal::api::Dx12;
 use windows::Win32::Foundation::{CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE};
-use windows::Win32::Graphics::Direct3D12::{D3D12_RESOURCE_DIMENSION_TEXTURE2D, ID3D12Resource};
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_FENCE_FLAG_NONE, D3D12_RESOURCE_BARRIER,
+    D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+    D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_STATE_COMMON,
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_TRANSITION_BARRIER,
+    ID3D12CommandAllocator, ID3D12CommandList, ID3D12Device, ID3D12Fence,
+    ID3D12GraphicsCommandList, ID3D12Resource,
+};
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
 };
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, INFINITE, WaitForSingleObject,
+};
+use windows::core::Interface;
 
 use super::Gpu;
+use super::convert::{Converter, Target};
 
 /// The locally unique id of a graphics adapter. Chromium takes it as
 /// `--use-adapter-luid=<high>,<low>`, which is what `Display` prints.
@@ -97,6 +111,17 @@ impl Gpu {
         })
     }
 
+    /// The LUID of the adapter [`Gpu::new`] opens, without opening a device.
+    pub fn default_luid() -> Result<Luid> {
+        let adapter =
+            pollster::block_on(instance().request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            }))
+            .context("no D3D12 adapter")?;
+        adapter_luid(&adapter).context("the adapter has no LUID")
+    }
+
     /// Opens the adapter with this LUID, the one Chromium renders on.
     pub fn with_luid(luid: Luid) -> Result<Self> {
         let adapter = pollster::block_on(instance().enumerate_adapters(wgpu::Backends::DX12))
@@ -179,5 +204,186 @@ impl Gpu {
                 wgpu::TextureUses::PRESENT,
             )
         })
+    }
+}
+
+impl Gpu {
+    /// The D3D12 device behind this wgpu device, for encoders whose input textures this device
+    /// must be able to write.
+    pub fn d3d12_device(&self) -> Result<ID3D12Device> {
+        let hal = unsafe { self.device.as_hal::<Dx12>() }.context("device is not D3D12")?;
+        Ok(hal.raw_device().clone())
+    }
+}
+
+/// The planes of an encoder's NV12 or P010 pool texture, wrapped as wgpu textures for one
+/// convert pass. The wrappers start in the COMMON state, so the pass transitions the planes to
+/// unordered access, and [`Releaser::release`] returns them to COMMON for the encoder. Drop it
+/// once the pass is submitted.
+pub struct PoolTarget {
+    pub target: Target,
+    _y: wgpu::Texture,
+    _cbcr: wgpu::Texture,
+}
+
+impl PoolTarget {
+    pub fn new(gpu: &Gpu, converter: &Converter, frame: &PoolFrame) -> Result<PoolTarget> {
+        let (y_format, cbcr_format) = Converter::plane_formats(converter.format());
+        let (width, height) = frame.size();
+        let y = plane(gpu, frame, 0, y_format, width, height);
+        let cbcr = plane(gpu, frame, 1, cbcr_format, width / 2, height / 2);
+        let target = converter.target(
+            &y.create_view(&Default::default()),
+            &cbcr.create_view(&Default::default()),
+        );
+        Ok(PoolTarget {
+            target,
+            _y: y,
+            _cbcr: cbcr,
+        })
+    }
+}
+
+fn plane(
+    gpu: &Gpu,
+    frame: &PoolFrame,
+    slice: u32,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let texture = unsafe {
+        wgpu::hal::dx12::Device::texture_from_raw(
+            frame.resource().clone(),
+            format,
+            wgpu::TextureDimension::D2,
+            size,
+            1,
+            1,
+        )
+    }
+    .with_plane_slice(slice);
+    unsafe {
+        gpu.device.create_texture_from_hal::<Dx12>(
+            texture,
+            &wgpu::TextureDescriptor {
+                label: Some("pool plane"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::STORAGE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::TextureUses::PRESENT,
+        )
+    }
+}
+
+const RELEASE_LISTS: usize = 8;
+
+struct ReleaseList {
+    allocator: ID3D12CommandAllocator,
+    list: ID3D12GraphicsCommandList,
+    last: u64,
+}
+
+/// Puts a pool texture back in the COMMON state on the device's queue after a convert pass, and
+/// signals a fence for the point where the pass and the transition have finished.
+pub struct Releaser {
+    fence: ID3D12Fence,
+    event: HANDLE,
+    lists: Vec<ReleaseList>,
+    value: u64,
+}
+
+unsafe impl Send for Releaser {}
+
+impl Releaser {
+    pub fn new(gpu: &Gpu) -> Result<Releaser> {
+        let device = gpu.d3d12_device()?;
+        let lists = (0..RELEASE_LISTS)
+            .map(|_| unsafe {
+                let allocator: ID3D12CommandAllocator =
+                    device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+                let list: ID3D12GraphicsCommandList = device.CreateCommandList(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    &allocator,
+                    None,
+                )?;
+                list.Close()?;
+                Ok(ReleaseList {
+                    allocator,
+                    list,
+                    last: 0,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Releaser {
+            fence: unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? },
+            event: unsafe { CreateEventW(None, false, false, None)? },
+            lists,
+            value: 0,
+        })
+    }
+
+    /// Queues the transition behind everything already submitted to the queue, and returns the
+    /// fence value that marks its completion.
+    pub fn release(&mut self, gpu: &Gpu, frame: &PoolFrame) -> Result<u64> {
+        let hal = unsafe { gpu.device.as_hal::<Dx12>() }.context("device is not D3D12")?;
+        let slot = (self.value as usize) % RELEASE_LISTS;
+        let last = self.lists[slot].last;
+        self.wait(last)?;
+        let entry = &mut self.lists[slot];
+        unsafe {
+            entry.allocator.Reset()?;
+            entry.list.Reset(&entry.allocator, None)?;
+            let barrier = D3D12_RESOURCE_BARRIER {
+                Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                    Transition: ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                        pResource: ManuallyDrop::new(Some(frame.resource().clone())),
+                        Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                        StateBefore: D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        StateAfter: D3D12_RESOURCE_STATE_COMMON,
+                    }),
+                },
+            };
+            entry.list.ResourceBarrier(std::slice::from_ref(&barrier));
+            let transition = ManuallyDrop::into_inner(barrier.Anonymous.Transition);
+            drop(ManuallyDrop::into_inner(transition.pResource));
+            entry.list.Close()?;
+            let queue = hal.raw_queue();
+            queue.ExecuteCommandLists(&[Some(entry.list.cast::<ID3D12CommandList>()?)]);
+            self.value += 1;
+            queue.Signal(&self.fence, self.value)?;
+        }
+        entry.last = self.value;
+        Ok(self.value)
+    }
+
+    pub fn wait(&self, value: u64) -> Result<()> {
+        unsafe {
+            if self.fence.GetCompletedValue() < value {
+                self.fence.SetEventOnCompletion(value, self.event)?;
+                WaitForSingleObject(self.event, INFINITE);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Releaser {
+    fn drop(&mut self) {
+        let _ = self.wait(self.value);
+        let _ = unsafe { CloseHandle(self.event) };
     }
 }

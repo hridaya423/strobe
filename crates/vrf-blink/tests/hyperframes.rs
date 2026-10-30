@@ -152,7 +152,7 @@ fn options(project: &Path) -> Options {
         mode: Mode::Offline,
         plan: Plan::single(),
         audio: true,
-        native_video: true,
+        native_video: cfg!(target_os = "macos"),
     }
 }
 
@@ -175,7 +175,11 @@ fn render(
 
 fn hyperframes_render(project: &Path, out: &Path) -> Result<()> {
     run(
-        hyperframes_package().join("../.bin/hyperframes"),
+        hyperframes_package().join(if cfg!(windows) {
+            "../.bin/hyperframes.cmd"
+        } else {
+            "../.bin/hyperframes"
+        }),
         &[
             "render",
             project.to_str().unwrap(),
@@ -464,10 +468,10 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     counted_clip(&project.join("assets/counted.mp4"))?;
     let mut files = Vec::new();
     for views in [1, 2, 4] {
-        let out = work_dir().join(format!("parallel-{views}.mov"));
+        let out = work_dir().join(format!("parallel-{views}.{}", support::DETERMINISTIC.1));
         let mut options = options(&project);
         options.plan = Plan::new(views, 7);
-        let report = render(ui, &options, None, Codec::ProRes422, &out)?;
+        let report = render(ui, &options, None, support::DETERMINISTIC.0, &out)?;
         ensure!(report.frames == 60 && report.views == views && report.repeats == 0);
         files.push((views, fs::read(&out)?));
     }
@@ -482,7 +486,7 @@ fn parallel_views_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
 
 fn main() -> ExitCode {
     vrf_blink::set_cpu_raster(true);
-    support::run(&[
+    let mut cases: Vec<support::Case> = vec![
         (
             "hyperframes_frames_and_audio_match_hyperframes_own_render",
             frames_and_audio_match_hyperframes_own_render,
@@ -508,5 +512,9 @@ fn main() -> ExitCode {
             "hyperframes_parallel_views_match_one_view",
             parallel_views_write_the_same_bytes_as_one_view,
         ),
-    ])
+    ];
+    if cfg!(windows) {
+        cases.retain(|(name, _)| !name.contains("native_video"));
+    }
+    support::run(&cases)
 }

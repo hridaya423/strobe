@@ -24,7 +24,12 @@ struct Daemon {
 }
 
 fn start(ui: &Ui, tag: &str, idle: Duration) -> Result<Daemon> {
-    let socket = PathBuf::from(format!("/tmp/vrf-t-{}-{tag}.sock", std::process::id()));
+    let dir = if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let socket = dir.join(format!("vrf-t-{}-{tag}.sock", std::process::id()));
     let config = Config {
         socket: socket.clone(),
         idle,
@@ -247,6 +252,34 @@ fn survives_a_page_error(ui: &Ui) -> Result<()> {
     daemon.stop()
 }
 
+#[cfg(windows)]
+fn renderer_children() -> Result<Vec<u32>> {
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter 'ParentProcessId={}' | Where-Object {{ $_.CommandLine -like '*--type=renderer*' }} | ForEach-Object {{ $_.ProcessId }}",
+        std::process::id()
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect())
+}
+
+#[cfg(windows)]
+fn kill(pid: u32) -> std::io::Result<std::process::ExitStatus> {
+    Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .status()
+}
+
+#[cfg(not(windows))]
+fn kill(pid: u32) -> std::io::Result<std::process::ExitStatus> {
+    Command::new("kill").args(["-9", &pid.to_string()]).status()
+}
+
+#[cfg(not(windows))]
 fn renderer_children() -> Result<Vec<u32>> {
     let output = Command::new("ps")
         .args(["-axo", "pid=,ppid=,command="])
@@ -274,10 +307,11 @@ fn survives_a_renderer_crash(ui: &Ui) -> Result<()> {
     let victims = renderer_children()?;
     ensure!(!victims.is_empty(), "found no renderer process to kill");
     for pid in &victims {
-        let status = Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .status()?;
-        ensure!(status.success(), "cannot kill renderer {pid}");
+        let status = kill(*pid)?;
+        ensure!(
+            status.success() || cfg!(windows),
+            "cannot kill renderer {pid}"
+        );
     }
     let started = Instant::now();
     let after = daemon.render(job(&gray, "Gray", None, &work.join("crash-2.mp4")))?;
@@ -328,7 +362,7 @@ fn exits_when_idle(ui: &Ui) -> Result<()> {
 }
 
 fn no_daemon_means_no_connection(_: &Ui) -> Result<()> {
-    ensure!(daemon::connect(Path::new("/tmp/vrf-t-nothing-listens.sock")).is_none());
+    ensure!(daemon::connect(&std::env::temp_dir().join("vrf-t-nothing-listens.sock")).is_none());
     Ok(())
 }
 

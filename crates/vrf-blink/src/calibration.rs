@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -29,16 +28,43 @@ pub struct Calibration {
     pub fps: BTreeMap<usize, f64>,
 }
 
+#[cfg(not(windows))]
 pub fn cache_path() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/vrf/calibration.json")
 }
 
+#[cfg(windows)]
+pub fn cache_path() -> PathBuf {
+    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("vrf/calibration.json")
+}
+
+#[cfg(not(windows))]
 fn sysctl(name: &str) -> String {
-    Command::new("sysctl")
+    std::process::Command::new("sysctl")
         .args(["-n", name])
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn machine() -> String {
+    format!(
+        "{} {} cores {} bytes",
+        sysctl("machdep.cpu.brand_string"),
+        sysctl("hw.ncpu"),
+        sysctl("hw.memsize")
+    )
+}
+
+#[cfg(windows)]
+fn machine() -> String {
+    let var = |name| std::env::var(name).unwrap_or_default();
+    format!(
+        "{} {} cores",
+        var("PROCESSOR_IDENTIFIER"),
+        var("NUMBER_OF_PROCESSORS")
+    )
 }
 
 /// Names the machine, the CEF build and the rasteriser, the three things a measurement is valid
@@ -48,10 +74,8 @@ pub fn key() -> String {
         .trim_end_matches('\0')
         .to_owned();
     format!(
-        "{} {} cores {} bytes cef {cef} {} raster",
-        sysctl("machdep.cpu.brand_string"),
-        sysctl("hw.ncpu"),
-        sysctl("hw.memsize"),
+        "{} cef {cef} {} raster",
+        machine(),
         if crate::cpu_raster() { "cpu" } else { "gpu" }
     )
 }
@@ -76,7 +100,13 @@ pub fn measure(ui: &Ui) -> Result<Calibration> {
     let counts: Vec<usize> = CANDIDATES.into_iter().filter(|n| *n <= cores).collect();
     let page = std::env::temp_dir().join("vrf-calibrate.html");
     fs::write(&page, PROBE)?;
-    let url = format!("file://{}", page.display());
+    let url = format!(
+        "file:///{}",
+        page.display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
     let most = *counts.last().context("no view count to try")?;
     let mut views = thread::scope(|scope| {
         let opens: Vec<_> = (0..most)

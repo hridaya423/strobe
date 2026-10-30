@@ -83,10 +83,14 @@ struct RenderArgs {
     /// Leave the audio out of the file.
     #[arg(long)]
     no_audio: bool,
-    /// What decodes embedded video: `native` (VideoToolbox, falling back to the framework's own
-    /// decoding for clips it cannot reproduce exactly) or `remotion` (the framework's own for
-    /// all: Remotion's frame server, HyperFrames' ffmpeg extraction).
-    #[arg(long, value_enum, default_value = "native")]
+    /// What decodes embedded video: `native` (VideoToolbox, macOS only, falling back to the
+    /// framework's own decoding for clips it cannot reproduce exactly) or `remotion` (the
+    /// framework's own for all: Remotion's frame server, HyperFrames' ffmpeg extraction).
+    #[cfg_attr(target_os = "macos", arg(long, value_enum, default_value = "native"))]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        arg(long, value_enum, default_value = "remotion")
+    )]
     video: VideoArg,
     /// Print a JSON report on stdout instead of the summary line.
     #[arg(long)]
@@ -133,6 +137,8 @@ enum CodecArg {
     H264,
     Hevc,
     Prores,
+    #[cfg(windows)]
+    Av1,
 }
 
 impl From<CodecArg> for Codec {
@@ -141,6 +147,8 @@ impl From<CodecArg> for Codec {
             CodecArg::H264 => Codec::H264,
             CodecArg::Hevc => Codec::Hevc,
             CodecArg::Prores => Codec::ProRes422,
+            #[cfg(windows)]
+            CodecArg::Av1 => Codec::Av1,
         }
     }
 }

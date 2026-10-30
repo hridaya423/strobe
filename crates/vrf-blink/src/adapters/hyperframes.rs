@@ -127,8 +127,7 @@ pub fn prepare(
     fps: u32,
     native: Option<&[String]>,
 ) -> Result<Prepare> {
-    let project = project
-        .canonicalize()
+    let project = crate::canonical(project)
         .with_context(|| format!("project directory {} does not exist", project.display()))?;
     ensure!(
         project.join("index.html").is_file(),
@@ -463,7 +462,7 @@ pub fn render(
 
     let step = Instant::now();
     if options.audio {
-        let project_dir = options.project.canonicalize()?;
+        let project_dir = crate::canonical(&options.project)?;
         let clips = hyperframes_clips(&page.tracks, track_file(&project_dir))?;
         let timeline = mix(&clips, audio_samples(composition.frames, frame_rate))?;
         let from = audio_samples(first, frame_rate) as usize * 2;

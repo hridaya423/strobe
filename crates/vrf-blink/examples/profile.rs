@@ -79,6 +79,12 @@ const SHIM: &str = r#"(() => {
   };
 })()"#;
 
+#[cfg(not(target_os = "macos"))]
+fn digest_of(_: &vrf_blink::Paint) -> String {
+    String::new()
+}
+
+#[cfg(target_os = "macos")]
 fn digest_of(paint: &vrf_blink::Paint) -> String {
     use objc2_io_surface::IOSurfaceLockOptions;
     let surface = &paint.surface;

@@ -1,14 +1,14 @@
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
+use vrf::gpu::Gpu;
 use vrf_bench::corpus::bench_dir;
 use vrf_blink::adapters::remotion::{Options, RenderJob, Renderer, Report, VideoDecoder};
 use vrf_blink::driver::Plan;
-use vrf_blink::{Mode, Ui};
+use vrf_blink::{Mode, Paint, Ui};
 use vrf_encode::Codec;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/js/test/remotion/fixtures");
@@ -29,7 +29,7 @@ pub fn fixture_project(name: &str) -> Result<PathBuf> {
         let reference = std::env::var_os("VRF_BENCH_DIR")
             .map_or_else(bench_dir, PathBuf::from)
             .join("corpus/external/github-unwrapped/node_modules");
-        symlink(reference, &modules)?;
+        link_dir(reference, &modules)?;
     }
     let src = project.join("src");
     fs::create_dir_all(&src)?;
@@ -70,19 +70,50 @@ pub fn render(
     Renderer::new(1).render(ui, &job, SystemTime::now(), &mut |_, _| Ok(()))
 }
 
+pub fn link_dir(
+    target: impl AsRef<std::path::Path>,
+    link: impl AsRef<std::path::Path>,
+) -> Result<()> {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link)?;
+    #[cfg(windows)]
+    {
+        let target = std::fs::canonicalize(target)?;
+        let target = target
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string();
+        let link = std::path::absolute(link)?;
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .status()?;
+        anyhow::ensure!(status.success(), "mklink /J failed");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub const DETERMINISTIC: (vrf_encode::Codec, &str) = (vrf_encode::Codec::ProRes422, "mov");
+#[cfg(windows)]
+pub const DETERMINISTIC: (vrf_encode::Codec, &str) = (vrf_encode::Codec::H264, "mp4");
+
 pub type Case = (&'static str, fn(&Ui) -> Result<()>);
 
 pub fn run(cases: &[Case]) -> ExitCode {
+    let helper = std::env::args().any(|arg| arg.starts_with("--type="));
     let filters: Vec<String> = std::env::args()
         .skip(1)
-        .filter(|arg| !arg.starts_with('-'))
+        .filter(|arg| !helper && !arg.starts_with('-'))
         .collect();
     let selected: Vec<Case> = cases
         .iter()
         .copied()
         .filter(|(name, _)| filters.is_empty() || filters.iter().any(|f| name.contains(f.as_str())))
         .collect();
-    if selected.is_empty() {
+    if selected.is_empty() && !helper {
         println!("running 0 tests\n\ntest result: ok. 0 passed; 0 failed");
         return ExitCode::SUCCESS;
     }
@@ -116,10 +147,34 @@ pub const HEIGHT: u32 = 1080;
 pub const TOLERANCE: i32 = 3;
 
 pub fn page_url() -> String {
+    let dir = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
     format!(
-        "file://{}/tests/pages/colour.html",
-        env!("CARGO_MANIFEST_DIR")
+        "file:///{}/tests/pages/colour.html",
+        dir.trim_start_matches('/')
     )
+}
+
+#[cfg(target_os = "macos")]
+pub fn import(gpu: &Gpu, paint: &Paint) -> Result<wgpu::Texture> {
+    gpu.import_iosurface(&paint.surface, 0, paint.format)
+}
+
+#[cfg(windows)]
+pub fn import(gpu: &Gpu, paint: &Paint) -> Result<wgpu::Texture> {
+    gpu.import_shared_handle(&paint.surface, wgpu::TextureUsages::COPY_SRC)
+}
+
+pub fn pixel(paint: &Paint, x: usize, y: usize) -> Result<[u8; 3]> {
+    static GPU: std::sync::OnceLock<Gpu> = std::sync::OnceLock::new();
+    if GPU.get().is_none() {
+        let _ = GPU.set(Gpu::new()?);
+    }
+    let gpu = GPU.get().expect("the GPU was just opened");
+    let texture = import(gpu, paint)?;
+    let width = texture.width() as usize;
+    let bgra = gpu.read_texture(&texture)?;
+    let at = (y * width + x) * 4;
+    Ok([bgra[at + 2], bgra[at + 1], bgra[at]])
 }
 
 pub fn expected_colour(index: u64) -> [i32; 3] {
@@ -153,6 +208,12 @@ pub fn centre_colours(path: &std::path::Path) -> Result<Vec<[i32; 3]>> {
         .collect())
 }
 
+#[cfg(windows)]
+pub fn load_average() -> String {
+    "n/a".to_owned()
+}
+
+#[cfg(not(windows))]
 pub fn load_average() -> String {
     let output = std::process::Command::new("uptime").output().unwrap();
     let text = String::from_utf8_lossy(&output.stdout).into_owned();

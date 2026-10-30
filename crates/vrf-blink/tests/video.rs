@@ -3,7 +3,6 @@ mod clips;
 mod support;
 
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -31,7 +30,7 @@ fn stage(ui: &Ui, names: &[&str]) -> Result<Stage> {
     fs::copy(here.join("tests/video/index.html"), dir.join("index.html"))?;
     fs::copy(here.join("js/video.js"), dir.join("video.js"))?;
     for name in names {
-        symlink(clip(name)?, dir.join(name))?;
+        fs::copy(clip(name)?, dir.join(name))?;
     }
     let project = Project::open(&dir, Mode::Offline)?;
     let mut view = View::open_project(ui, &project, "index.html", SIZE.0, SIZE.1, None)?;
@@ -55,7 +54,7 @@ impl Stage {
             .view
             .recv_paint(Duration::from_secs(10))
             .context("no delivery")?;
-        let texture = self.gpu.import_iosurface(&paint.surface, 0, paint.format)?;
+        let texture = support::import(&self.gpu, &paint)?;
         Ok(self.gpu.read_texture(&texture)?)
     }
 }
@@ -163,5 +162,9 @@ const CASES: &[support::Case] = &[
 ];
 
 fn main() -> ExitCode {
+    if cfg!(windows) {
+        println!("native video decoding is macOS only; skipped");
+        return ExitCode::SUCCESS;
+    }
     support::run(CASES)
 }
