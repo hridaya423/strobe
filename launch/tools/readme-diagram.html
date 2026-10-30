@@ -23,81 +23,59 @@
     <script>
       const dark = new URLSearchParams(location.search).get("theme") === "dark";
       const T = dark
-        ? { ink: "#E6EDF3", sub: "#8B949E", line: "#3D444D", paper: "#0D1117", gpu: "rgba(47,123,255,0.07)", rival: "#6E7681", rivalNode: "#30363D", accent: "#4C8DFF" }
-        : { ink: "#1F2328", sub: "#59636E", line: "#D1D9E0", paper: "#FFFFFF", gpu: "rgba(47,123,255,0.06)", rival: "#8C959F", rivalNode: "#D1D9E0", accent: "#2F7BFF" };
-      const W = 1600, H = 560, NW = 250, NH = 92, GAP = 50;
-      const COL = [210, 210 + NW + GAP, 210 + 2 * (NW + GAP), 210 + 3 * (NW + GAP)];
-      const MP4X = COL[3] + NW + GAP, MP4W = W - 24 - MP4X;
-      const ROW = { a: 40, b: 172, c: 384 };
-      const EDGE = 304, MH = 140;
+        ? { ink: "#E6EDF3", sub: "#8B949E", paper: "#0D1117", rivalLine: "#6E7681", rivalNode: "#3D444D", accent: "#4C8DFF", tint: "rgba(76,141,255,0.14)", cpu: "rgba(139,148,158,0.16)" }
+        : { ink: "#1F2328", sub: "#59636E", paper: "#FFFFFF", rivalLine: "#8C959F", rivalNode: "#D1D9E0", accent: "#2F7BFF", tint: "rgba(47,123,255,0.09)", cpu: "rgba(89,99,110,0.10)" };
+      const W = 1600, NW = 264, NH = 96, GAP = 52;
+      const X = [0, 1, 2, 3, 4].map((i) => 40 + i * (NW + GAP));
+      const R1 = 72, R2 = 300, H = R2 + NH + 92;
 
-      const node = (x, y, w, name, sub, kind) => {
-        const stroke = kind === "strobe" ? T.accent : kind === "rival" ? T.rivalNode : T.ink;
-        return `<rect x="${x}" y="${y}" width="${w}" height="${kind === "file" ? MH : NH}" rx="8" fill="${T.paper}" stroke="${stroke}" stroke-width="${kind === "strobe" ? 1.6 : 1.2}"/>
-          <text x="${x + 22}" y="${y + 40 + (kind === "file" ? (MH - NH) / 2 : 0)}" font-family="Geist" font-weight="600" font-size="25" fill="${T.ink}">${name}</text>
-          <text x="${x + 22}" y="${y + 70 + (kind === "file" ? (MH - NH) / 2 : 0)}" font-family="Geist" font-size="19" fill="${T.sub}">${sub}</text>`;
-      };
+      const chip = (x, y, text, gpu) => `<rect x="${x}" y="${y}" width="52" height="26" rx="6" fill="${gpu ? T.tint : T.cpu}"/>
+        <text x="${x + 26}" y="${y + 18}" text-anchor="middle" font-family="Geist" font-weight="600" font-size="14" letter-spacing="0.6" fill="${gpu ? T.accent : T.sub}">${text}</text>`;
 
-      const path = (pts, kind) => {
-        let d = `M${pts[0][0]} ${pts[0][1]}`;
-        for (let i = 1; i < pts.length; i++) {
-          const [x, y] = pts[i], [px, py] = pts[i - 1], nxt = pts[i + 1];
-          if (!nxt) { d += ` L${x} ${y}`; break; }
-          const r = 10, dx1 = Math.sign(x - px), dy1 = Math.sign(y - py), dx2 = Math.sign(nxt[0] - x), dy2 = Math.sign(nxt[1] - y);
-          d += ` L${x - dx1 * r} ${y - dy1 * r} Q${x} ${y} ${x + dx2 * r} ${y + dy2 * r}`;
-        }
-        const c = kind === "strobe" ? T.accent : T.rival;
-        return `<path d="${d}" fill="none" stroke="${c}" stroke-width="${kind === "strobe" ? 2.6 : 2}" ${kind === "rival" ? 'stroke-dasharray="7,6"' : ""} marker-end="url(#${kind})"/>`;
-      };
+      const node = (i, y, name, sub, tag, strobe) => `
+        <rect x="${X[i]}" y="${y}" width="${NW}" height="${NH}" rx="10" fill="${T.paper}" stroke="${strobe ? T.accent : T.rivalNode}" stroke-width="${strobe ? 1.8 : 1.4}"/>
+        <text x="${X[i] + 22}" y="${y + 42}" font-family="Geist" font-weight="600" font-size="24" fill="${T.ink}">${name}</text>
+        <text x="${X[i] + 22}" y="${y + 72}" font-family="Geist" font-size="18" fill="${T.sub}">${sub}</text>
+        ${tag ? chip(X[i] + NW - 70, y + 18, tag, tag === "GPU") : ""}`;
 
-      const mid = (r) => ROW[r] + NH / 2;
-      const crossX = COL[1] - GAP / 2;
-      const mp4Y = EDGE - MH / 2;
+      const arrow = (i, j, y, strobe) => `<line x1="${X[i] + NW}" y1="${y}" x2="${X[j] - 4}" y2="${y}" stroke="${strobe ? T.accent : T.rivalLine}" stroke-width="${strobe ? 2.6 : 2}" ${strobe ? "" : 'stroke-dasharray="7,6"'} marker-end="url(#${strobe ? "s" : "r"})"/>`;
+
+      const lane = (y, label, color) => `<text x="${X[0]}" y="${y - 22}" font-family="Geist" font-weight="600" font-size="20" fill="${color}">${label}</text>`;
+
+      const c1 = R1 + NH / 2, c2 = R2 + NH / 2;
+      const bx = X[1] - 18, bw = X[3] + NW + 18 - bx, by = R2 + NH + 18;
 
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="t d">
-        <title id="t">Where each frame travels</title>
-        <desc id="d">Strobe keeps every frame in GPU memory, from the CEF view through IOSurface, a wgpu convert and VideoToolbox, to the MP4. Remotion and HyperFrames read every frame back to CPU memory as a JPEG or PNG and pipe it to FFmpeg.</desc>
+        <title id="t">How a frame reaches the file</title>
+        <desc id="d">Remotion and HyperFrames screenshot each frame from the GPU into a JPEG or PNG on the CPU, then FFmpeg decodes and encodes it. Strobe keeps each frame on the GPU: CEF view, IOSurface, a wgpu shader, VideoToolbox, then the MP4.</desc>
         <defs>
-          <marker id="strobe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.accent}"/></marker>
-          <marker id="rival" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.rival}"/></marker>
+          <marker id="s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.accent}"/></marker>
+          <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${T.rivalLine}"/></marker>
         </defs>
-        <rect width="${W}" height="${H}" fill="${T.paper}"/>
-        <rect x="0" y="0" width="${MP4X - GAP / 2}" height="${EDGE}" fill="${T.gpu}"/>
-        <line x1="0" y1="${EDGE}" x2="${MP4X - GAP / 2}" y2="${EDGE}" stroke="${T.line}" stroke-width="1.5"/>
-        <text x="28" y="${ROW.a + 40}" font-family="Geist" font-weight="600" font-size="22" fill="${T.accent}">GPU memory</text>
-        <text x="28" y="${ROW.a + 68}" font-family="Geist" font-size="18" fill="${T.sub}">where the page</text>
-        <text x="28" y="${ROW.a + 92}" font-family="Geist" font-size="18" fill="${T.sub}">paints</text>
-        <text x="28" y="${ROW.c + 40}" font-family="Geist" font-weight="600" font-size="22" fill="${T.ink}">CPU memory</text>
-        <text x="28" y="${ROW.c + 68}" font-family="Geist" font-size="18" fill="${T.sub}">one copy away</text>
+        <rect width="${W}" height="${H}" rx="16" fill="${T.paper}"/>
+        ${lane(R1, "Remotion, HyperFrames", T.sub)}
+        ${arrow(0, 1, c1, false)}
+        ${arrow(1, 2, c1, false)}
+        ${arrow(2, 4, c1, false)}
+        ${node(0, R1, "Chrome", "headless, paints the frame", "GPU")}
+        ${node(1, R1, "JPEG or PNG", "screenshot, read back", "CPU")}
+        ${node(2, R1, "FFmpeg", "decodes, then encodes", "CPU")}
+        ${node(4, R1, "MP4", "with AAC audio", "", false)}
 
-        ${path([[COL[0] + NW, mid("a")], [COL[1] - 2, mid("a")]], "strobe")}
-        ${path([[COL[1] + NW, mid("a")], [COL[2] - 2, mid("a")]], "strobe")}
-        ${path([[COL[2] + NW, mid("a")], [COL[3] - 2, mid("a")]], "strobe")}
-        ${path([[COL[3] + NW, mid("a")], [MP4X - GAP / 2, mid("a")], [MP4X - GAP / 2, mp4Y + 36], [MP4X - 2, mp4Y + 36]], "strobe")}
-
-        ${path([[COL[0] + NW, mid("b")], [crossX, mid("b")], [crossX, mid("c")], [COL[1] - 2, mid("c")]], "rival")}
-        ${path([[COL[1] + NW, mid("c")], [COL[2] - 2, mid("c")]], "rival")}
-        ${path([[COL[2] + NW, mid("c")], [MP4X - GAP / 2, mid("c")], [MP4X - GAP / 2, mp4Y + MH - 36], [MP4X - 2, mp4Y + MH - 36]], "rival")}
-
-        <circle cx="${crossX}" cy="${EDGE}" r="7" fill="${T.paper}" stroke="${T.ink}" stroke-width="2"/>
-        <text x="${crossX + 20}" y="${EDGE + 34}" font-family="Geist" font-weight="600" font-size="19" fill="${T.ink}">Every frame, every render:</text>
-        <text x="${crossX + 20}" y="${EDGE + 58}" font-family="Geist" font-size="19" fill="${T.sub}">read back and compressed.</text>
-
-        ${node(COL[0], ROW.a, NW, "CEF 156 view", "one begin frame", "strobe")}
-        ${node(COL[1], ROW.a, NW, "IOSurface", "D3D12 on Windows", "strobe")}
-        ${node(COL[2], ROW.a, NW, "wgpu shader", "BGRA to NV12", "strobe")}
-        ${node(COL[3], ROW.a, NW, "VideoToolbox", "NVENC on Windows", "strobe")}
-        ${node(COL[0], ROW.b, NW, "Headless Chrome", "paints the frame", "rival")}
-        ${node(COL[1], ROW.c, NW, "JPEG or PNG", "a screenshot", "rival")}
-        ${node(COL[2], ROW.c, NW, "FFmpeg", "decodes, encodes", "rival")}
-        ${node(MP4X, mp4Y, MP4W, "MP4", "with AAC audio", "file")}
-
-        <line x1="${COL[0]}" y1="${H - 34}" x2="${COL[0] + 36}" y2="${H - 34}" stroke="${T.accent}" stroke-width="2.6"/>
-        <text x="${COL[0] + 48}" y="${H - 27}" font-family="Geist" font-weight="600" font-size="19" fill="${T.ink}">Strobe</text>
-        <line x1="${COL[0] + 150}" y1="${H - 34}" x2="${COL[0] + 186}" y2="${H - 34}" stroke="${T.rival}" stroke-width="2" stroke-dasharray="7,6"/>
-        <text x="${COL[0] + 198}" y="${H - 27}" font-family="Geist" font-weight="600" font-size="19" fill="${T.ink}">Remotion, HyperFrames</text>
+        ${lane(R2, "Strobe", T.accent)}
+        ${arrow(0, 1, c2, true)}
+        ${arrow(1, 2, c2, true)}
+        ${arrow(2, 3, c2, true)}
+        ${arrow(3, 4, c2, true)}
+        ${node(0, R2, "CEF 156 view", "one begin frame", "GPU", true)}
+        ${node(1, R2, "IOSurface", "D3D12 on Windows", "GPU", true)}
+        ${node(2, R2, "wgpu shader", "BGRA to NV12", "GPU", true)}
+        ${node(3, R2, "VideoToolbox", "NVENC on Windows", "GPU", true)}
+        ${node(4, R2, "MP4", "with AAC audio", "", true)}
+        <path d="M${bx} ${by - 8} V${by} H${bx + bw} V${by - 8}" fill="none" stroke="${T.accent}" stroke-width="1.6"/>
+        <text x="${bx + bw / 2}" y="${by + 32}" text-anchor="middle" font-family="Geist" font-weight="600" font-size="19" fill="${T.accent}">No copy to the CPU</text>
       </svg>`;
-      document.fonts.load('600 26px "Geist"').then(() => {
+      document.fonts.load('600 24px "Geist"').then(() => {
         document.getElementById("out").innerHTML = svg;
         document.title = "ready";
       });

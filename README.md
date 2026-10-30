@@ -1,19 +1,31 @@
-<h1 align="center">
-  <img src="assets/readme/banner.png" alt="Strobe" width="100%">
-</h1>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/logo-dark.png">
+    <img src="assets/readme/logo-light.png" alt="Strobe: the fast render engine for HTML video" width="560">
+  </picture>
 
-<p align="center">
-  <b>Your Remotion and HyperFrames projects, rendered 2.4× to 5.2× faster.<br>You change no code.</b>
-</p>
+  <p>
+    <img src="https://img.shields.io/badge/Remotion-compatible-2F7BFF?style=flat-square" alt="Remotion compatible">
+    <img src="https://img.shields.io/badge/HyperFrames-compatible-2F7BFF?style=flat-square" alt="HyperFrames compatible">
+    <img src="https://img.shields.io/badge/macOS%20%7C%20Windows-supported-0B2A6B?style=flat-square" alt="macOS and Windows supported">
+    <img src="https://img.shields.io/badge/written%20in-Rust-0B2A6B?style=flat-square&logo=rust" alt="Written in Rust">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-0B2A6B?style=flat-square" alt="License: Apache 2.0">
+  </p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/macOS-supported-2F7BFF?style=flat-square&labelColor=04060D" alt="macOS supported">
-  <img src="https://img.shields.io/badge/Windows-supported-2F7BFF?style=flat-square&labelColor=04060D" alt="Windows supported">
-  <img src="https://img.shields.io/badge/rust-1.99.1-2F7BFF?style=flat-square&labelColor=04060D" alt="Rust 1.99.1">
-  <img src="https://img.shields.io/badge/license-Apache--2.0-2F7BFF?style=flat-square&labelColor=04060D" alt="License: Apache 2.0">
-</p>
+  <p><b>Render your Remotion and HyperFrames projects 2.4× to 5.2× faster. You change no code.</b></p>
 
-<br>
+  <p>
+    <a href="#install-it">Install</a>
+    &nbsp;•&nbsp;
+    <a href="#the-numbers">Benchmarks</a>
+    &nbsp;•&nbsp;
+    <a href="#the-frame-never-leaves-the-gpu">How it works</a>
+    &nbsp;•&nbsp;
+    <a href="https://github.com/hridaya423/strobe/releases">Releases</a>
+    &nbsp;•&nbsp;
+    <a href="https://github.com/hridaya423/strobe/issues">Issues</a>
+  </p>
+</div>
 
 With Opus 5.5, we all make motion graphics with code now. The agent writes the scene in minutes. Then every change waits on a render, and the render is slow.
 

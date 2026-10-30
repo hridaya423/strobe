@@ -66,50 +66,20 @@
         return { ox, oy: y - oh * 0.5, oh, width };
       }
 
-      async function banner(c) {
-        const BH = 600;
-        c.width = W;
-        c.height = BH;
+      function logo(c, dark) {
+        const LW = 1200, LH = 400;
+        c.width = LW;
+        c.height = LH;
         const ctx = c.getContext("2d");
-        ctx.fillStyle = HEX.night;
-        ctx.fillRect(0, 0, W, BH);
-        const size = 210, base = 318;
-        ctx.font = `italic 400 ${size}px "Instrument Serif"`;
-        ctx.letterSpacing = `${-0.01 * size}px`;
-        const ww = ctx.measureText("strobe").width;
-        ctx.letterSpacing = "0px";
         const ink = document.createElement("canvas");
-        ink.width = W;
-        ink.height = BH;
-        wordmark(ink.getContext("2d"), size, 120 + ww / 2, base, HEX.core, HEX.electric);
+        ink.width = LW;
+        ink.height = LH;
+        wordmark(ink.getContext("2d"), 280, LW / 2, 262, dark ? HEX.core : HEX.night, HEX.electric);
         ctx.drawImage(ink, 0, 0);
-        ctx.font = '500 34px "Geist"';
-        ctx.textAlign = "left";
-        ctx.fillStyle = "rgba(244,251,255,0.62)";
-        ctx.fillText("A render engine for Remotion", 128, base + 84);
-        ctx.fillText("and HyperFrames.", 128, base + 128);
-        const dir = new URLSearchParams(location.search).get("frames");
-        const shots = [["1.0", "00:01"], ["3.0", "00:03"], ["12.0", "00:12"]];
-        const fw = 300, fh = 169, gap = 16, fy = 216;
-        const x0 = W - 120 - shots.length * fw - (shots.length - 1) * gap;
-        const imgs = await Promise.all(shots.map(([t]) => new Promise((r) => { const im = new Image(); im.onload = () => r(im); im.src = `${dir}/${t}.png`; })));
-        imgs.forEach((im, i) => {
-          const x = x0 + i * (fw + gap);
-          ctx.save();
-          ctx.beginPath();
-          ctx.roundRect(x, fy, fw, fh, 6);
-          ctx.clip();
-          ctx.drawImage(im, x, fy, fw, fh);
-          ctx.restore();
-          ctx.strokeStyle = "rgba(143,227,255,0.16)";
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.roundRect(x + 0.5, fy + 0.5, fw - 1, fh - 1, 6);
-          ctx.stroke();
-          ctx.font = '18px "Departure Mono"';
-          ctx.fillStyle = "rgba(143,227,255,0.45)";
-          ctx.fillText(shots[i][1], x, fy + fh + 32);
-        });
+        ctx.font = '500 38px "Geist"';
+        ctx.textAlign = "center";
+        ctx.fillStyle = dark ? "rgba(230,237,243,0.7)" : "rgba(31,35,40,0.7)";
+        ctx.fillText("The fast render engine for HTML video", LW / 2, 352);
       }
 
       function chart(c, dark) {
@@ -172,9 +142,11 @@
       }
 
       document.fonts.load('italic 330px "Instrument Serif"').then(() =>
-        Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 34px "Geist"')]).then(() => {
+        Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 38px "Geist"')]).then(() => {
           const c = document.getElementById("c");
-          (art === "banner" ? banner(c) : Promise.resolve(chart(c, art === "chart-dark"))).then(() => (document.title = "ready"));
+          if (art.startsWith("logo")) logo(c, art === "logo-dark");
+          else chart(c, art === "chart-dark");
+          document.title = "ready";
         }),
       );
     </script>
