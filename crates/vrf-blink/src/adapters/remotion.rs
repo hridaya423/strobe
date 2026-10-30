@@ -873,7 +873,8 @@ impl Renderer {
                 out,
                 warm,
                 || {
-                    let view = match prepared.lock().unwrap().take() {
+                    let task = prepared.lock().unwrap().take();
+                    let view = match task {
                         Some(task) => task
                             .join()
                             .map_err(|_| anyhow!("opening the view panicked"))??,

@@ -26,6 +26,8 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const EVALUATE_TIMEOUT: Duration = Duration::from_secs(60);
 const SETTLE_FIRST_DELIVERY: Duration = Duration::from_secs(5);
 const SETTLE_DELIVERY: Duration = Duration::from_secs(1);
+/// On Windows the first begin frame after a resize is answered only once the next one arrives.
+const SETTLE_RESIZED_DELIVERY: Duration = Duration::from_millis(250);
 const ALIVE_TIMEOUT: Duration = Duration::from_secs(1);
 const SETTLE_QUIET: Duration = Duration::from_millis(20);
 const BEGIN_FRAME_GAP: Duration = Duration::from_millis(1);
@@ -326,6 +328,7 @@ pub struct View {
     serial: u64,
     ticking: bool,
     last_begin: Cell<Option<Instant>>,
+    resized: Cell<bool>,
     closing: bool,
 }
 
@@ -481,6 +484,7 @@ impl View {
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             ticking: init_script.is_some(),
             last_begin: Cell::new(None),
+            resized: Cell::new(false),
             closing: false,
         };
         if let Some(source) = init_script.as_deref() {
@@ -521,7 +525,9 @@ impl View {
                 self.invalidate();
             }
             self.begin_frame();
-            let wait = if rounds == 0 {
+            let wait = if rounds == 0 && cfg!(windows) && self.resized.take() {
+                SETTLE_RESIZED_DELIVERY
+            } else if rounds == 0 {
                 SETTLE_FIRST_DELIVERY
             } else {
                 SETTLE_DELIVERY
@@ -547,6 +553,7 @@ impl View {
     pub fn resize(&self, width: i32, height: i32) {
         self.size.width.store(width, Ordering::Relaxed);
         self.size.height.store(height, Ordering::Relaxed);
+        self.resized.set(true);
         let host = self.host.clone();
         self.ui.post(move || {
             host.0.was_resized();
