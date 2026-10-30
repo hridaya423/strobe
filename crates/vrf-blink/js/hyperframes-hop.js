@@ -129,18 +129,6 @@
       outValue = o[p.x & 7];
     }`;
 
-  const COLUMNS = `${HEAD}${FDCT}
-    uniform isampler2D uRows;
-    out int outValue;
-    void main() {
-      ivec2 p = ivec2(gl_FragCoord.xy);
-      int d[8];
-      for (int i = 0; i < 8; i++) d[i] = texelFetch(uRows, ivec2(p.x, (p.y & ~7) + i), 0).r;
-      int o[8];
-      fdct(d, true, o);
-      outValue = o[p.y & 7];
-    }`;
-
   const IDCT = `
     const int Q[64] = int[64](${QUANT.join(',')});
     void idct(int d[8], int shift, out int o[8]) {
@@ -171,7 +159,7 @@
   `;
 
   const VERTICAL = `${HEAD}${FDCT}${IDCT}
-    uniform isampler2D uCoefficients;
+    uniform isampler2D uRows;
     out int outValue;
     int level(int c, int q, bool dc) {
       if (dc) return (c + 32) >> 6;
@@ -186,12 +174,16 @@
       ivec2 p = ivec2(gl_FragCoord.xy);
       int column = p.x & 7;
       int d[8];
+      for (int i = 0; i < 8; i++) d[i] = texelFetch(uRows, ivec2(p.x, (p.y & ~7) + i), 0).r;
+      int c[8];
+      fdct(d, true, c);
+      int e[8];
       for (int r = 0; r < 8; r++) {
         int q = Q[r * 8 + column];
-        d[r] = level(texelFetch(uCoefficients, ivec2(p.x, (p.y & ~7) + r), 0).r, q, r == 0 && column == 0) * q;
+        e[r] = level(c[r], q, r == 0 && column == 0) * q;
       }
       int o[8];
-      idct(d, 11, o);
+      idct(e, 11, o);
       outValue = o[p.y & 7];
     }`;
 
@@ -253,7 +245,6 @@
       luma: program(LUMA),
       chroma: program(CHROMA),
       rows: program(ROWS),
-      columns: program(COLUMNS),
       vertical: program(VERTICAL),
       horizontal: program(HORIZONTAL),
       output: program(OUTPUT),
@@ -285,7 +276,6 @@
         height: ph,
         source: texture('u8', pw, ph),
         rows: texture('i32', padded(pw), padded(ph)),
-        coefficients: texture('i32', padded(pw), padded(ph)),
         columns: texture('i32', padded(pw), padded(ph)),
         result: texture('u8', padded(pw), padded(ph)),
       });
@@ -329,8 +319,7 @@
       render(programs.rows, [plane.rows], w8, h8, [['uPlane', source]], (p) => {
         gl.uniform2i(gl.getUniformLocation(p, 'uSize'), width, height);
       });
-      render(programs.columns, [plane.coefficients], w8, h8, [['uRows', plane.rows]]);
-      render(programs.vertical, [plane.columns], w8, h8, [['uCoefficients', plane.coefficients]]);
+      render(programs.vertical, [plane.columns], w8, h8, [['uRows', plane.rows]]);
       render(programs.horizontal, [plane.result], w8, h8, [['uColumns', plane.columns]]);
     };
 
