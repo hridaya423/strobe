@@ -35,9 +35,6 @@ const MIN_RUN: u64 = 80;
 const LEAD_IN_RUNS: u64 = 10;
 const MIN_RUN_LEAD_INS: u64 = 4;
 const TICKING_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long before the end of its range a view opens the next one. An open takes about half a
-/// second, and a view that sits idle for long may stop answering.
-const SPARE_LEAD: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -690,12 +687,6 @@ impl Claims {
         next
     }
 
-    /// Whether a claim may still get frames.
-    fn remaining(&self) -> bool {
-        let state = self.state.lock().unwrap();
-        !state.first.is_empty() || self.skip_moved(state.next) < self.count
-    }
-
     fn peek(&self, state: &ClaimState) -> Option<(u64, u64)> {
         if let Some(&range) = state.first.last() {
             let from = range * self.max;
@@ -752,33 +743,26 @@ pub struct Runs<T> {
 const OPENING: usize = 3;
 
 struct Limit {
-    state: Mutex<(usize, usize)>,
+    free: Mutex<usize>,
     changed: Condvar,
 }
 
 impl Limit {
     fn new(count: usize) -> Limit {
         Limit {
-            state: Mutex::new((count, 0)),
+            free: Mutex::new(count),
             changed: Condvar::new(),
         }
     }
 
-    /// Runs `f` once a slot is free. A job that is not `urgent` also waits while an urgent one
-    /// waits.
-    fn run<T>(&self, urgent: bool, f: impl FnOnce() -> T) -> T {
-        let mut state = self.state.lock().unwrap();
-        state.1 += usize::from(urgent);
-        state = self
+    fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+        *self
             .changed
-            .wait_while(state, |(free, waiting)| *free == 0 || (!urgent && *waiting > 0))
-            .unwrap();
-        state.0 -= 1;
-        state.1 -= usize::from(urgent);
-        drop(state);
+            .wait_while(self.free.lock().unwrap(), |free| *free == 0)
+            .unwrap() -= 1;
         let result = f();
-        self.state.lock().unwrap().0 += 1;
-        self.changed.notify_all();
+        *self.free.lock().unwrap() += 1;
+        self.changed.notify_one();
         result
     }
 }
@@ -792,7 +776,7 @@ struct Shared<'a, T> {
     done: AtomicU64,
     on_frame: &'a (dyn Fn(u64, u64, &T) -> Result<()> + Sync),
     opened: Mutex<mpsc::Receiver<Result<View>>>,
-    spare: &'a (dyn Fn() -> Result<View> + Sync),
+    open: &'a (dyn Fn() -> Result<View> + Sync),
     seek: &'a (dyn Fn(&mut View, u64, bool) -> Result<(T, bool)> + Sync),
 }
 
@@ -892,18 +876,7 @@ fn tl(what: std::fmt::Arguments) {
 /// Seeks and captures the view's runs. A delivered surface stays valid until the next begin
 /// frame, so its conversion runs on the lane's thread while the page seeks the next frame, and
 /// is awaited just before that begin frame.
-fn drive<T>(shared: &Shared<T>, handoff: Handoff) -> Result<Worker<T>> {
-    thread::scope(|scope| drive_in(scope, shared, handoff))
-}
-
-/// A view of fixed ranges opens the view for its next range while it renders this one, so the
-/// open, which is mostly the browser loading the page, overlaps the render.
-fn drive_in<'s, T>(
-    scope: &'s thread::Scope<'s, '_>,
-    shared: &'s Shared<T>,
-    mut handoff: Handoff,
-) -> Result<Worker<T>> {
-    let mut spare: Option<thread::ScopedJoinHandle<'s, Result<View>>> = None;
+fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
     let mut worker = Worker {
         frames: Vec::new(),
         runs: Vec::new(),
@@ -927,14 +900,10 @@ fn drive_in<'s, T>(
         let Some((from, to)) = shared.claims.claim() else {
             break;
         };
-        let fixed = shared.plan.ranges.is_some();
-        if fixed && last.is_some() {
+        if shared.plan.ranges.is_some() && last.is_some() {
             handoff.wait()?;
             tl(format_args!("open"));
-            let fresh = match spare.take() {
-                Some(opening) => opening.join().expect("opening a view panicked")?,
-                None => (shared.spare)()?,
-            };
+            let fresh = (shared.open)()?;
             tl(format_args!("opened"));
             std::mem::replace(&mut view, fresh).close()?;
             tl(format_args!("closed"));
@@ -960,13 +929,6 @@ fn drive_in<'s, T>(
         for index in from..to {
             let frame = shared.first + index;
             let step = Instant::now();
-            let done = (index - from) as u32;
-            let near_end =
-                done >= 8 && run_started.elapsed() / done * ((to - index) as u32) < SPARE_LEAD;
-            let last = index + 1 == to;
-            if fixed && spare.is_none() && (near_end || last) && shared.claims.remaining() {
-                spare = Some(scope.spawn(|| (shared.spare)()));
-            }
             let ask = shared.skip.is_some_and(|skip| skip.wants(frame));
             let (value, unchanged) = (shared.seek)(&mut view, frame, ask)
                 .with_context(|| format!("seek to frame {frame}"))?;
@@ -1005,9 +967,6 @@ fn drive_in<'s, T>(
     tl(format_args!("done"));
     view.check_project()?;
     view.close()?;
-    if let Some(opening) = spare {
-        opening.join().expect("opening a view panicked")?.close()?;
-    }
     Ok(worker)
 }
 
@@ -1030,8 +989,7 @@ pub fn render_runs<T: Send>(
 ) -> Result<Runs<T>> {
     let started = Instant::now();
     let opening = Limit::new(OPENING);
-    let spare = || opening.run(false, &open);
-    let open = || opening.run(true, &open);
+    let open = || opening.run(&open);
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
     let plan = plan.fit(frame_bytes).sized(config.frames);
     let mut config = config.clone();
@@ -1067,7 +1025,7 @@ pub fn render_runs<T: Send>(
             done: AtomicU64::new(0),
             on_frame: &on_frame,
             opened: Mutex::new(opened),
-            spare: &spare,
+            open: &open,
             seek: &seek,
         };
         let failure = Mutex::new(None);
