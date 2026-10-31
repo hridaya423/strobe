@@ -91,7 +91,7 @@ impl Quality {
     /// the same bar as VideoToolbox's.
     pub fn x264_crf(self) -> u32 {
         match self {
-            Quality::Draft => 25,
+            Quality::Draft => 23,
             Quality::Balanced => 10,
             Quality::High => 8,
         }
