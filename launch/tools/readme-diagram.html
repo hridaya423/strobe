@@ -73,7 +73,7 @@
         ${node(3, R2, "VideoToolbox", "NVENC on Windows", "GPU", true)}
         ${node(4, R2, "MP4", "with AAC audio", "", true)}
         <path d="M${bx} ${by - 8} V${by} H${bx + bw} V${by - 8}" fill="none" stroke="${T.accent}" stroke-width="1.6"/>
-        <text x="${bx + bw / 2}" y="${by + 32}" text-anchor="middle" font-family="Geist" font-weight="600" font-size="19" fill="${T.accent}">No copy to the CPU</text>
+        <text x="${bx + bw / 2}" y="${by + 32}" text-anchor="middle" font-family="Geist" font-weight="600" font-size="19" fill="${T.accent}">Hardware encoder path: no copy to the CPU</text>
       </svg>`;
       document.fonts.load('600 24px "Geist"').then(() => {
         document.getElementById("out").innerHTML = svg;

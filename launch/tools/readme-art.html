@@ -34,15 +34,26 @@
     <script>
       const { W, H, HEX, dither, light, boltPath } = SX;
       const art = new URLSearchParams(location.search).get("art");
-      const RACE = [
-        ["github-unwrapped", "Remotion", 44.28, 8.49],
-        ["transitions-video", "Remotion", 13.79, 3.01],
-        ["spacex-launch", "HyperFrames", 15.9, 4.46],
-        ["figma-launch", "HyperFrames", 30.69, 8.71],
-        ["heygen-stripe", "HyperFrames", 23.02, 7.63],
-        ["hyperframes-launch", "HyperFrames", 26.18, 9.25],
-        ["4-0-trailer", "Remotion", 38.94, 16.28],
-      ];
+      const RACES = {
+        mac: ["MAC MINI, APPLE M4", [
+          ["rm-github-unwrapped", "Remotion", 44.28, 6.10],
+          ["rm-transitions-video", "Remotion", 13.79, 2.69],
+          ["rm-4-0-trailer", "Remotion", 38.94, 10.12],
+          ["hf-spacex-launch", "HyperFrames", 15.9, 4.5],
+          ["hf-figma-launch", "HyperFrames", 30.69, 8.78],
+          ["hf-heygen-stripe", "HyperFrames", 23.02, 7.45],
+          ["hf-hyperframes-launch", "HyperFrames", 26.18, 9.46],
+        ]],
+        win: ["WINDOWS, RTX 4070 TI", [
+          ["hf-spacex-launch", "HyperFrames", 59.4, 5.12],
+          ["rm-transitions-video", "Remotion", 28.3, 3.49],
+          ["hf-heygen-stripe", "HyperFrames", 61.3, 8.05],
+          ["hf-hyperframes-launch", "HyperFrames", 85.9, 11.55],
+          ["rm-github-unwrapped", "Remotion", 77.6, 10.78],
+          ["hf-figma-launch", "HyperFrames", 77.0, 12.27],
+          ["rm-4-0-trailer", "Remotion", 71.8, 15.63],
+        ]],
+      };
 
       function wordmark(ctx, size, cx, y, ink, bolt) {
         ctx.font = `italic 400 ${size}px "Instrument Serif"`;
@@ -126,12 +137,13 @@
       function card(c) {
         mark(c, 1280, 640, 250, 318, [
           ["The fast render engine for HTML video", '500 40px "Geist"', "rgba(244,251,255,0.78)", 410],
-          ["Remotion and HyperFrames, up to 5.2× faster", '500 30px "Geist"', HEX.ice, 462],
+          ["Remotion and HyperFrames, up to 11.6× faster", '500 30px "Geist"', HEX.ice, 462],
           ["github.com/hridaya423/strobe", '22px "Departure Mono"', "rgba(244,251,255,0.42)", 584],
         ], 0);
       }
 
-      function chart(c, dark) {
+      function chart(c, dark, key) {
+        const [machine, RACE] = RACES[key];
         const ink = dark ? "#E6EDF3" : "#0B1220";
         const dim = dark ? "#7D8590" : "#57606A";
         const track = dark ? "rgba(125,133,144,0.18)" : "rgba(87,96,106,0.12)";
@@ -150,7 +162,7 @@
         ctx.font = '20px "Departure Mono"';
         ctx.fillStyle = dim;
         ctx.textBaseline = "alphabetic";
-        ctx.fillText("LAUNCH VIDEO", L, 30);
+        ctx.fillText(machine, L, 30);
         ctx.fillText("WALL TIME, SECONDS", barX, 30);
         ctx.fillStyle = rival;
         ctx.fillRect(barX + 300, 14, 18, 18);
@@ -195,7 +207,7 @@
           const c = document.getElementById("c");
           if (art === "card") card(c);
           else if (art === "logo") logo(c);
-          else chart(c, art === "chart-dark");
+          else chart(c, art.includes("dark"), art.endsWith("win") ? "win" : "mac");
           document.title = "ready";
         }),
       );

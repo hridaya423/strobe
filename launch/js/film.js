@@ -330,8 +330,8 @@ function setup() {
   const NUM_P = 38;
   const NUM_Y = 420;
   const RACE = [
-    ["github-unwrapped", "Remotion", 5.2], ["transitions-video", "Remotion", 4.6], ["spacex-launch", "HyperFrames", 3.9],
-    ["figma-launch", "HyperFrames", 3.5], ["heygen-stripe", "HyperFrames", 3.1], ["4-0-trailer", "Remotion", 2.4], ["hyperframes-launch", "HyperFrames", 2.2],
+    ["spacex-launch", "HyperFrames", 11.6], ["transitions-video", "Remotion", 8.1], ["heygen-stripe", "HyperFrames", 7.6],
+    ["hyperframes-launch", "HyperFrames", 7.4], ["github-unwrapped", "Remotion", 7.2], ["figma-launch", "HyperFrames", 6.3], ["4-0-trailer", "Remotion", 4.6],
   ];
   const RACE_T = b(20.5);
   const RACE_D = 4.4;
@@ -577,7 +577,7 @@ function setup() {
     }
   }
 
-  const HERO = pixelText("5.2×", { p: NUM_P, cx: W / 2, cy: NUM_Y });
+  const HERO = pixelText("11.6×", { p: NUM_P, cx: W / 2, cy: NUM_Y });
 
   function sceneClaim(t) {
     const iris = E.cio(seg(t, b(15), b(15.75)));
@@ -693,7 +693,7 @@ function setup() {
     ctx.textBaseline = "alphabetic";
     const hu = E.eo(seg(t, t0 + 0.2, t0 + 0.55));
     ctx.globalAlpha = hu;
-    ctx.fillText("Same 7 videos. Same machine.", L, 150 + (1 - hu) * 30);
+    ctx.fillText("Same 7 videos. Same Windows PC.", L, 150 + (1 - hu) * 30);
     ctx.globalAlpha = 1;
     ctx.letterSpacing = "0px";
     RACE.forEach(([name, rival, m], i) => {
