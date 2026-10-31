@@ -25,7 +25,7 @@ const X264_PRIOR_SHARE: f64 = 0.5;
 /// A renderer whose frames have arrived, over at least `ARRIVAL_WINDOW`, at under this share of
 /// VideoToolbox's rate never gets the CPU lane: its bursts drain on the media engine before the
 /// render ends, and the CPU it would take belongs to the pages.
-const SLOW_ARRIVAL_SHARE: f64 = 0.6;
+const SLOW_ARRIVAL_SHARE: f64 = 0.75;
 const ARRIVAL_WINDOW: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
