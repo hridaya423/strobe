@@ -199,9 +199,12 @@ impl RenderArgs {
         self.composition.is_some() || is_remotion(&self.project)
     }
 
+    /// GPU raster speeds Remotion's paint on macOS but halves it on Windows, where CPU raster
+    /// also gives Remotion's exact pixels.
     fn cpu_raster(&self) -> bool {
         match self.mode {
             Some(mode) => mode == ModeArg::Reference,
+            None if self.is_remotion() => cfg!(windows),
             None => hyperframes::CPU_RASTER,
         }
     }
@@ -560,11 +563,12 @@ mod tests {
     }
 
     #[test]
-    fn a_hyperframes_project_rasterises_on_the_gpu_and_a_remotion_project_in_software() {
+    fn a_hyperframes_project_rasterises_on_the_gpu_and_a_remotion_project_on_the_gpu_only_off_windows()
+    {
         let hyperframes = project("hyperframes", None);
         let remotion = project("remotion", Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#));
         assert!(!render_args(&hyperframes, &[]).cpu_raster());
-        assert!(render_args(&remotion, &[]).cpu_raster());
+        assert_eq!(render_args(&remotion, &[]).cpu_raster(), cfg!(windows));
     }
 
     #[test]

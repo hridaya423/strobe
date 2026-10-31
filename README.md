@@ -95,7 +95,7 @@ Strobe has two raster modes, and you pick the trade.
 
 `--mode fast` rasterises on the GPU, as HyperFrames does, and is the default. It is up to 30% quicker on pages where raster is the bottleneck. On Remotion projects, blended fills and gradients can land one level away from Remotion's pixels, and edges drawn with `shape-rendering: crispEdges` come out anti-aliased. You see that only when you zoom in.
 
-`--mode reference` rasterises on the CPU. It gives the exact pixels of the `chrome-headless-shell` that Remotion ships.
+`--mode reference` rasterises on the CPU. It gives the exact pixels of the `chrome-headless-shell` that Remotion ships. On Windows it is the default for Remotion projects, because there GPU raster is slower: the 4.0 trailer takes 32 s on the GPU and 16 s on the CPU.
 
 ## Install it
 
