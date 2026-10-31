@@ -209,6 +209,15 @@ fn set_vui(vui: &mut nv::NV_ENC_CONFIG_H264_VUI_PARAMETERS, colour: ColourSpace)
     vui.colourMatrix = matrix_coeffs(colour.matrix);
 }
 
+/// At 0, NVENC holds H.264 to the HRD limit of the level it picks for the frame size (4.0 at
+/// 1080p, about 25 Mbps), which starves film grain. 240 Mbps lands on level 5.1.
+fn constant_quality_ceiling(codec: Codec) -> u32 {
+    match codec {
+        Codec::H264 => 240_000_000,
+        Codec::Hevc | Codec::Av1 | Codec::ProRes422 => 0,
+    }
+}
+
 fn configure(
     session: &Session,
     config: &EncoderConfig,
@@ -251,7 +260,7 @@ fn configure(
         RateControl::ConstantQuality(level) => {
             rc.rateControlMode = nv::NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_VBR;
             rc.averageBitRate = 0;
-            rc.maxBitRate = 0;
+            rc.maxBitRate = constant_quality_ceiling(config.codec);
             rc.targetQuality = level;
         }
     }
