@@ -10,3 +10,5 @@ bench/corpus/synth-remotion/node_modules/
 bench/corpus/synth-remotion/out/
 bench/synth/assets/images/
 bench/synth/assets/video/
+docs/
+launch/posts.md
