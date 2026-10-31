@@ -8,5 +8,8 @@ edition = "2024"
 version = "0.1.0"
 license = "Apache-2.0"
 
+[workspace.metadata.blaze]
+version = "0.20261030.1"
+
 [workspace.metadata.blaze.sandbox]
 unsandboxed-build-scripts = ["cef-dll-sys"]
