@@ -209,17 +209,33 @@ pub fn prepare(
     read(dir, false)
 }
 
+/// Prepares the project, and again with HyperFrames' own extraction for the clips the native
+/// decoder refuses. Which clips those are depends only on the prepared files, so the answer is
+/// kept beside them and a later render skips opening every clip.
 pub fn prepare_for(options: &Options) -> Result<Prepare> {
     let hyperframes = options.hyperframes.as_deref();
     if !options.native_video {
         return prepare(&options.project, hyperframes, options.fps, None);
     }
     let first = prepare(&options.project, hyperframes, options.fps, Some(&[]))?;
-    let refused = NativeVideos::new(
-        &first.prepared.natives,
-        &[&first.dir.join("plan/compiled"), &options.project],
-    )?
-    .refused();
+    let checked = first.dir.join("refused.json");
+    let refused: Vec<String> = match fs::read(&checked)
+        .ok()
+        .and_then(|text| serde_json::from_slice(&text).ok())
+    {
+        Some(refused) => refused,
+        None => {
+            let refused = NativeVideos::new(
+                &first.prepared.natives,
+                &[&first.dir.join("plan/compiled"), &options.project],
+            )?
+            .refused();
+            let partial = checked.with_extension(format!("partial-{}", std::process::id()));
+            fs::write(&partial, serde_json::to_vec(&refused)?)?;
+            fs::rename(&partial, &checked)?;
+            refused
+        }
+    };
     if refused.is_empty() {
         return Ok(first);
     }
