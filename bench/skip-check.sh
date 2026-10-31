@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-vrf=${VRF:-target/release/vrf}
+vrf=${VRF:-target/release/strobe}
 label=$1
 shift
 dir=${SKIP_CHECK_DIR:-$(mktemp -d)}

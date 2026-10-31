@@ -29,7 +29,7 @@ With Opus 5.5, we all make motion graphics with code now. The agent writes the s
 I built Strobe to change that. Strobe reads the same Remotion or HyperFrames project and writes the same MP4. It keeps each frame on the GPU, from the paint to the encoder.
 
 ```sh
-vrf render ./launch-film -o launch.mp4
+strobe render ./launch-film -o launch.mp4
 ```
 
 <p align="center">
@@ -85,7 +85,7 @@ The GPU path is the big win. These smaller parts add up too:
 - **No paint for frames that do not change.** If the page reports no damage, Strobe repeats the last frame. A title card that holds still costs almost no work.
 - **Parallel views.** Strobe measures your machine and splits the frames across several views.
 - **A second H.264 lane on macOS.** On the M4 Mac mini, VideoToolbox recommends one encoder session. Strobe runs libx264 beside it on the spare cores.
-- **A warm daemon.** `vrf daemon` keeps CEF loaded between renders, so a queue of renders pays the startup cost once.
+- **A warm daemon.** `strobe daemon` keeps CEF loaded between renders, so a queue of renders pays the startup cost once.
 
 Stock CEF cannot decode H.264 in a `<video>` element, so Strobe decodes embedded video with VideoToolbox. If a clip does not match the framework's own decoder exactly, Strobe falls back to that decoder for the clip.
 
@@ -115,28 +115,28 @@ cd strobe
 cargo build --release -p vrf-cli
 ```
 
-The binary is `target/release/vrf`.
+The binary is `target/release/strobe`.
 
 </details>
 
 ## Render a project
 
 ```sh
-vrf render ./my-remotion-app --composition Main -o out.mp4
-vrf render ./my-remotion-app --composition Main -o out.mp4 --props '{"title":"Hello"}'
-vrf render ./my-hyperframes-video -o out.mov --codec prores --fps 60
-vrf render ./my-remotion-app --composition Main -o clip.mp4 --frames 0-89
+strobe render ./my-remotion-app --composition Main -o out.mp4
+strobe render ./my-remotion-app --composition Main -o out.mp4 --props '{"title":"Hello"}'
+strobe render ./my-hyperframes-video -o out.mov --codec prores --fps 60
+strobe render ./my-remotion-app --composition Main -o clip.mp4 --frames 0-89
 ```
 
 For a queue of renders, start the daemon once:
 
 ```sh
-vrf daemon &
-vrf render ./a --composition Main -o a.mp4
-vrf render ./b --composition Main -o b.mp4
+strobe daemon &
+strobe render ./a --composition Main -o a.mp4
+strobe render ./b --composition Main -o b.mp4
 ```
 
-Projects that use WebGL render on SwiftShader, and they need a daemon of their own. Start it with `VRF_SOFTWARE_WEBGL=1 vrf daemon`.
+Projects that use WebGL render on SwiftShader, and they need a daemon of their own. Start it with `VRF_SOFTWARE_WEBGL=1 strobe daemon`.
 
 <details>
 <summary><b>All the flags</b></summary>
@@ -159,7 +159,7 @@ Projects that use WebGL render on SwiftShader, and they need a daemon of their o
 | `--no-audio` | Leaves the audio out of the file. |
 | `--json` | Prints a JSON report instead of the summary line. |
 
-`vrf render --help` lists every flag with its default.
+`strobe render --help` lists every flag with its default.
 
 </details>
 

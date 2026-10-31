@@ -127,7 +127,7 @@ impl Engine {
 }
 
 pub fn vrf_binary() -> PathBuf {
-    let file = if cfg!(windows) { "vrf.exe" } else { "vrf" };
+    let file = if cfg!(windows) { "strobe.exe" } else { "strobe" };
     bench_dir().join("../target/release").join(file)
 }
 

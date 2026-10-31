@@ -17,7 +17,7 @@ const COMMAND_START: &str = "VRF_COMMAND_START_US";
 const SOFTWARE_WEBGL: &str = "VRF_SOFTWARE_WEBGL";
 
 #[derive(Parser)]
-#[command(name = "vrf", version)]
+#[command(name = "strobe", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -27,7 +27,7 @@ struct Cli {
 enum Command {
     /// Render a Remotion or HyperFrames project to a video file.
     Render(RenderArgs),
-    /// Keep the renderer warm between renders. `vrf render` uses a running daemon and falls
+    /// Keep the renderer warm between renders. `strobe render` uses a running daemon and falls
     /// back to rendering in its own process when there is none. Rasterising on the GPU and
     /// WebGL on SwiftShader are fixed for a running CEF, so each has a daemon of its own. With
     /// one running, a render that needs another starts it and waits for it.
@@ -545,7 +545,7 @@ mod tests {
     use super::*;
 
     fn render_args(project: &Path, extra: &[&str]) -> RenderArgs {
-        let mut argv = vec!["vrf", "render", project.to_str().unwrap(), "-o", "out.mp4"];
+        let mut argv = vec!["strobe", "render", project.to_str().unwrap(), "-o", "out.mp4"];
         argv.extend(extra);
         match Cli::try_parse_from(argv).unwrap().command {
             Command::Render(args) => args,

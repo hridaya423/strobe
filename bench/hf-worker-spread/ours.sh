@@ -10,7 +10,7 @@ for id in "$@"; do
   refdir=$(ref_dir "$id")
   ok=0
   for attempt in 1 2 3; do
-    if target/release/vrf render "$(project_dir "$id")" --hyperframes "$root/bench/engines/node_modules/hyperframes" --mode "$mode" --json -o "$base.mp4" > "$base.report.json" 2> "$base.render.log" && [ -s "$base.mp4" ]; then
+    if target/release/strobe render "$(project_dir "$id")" --hyperframes "$root/bench/engines/node_modules/hyperframes" --mode "$mode" --json -o "$base.mp4" > "$base.report.json" 2> "$base.render.log" && [ -s "$base.mp4" ]; then
       ok=1
       break
     fi

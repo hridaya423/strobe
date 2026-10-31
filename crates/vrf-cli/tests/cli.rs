@@ -14,7 +14,7 @@ const FIXTURES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../vrf-blink/js/test/remotion/fixtures"
 );
-const VRF: &str = env!("CARGO_BIN_EXE_vrf");
+const VRF: &str = env!("CARGO_BIN_EXE_strobe");
 const WARM_BAR_MS: f64 = 500.0;
 
 #[cfg(windows)]
@@ -155,7 +155,7 @@ fn render(
         .output()?;
     ensure!(
         output.status.success(),
-        "vrf render failed:\n{}",
+        "strobe render failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(serde_json::from_slice(&output.stdout)?)
@@ -184,7 +184,7 @@ fn render_hyperframes(
         .output()?;
     ensure!(
         output.status.success(),
-        "vrf render failed:\n{}",
+        "strobe render failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     Ok((
@@ -254,7 +254,7 @@ impl Running {
 
     fn stop(mut self) -> Result<()> {
         let output = vrf(&self.socket).args(["daemon", "--stop"]).output()?;
-        ensure!(output.status.success(), "vrf daemon --stop failed");
+        ensure!(output.status.success(), "strobe daemon --stop failed");
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if let Some(status) = self.child.try_wait()? {

@@ -31,10 +31,10 @@ for id in "$@"; do
         --browser-executable "$bench/engines/browsers/chrome-headless-shell/mac_arm-156.0.8078.73/chrome-headless-shell-mac-arm64/chrome-headless-shell")
     fi
   elif [ "$framework" = hyperframes ]; then
-    "$repo/target/release/vrf" render "$source" --hyperframes "$bench/engines/node_modules/hyperframes" \
+    "$repo/target/release/strobe" render "$source" --hyperframes "$bench/engines/node_modules/hyperframes" \
       --mode "$mode" -o "$out" --json > "$gate/$mode/$id.json"
   else
-    "$repo/target/release/vrf" render "$source" --composition "$(field "$id" composition)" --entry "$(field "$id" entry)" \
+    "$repo/target/release/strobe" render "$source" --composition "$(field "$id" composition)" --entry "$(field "$id" entry)" \
       --mode "$mode" -o "$out" --json > "$gate/$mode/$id.json"
   fi
   status=$?

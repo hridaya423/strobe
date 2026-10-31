@@ -31,7 +31,7 @@ fn vrf_engine_renders_both_frameworks() {
     assert!(
         std::path::Path::new(&invocation.argv[0])
             .with_extension("")
-            .ends_with("target/release/vrf")
+            .ends_with("target/release/strobe")
     );
     assert_eq!(
         invocation.argv[1..],
