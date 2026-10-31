@@ -42,21 +42,14 @@ I rendered seven public launch videos, each one on the framework it was built fo
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/speed-mac-dark.png">
-    <img src="assets/readme/speed-mac-light.png" alt="Mac mini, Apple M4: Strobe is 2.8 to 7.3 times faster than Remotion or HyperFrames on seven launch videos." width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/speed-dark.png">
+    <img src="assets/readme/speed-light.png" alt="Seven launch videos on two machines. On the M4 Mac mini, Strobe is 2.8 to 7.3 times faster than Remotion or HyperFrames. On the Windows PC with an RTX 4070 Ti, it is 4.6 to 11.6 times faster." width="100%">
   </picture>
 </p>
 
-The Mac is an Apple M4 Mac mini with 10 cores and 16 GiB of memory. The Remotion and HyperFrames times are the median of five runs. The Strobe times are the median of three.
+The Mac is an Apple M4 Mac mini with 10 cores and 16 GiB of memory. There, the Remotion and HyperFrames times are the median of five runs, and the Strobe times are the median of three.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/speed-win-dark.png">
-    <img src="assets/readme/speed-win-light.png" alt="Windows, RTX 4070 Ti: Strobe is 4.6 to 11.6 times faster than Remotion or HyperFrames on seven launch videos." width="100%">
-  </picture>
-</p>
-
-The Windows PC has an Intel i9-13900K and an NVIDIA RTX 4070 Ti. Every engine had one warm-up run, then the median of three counts. Windows Defender real-time protection was off during the runs. Remotion and HyperFrames are much slower on this PC than on the Mac mini, so the Windows multiples are larger.
+The Windows PC has an Intel i9-13900K and an NVIDIA RTX 4070 Ti. There, every engine had one warm-up run, then the median of three counts. Windows Defender real-time protection was off during the runs. Remotion and HyperFrames are much slower on this PC than on the Mac mini, so the Windows multiples are larger.
 
 Strobe is not at its limit yet. The hardware encoder can take about 480 frames per second at 1080p on the Mac and about 495 on Windows. No launch video gets within 15% of that, because Chromium's page rendering is now the slow step.
 

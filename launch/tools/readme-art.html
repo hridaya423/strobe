@@ -142,14 +142,22 @@
         ], 0);
       }
 
-      function chart(c, dark, key) {
-        const [machine, RACE] = RACES[key];
+      function chart(c, dark) {
         const ink = dark ? "#E6EDF3" : "#0B1220";
         const dim = dark ? "#7D8590" : "#57606A";
-        const track = dark ? "rgba(125,133,144,0.18)" : "rgba(87,96,106,0.12)";
+        const rule = dark ? "rgba(125,133,144,0.22)" : "rgba(87,96,106,0.18)";
+        const track = dark ? "rgba(125,133,144,0.14)" : "rgba(87,96,106,0.09)";
         const rival = dark ? "#3D4A5C" : "#C9D1D9";
         const fast = HEX.electric;
-        const P = 56, rowH = 92, top = 70, Wc = 1600, Hc = top + RACE.length * rowH + 30;
+        const panels = ["mac", "win"].map((k) => {
+          const [machine, rows] = RACES[k];
+          const by = Object.fromEntries(rows.map((r) => [r[0], r]));
+          const max = Math.max(...rows.map((r) => r[2]));
+          const best = Math.max(...rows.map((r) => r[2] / r[3]));
+          return { machine, by, max, best };
+        });
+        const order = RACES.mac[1].map((r) => [r[0], r[1]]);
+        const P = 56, rowH = 92, top = 92, Wc = 1600, Hc = top + order.length * rowH + 64;
         c.width = Wc + 2 * P;
         c.height = Hc + 2 * P;
         const ctx = c.getContext("2d");
@@ -158,56 +166,76 @@
         ctx.roundRect(0, 0, c.width, c.height, 24);
         ctx.fill();
         ctx.translate(P, P);
-        const L = 0, nameW = 360, barX = L + nameW, barW = 860, max = Math.max(...RACE.map((r) => r[2]));
+        const nameW = 384, gap = 44, pw = (Wc - nameW - gap) / 2, barW = 360;
+        const px = [nameW, nameW + pw + gap];
+        ctx.textBaseline = "alphabetic";
         ctx.font = '20px "Departure Mono"';
         ctx.fillStyle = dim;
-        ctx.textBaseline = "alphabetic";
-        ctx.fillText(machine, L, 30);
-        ctx.fillText("WALL TIME, SECONDS", barX, 30);
-        ctx.fillStyle = rival;
-        ctx.fillRect(barX + 300, 14, 18, 18);
-        ctx.fillStyle = dim;
-        ctx.fillText("REMOTION OR HYPERFRAMES", barX + 328, 30);
-        ctx.fillStyle = fast;
-        ctx.fillRect(barX + 640, 14, 18, 18);
-        ctx.fillStyle = dim;
-        ctx.fillText("STROBE", barX + 668, 30);
-        ctx.textAlign = "right";
-        ctx.fillText("SPEEDUP", Wc, 30);
-        ctx.textAlign = "left";
-        RACE.forEach(([name, who, slow, quick], i) => {
+        ctx.fillText("LAUNCH VIDEO", 0, 40);
+        panels.forEach((pn, j) => {
+          ctx.font = '600 26px "Geist"';
+          ctx.fillStyle = ink;
+          ctx.fillText(pn.machine === "MAC MINI, APPLE M4" ? "Mac mini, Apple M4" : "Windows, RTX 4070 Ti", px[j], 40);
+          ctx.font = '20px "Departure Mono"';
+          ctx.fillStyle = dim;
+          ctx.textAlign = "right";
+          ctx.fillText("SPEEDUP", px[j] + pw, 40);
+          ctx.textAlign = "left";
+        });
+        ctx.fillStyle = rule;
+        ctx.fillRect(0, 62, Wc, 1);
+        ctx.fillRect(px[1] - gap / 2, 62, 1, order.length * rowH + 20);
+        order.forEach(([name, who], i) => {
           const y = top + i * rowH;
           ctx.font = '26px "Departure Mono"';
           ctx.fillStyle = ink;
-          ctx.fillText(name, L, y + 22);
+          ctx.fillText(name, 0, y + 22);
           ctx.font = '20px "Departure Mono"';
           ctx.fillStyle = dim;
-          ctx.fillText(`vs ${who}`, L, y + 52);
-          ctx.fillStyle = track;
-          ctx.fillRect(barX, y, barW, 24);
-          ctx.fillStyle = rival;
-          ctx.fillRect(barX, y, (barW * slow) / max, 24);
-          ctx.fillStyle = fast;
-          ctx.fillRect(barX, y + 32, (barW * quick) / max, 24);
-          ctx.font = '18px "Departure Mono"';
-          ctx.fillStyle = dim;
-          ctx.fillText(`${slow.toFixed(1)} s`, barX + (barW * slow) / max + 12, y + 19);
-          ctx.fillStyle = ink;
-          ctx.fillText(`${quick.toFixed(1)} s`, barX + (barW * quick) / max + 12, y + 51);
-          ctx.font = '600 52px "Geist"';
-          ctx.textAlign = "right";
-          ctx.fillStyle = i === 0 ? fast : ink;
-          ctx.fillText(`${(slow / quick).toFixed(1)}×`, Wc, y + 50);
-          ctx.textAlign = "left";
+          ctx.fillText(`vs ${who}`, 0, y + 52);
+          panels.forEach((pn, j) => {
+            const [, , slow, quick] = pn.by[name];
+            const x = px[j];
+            ctx.fillStyle = track;
+            ctx.fillRect(x, y, barW, 22);
+            ctx.fillStyle = rival;
+            ctx.fillRect(x, y, (barW * slow) / pn.max, 22);
+            ctx.fillStyle = fast;
+            ctx.fillRect(x, y + 30, (barW * quick) / pn.max, 22);
+            ctx.font = '18px "Departure Mono"';
+            ctx.fillStyle = dim;
+            ctx.fillText(`${slow.toFixed(1)} s`, x + Math.max(barW, (barW * slow) / pn.max) + 10, y + 18);
+            ctx.fillStyle = ink;
+            ctx.fillText(`${quick.toFixed(1)} s`, x + (barW * quick) / pn.max + 10, y + 48);
+            const m = slow / quick;
+            ctx.font = '600 44px "Geist"';
+            ctx.textAlign = "right";
+            ctx.fillStyle = m === pn.best ? fast : ink;
+            ctx.fillText(`${m.toFixed(1)}×`, x + pw, y + 46);
+            ctx.textAlign = "left";
+          });
         });
+        const ly = top + order.length * rowH + 40;
+        ctx.font = '20px "Departure Mono"';
+        ctx.fillStyle = rival;
+        ctx.fillRect(0, ly - 16, 18, 18);
+        ctx.fillStyle = dim;
+        ctx.fillText("REMOTION OR HYPERFRAMES", 28, ly);
+        ctx.fillStyle = fast;
+        ctx.fillRect(340, ly - 16, 18, 18);
+        ctx.fillStyle = dim;
+        ctx.fillText("STROBE", 368, ly);
+        ctx.textAlign = "right";
+        ctx.fillText("WALL TIME IN SECONDS. EACH MACHINE HAS ITS OWN SCALE.", Wc, ly);
+        ctx.textAlign = "left";
       }
 
       document.fonts.load('italic 330px "Instrument Serif"').then(() =>
-        Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 38px "Geist"')]).then(() => {
+        Promise.all([document.fonts.load('30px "Departure Mono"'), document.fonts.load('600 52px "Geist"'), document.fonts.load('500 38px "Geist"'), document.fonts.load('600 26px "Geist"')]).then(() => {
           const c = document.getElementById("c");
           if (art === "card") card(c);
           else if (art === "logo") logo(c);
-          else chart(c, art.includes("dark"), art.endsWith("win") ? "win" : "mac");
+          else chart(c, art.includes("dark"));
           document.title = "ready";
         }),
       );
