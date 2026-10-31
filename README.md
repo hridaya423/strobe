@@ -93,9 +93,9 @@ Stock CEF cannot decode H.264 in a `<video>` element, so Strobe decodes embedded
 
 Strobe has two raster modes, and you pick the trade.
 
-`--mode reference` rasterises on the CPU. It gives the pixels of the `chrome-headless-shell` that Remotion ships. Remotion projects use this mode by default.
+`--mode fast` rasterises on the GPU, as HyperFrames does, and is the default. It is up to 30% quicker on pages where raster is the bottleneck. On Remotion projects, blended fills and gradients can land one level away from Remotion's pixels, and edges drawn with `shape-rendering: crispEdges` come out anti-aliased. You see that only when you zoom in.
 
-`--mode fast` rasterises on the GPU, as HyperFrames does. It is up to 30% quicker on pages where raster is the bottleneck. Blended fills and gradients can land one level away from the Remotion pixels. HyperFrames projects use this mode by default.
+`--mode reference` rasterises on the CPU. It gives the exact pixels of the `chrome-headless-shell` that Remotion ships.
 
 ## Install it
 

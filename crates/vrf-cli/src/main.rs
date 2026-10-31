@@ -46,12 +46,11 @@ struct RenderArgs {
     output: PathBuf,
     #[arg(long, value_enum, default_value = "h264")]
     codec: CodecArg,
-    /// `reference` rasterises in software and gives the pixels of Remotion's own
-    /// `chrome-headless-shell`, which the delivered-file fidelity rule needs. `fast` rasterises
-    /// on the GPU, as HyperFrames' own `chrome-headless-shell` does: up to 30% quicker on
-    /// raster-bound pages, but blended fills and gradients land a level off Remotion's pixels
-    /// and `shape-rendering: crispEdges` is anti-aliased. Remotion projects default to
-    /// `reference` and HyperFrames projects to `fast`.
+    /// `fast` rasterises on the GPU, as HyperFrames' own `chrome-headless-shell` does, and is the
+    /// default: up to 30% quicker on raster-bound pages. For Remotion projects blended fills and
+    /// gradients land a level off Remotion's pixels and `shape-rendering: crispEdges` is
+    /// anti-aliased, a difference seen only when zoomed in. `reference` rasterises in software
+    /// and gives the pixels of Remotion's own `chrome-headless-shell`.
     #[arg(long, value_enum)]
     mode: Option<ModeArg>,
     /// The frames to render, as `first-last` (inclusive) or one frame.
@@ -116,9 +115,9 @@ struct DaemonArgs {
     /// Seconds with nothing to do before the daemon exits.
     #[arg(long, default_value_t = 600)]
     idle_timeout: u64,
-    /// The rasterisation this daemon renders with, `reference` for Remotion projects and `fast`
-    /// for HyperFrames projects by default. A render in the other mode gets a daemon of its own.
-    #[arg(long, value_enum, default_value = "reference")]
+    /// The rasterisation this daemon renders with. A render in the other mode gets a daemon of
+    /// its own.
+    #[arg(long, value_enum, default_value = "fast")]
     mode: ModeArg,
     /// Projects whose bundle, frame server and views stay loaded.
     #[arg(long, default_value_t = 2)]
@@ -203,7 +202,7 @@ impl RenderArgs {
     fn cpu_raster(&self) -> bool {
         match self.mode {
             Some(mode) => mode == ModeArg::Reference,
-            None => self.is_remotion() || hyperframes::CPU_RASTER,
+            None => hyperframes::CPU_RASTER,
         }
     }
 
