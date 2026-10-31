@@ -115,8 +115,6 @@ tar xzf strobe-macos-arm64.tar.gz
 ln -s "$PWD/strobe-macos-arm64/strobe" /usr/local/bin/strobe
 ```
 
-The build is signed but not notarized yet. If you download it in a browser, macOS blocks it. To unblock it, run `xattr -dr com.apple.quarantine strobe-macos-arm64`.
-
 Windows on x64: unzip `strobe-windows-x64.zip` and put the `strobe-windows-x64` folder on your `PATH`. Keep `strobe.exe` next to its DLLs.
 
 Strobe renders your project with your project's own dependencies, so you need Node and a `node_modules` folder.
