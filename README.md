@@ -183,9 +183,7 @@ A daemon keeps one raster mode, and WebGL on SwiftShader needs a daemon of its o
 I would rather you read this here than find it in production.
 
 - **Linux.** Strobe runs on macOS and Windows. Linux is not done.
-- **Edge pixels in fast mode on macOS.** GPU raster anti-aliases glyph edges and `crispEdges` lines. Four Remotion test videos miss the numeric pixel bar for that reason, though you see the difference only when you zoom in. `--mode reference` passes all four.
 - **WebGL shaders on Windows.** Some shaders hash with `sin`, so their output depends on the GPU. Strobe runs WebGL on the same NVIDIA GPU as the encoder. HyperFrames runs it on the default adapter, which can be the Intel iGPU. On `hf-hyperframes-launch`, frames 625 to 660 differ from HyperFrames' own render for that reason.
-- **Text on Windows.** Windows draws glyph edges with DirectWrite, and macOS uses CoreText. Remotion projects on Windows now use CPU raster, and I have not scored their fidelity again since that change.
 - **HEVC and AV1 on NVENC.** H.264 has a 240 Mbps ceiling, so grainy footage keeps its detail. HEVC and AV1 have no ceiling yet, so they may starve grainy footage of bits. I have not tested that.
 
 ## License
