@@ -105,7 +105,19 @@ Strobe has two raster modes, and you pick the trade.
 
 ## Install it
 
-Download the build for macOS or Windows from the [releases page](https://github.com/hridaya423/strobe/releases).
+Download the build for your machine from the [releases page](https://github.com/hridaya423/strobe/releases/latest).
+
+macOS on Apple silicon:
+
+```sh
+curl -LO https://github.com/hridaya423/strobe/releases/latest/download/strobe-macos-arm64.tar.gz
+tar xzf strobe-macos-arm64.tar.gz
+ln -s "$PWD/strobe-macos-arm64/strobe" /usr/local/bin/strobe
+```
+
+The build is not signed yet. If you download it in a browser, macOS blocks it. To unblock it, run `xattr -dr com.apple.quarantine strobe-macos-arm64`.
+
+Windows on x64: unzip `strobe-windows-x64.zip` and put the `strobe-windows-x64` folder on your `PATH`. Keep `strobe.exe` next to its DLLs.
 
 Strobe renders your project with your project's own dependencies, so you need Node and a `node_modules` folder.
 
