@@ -4,6 +4,11 @@ use cef::{CommandLine, ImplCommandLine};
 use vrf::gpu::Gpu;
 use vrf::gpu::d3d12::Luid;
 use windows::Win32::Media::timeBeginPeriod;
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+    PROCESS_POWER_THROTTLING_STATE, ProcessPowerThrottling, SetProcessInformation,
+};
 
 static ADAPTER: OnceLock<Option<Luid>> = OnceLock::new();
 
@@ -37,4 +42,23 @@ pub fn append_adapter(command_line: &mut CommandLine) {
 /// (spike 6.6). The browser process needs it for its own short waits.
 pub fn raise_timer_resolution() {
     unsafe { timeBeginPeriod(1) };
+}
+
+/// Windows 11 runs a process without a visible window as EcoQoS, on efficiency cores and with
+/// its timer resolution requests ignored. Every CEF process here is windowless.
+pub fn opt_out_of_power_throttling() {
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    let _ = unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&raw const state).cast(),
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    };
 }

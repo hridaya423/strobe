@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, mpsc};
+use std::sync::{Condvar, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -50,6 +50,9 @@ pub struct Config {
     pub skip: Option<Skip>,
     pub colour: ColourSpace,
     pub jpeg_capture: bool,
+    /// An estimate of what each frame costs to render, used to claim the slowest fixed ranges
+    /// first.
+    pub costs: Option<Vec<f64>>,
 }
 
 impl Config {
@@ -67,6 +70,7 @@ impl Config {
             skip: None,
             colour: ColourSpace::BT709,
             jpeg_capture: false,
+            costs: None,
         }
     }
 
@@ -99,6 +103,8 @@ pub struct Stats {
     pub begin_to_paint: Vec<Duration>,
     pub convert: Vec<Duration>,
     pub encode: Vec<Duration>,
+    /// Each claimed run's first frame, frame count and wall time.
+    pub runs: Vec<(u64, u64, Duration)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -320,7 +326,7 @@ impl DerefMut for Pipeline<'_> {
 
 impl<'w> Pipeline<'w> {
     pub fn new(config: &Config, out: &Path, warm: &'w mut Warm) -> Result<Pipeline<'w>> {
-        let (producer, consumer) = sched::ordered::<Frame>(config.window);
+        let (producer, consumer) = sched::ordered::<Frame>(config.window.max(config.frames as usize));
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
             Codec::H264 | Codec::Hevc | Codec::Av1 => Container::Mp4,
@@ -428,9 +434,26 @@ fn physical_memory() -> Option<u64> {
     (status == 0).then_some(bytes)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn physical_memory() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    Some(status.ullTotalPhys)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn physical_memory() -> Option<u64> {
     None
+}
+
+/// Frame buffers the memory budget holds beyond the pool's margin.
+fn allowed(frame_bytes: u64) -> usize {
+    let buffers = (memory_budget() / frame_bytes) as usize;
+    buffers.saturating_sub(POOL_MARGIN).max(WINDOW)
 }
 
 /// An eighth of the machine's memory for frames waiting on the encoder, between 1.5 and 3 GB.
@@ -536,12 +559,37 @@ impl Plan {
     }
 
     /// Cuts `run` until the buffers the window needs fit in the memory budget.
+    /// The heaviest fixed ranges by `costs`, as many as the memory budget holds beside the
+    /// window, to be claimed before the rest. A range claimed early waits whole in the reorder
+    /// buffer, and the slowest range no longer runs alone at the end.
+    fn moved(&self, costs: Option<&[f64]>, frame_bytes: u64) -> Vec<u64> {
+        let (Some(ranges), Some(costs)) = (self.ranges, costs) else {
+            return Vec::new();
+        };
+        if ranges <= self.views as u64 {
+            return Vec::new();
+        }
+        let spare = (allowed(frame_bytes) as u64).saturating_sub(self.window() as u64) / self.run;
+        let cost = |range: u64| -> f64 {
+            costs
+                .iter()
+                .skip((range * self.run) as usize)
+                .take(self.run as usize)
+                .sum()
+        };
+        let ranges = ranges.min((costs.len() as u64).div_ceil(self.run));
+        let mut order: Vec<u64> = (0..ranges).collect();
+        order.sort_by(|a, b| cost(*b).total_cmp(&cost(*a)));
+        order.truncate(spare as usize);
+        order
+    }
+
     fn fit(mut self, frame_bytes: u64) -> Plan {
-        let buffers = (memory_budget() / frame_bytes) as usize;
-        let allowed = buffers.saturating_sub(POOL_MARGIN).max(WINDOW);
-        if self.ranges.is_some() {
+        let allowed = allowed(frame_bytes);
+        if let Some(ranges) = self.ranges {
             let fits = 1 + (allowed as u64).saturating_sub(1) / (self.run + 1);
-            self.views = self.views.min(fits as usize).max(1);
+            let views = (self.views as u64).min(fits).max(1);
+            self.views = ranges.div_ceil(ranges.div_ceil(views)) as usize;
         } else if self.views > 1 {
             let views = self.views as u64;
             self.run = self
@@ -556,24 +604,71 @@ impl Plan {
 /// most `plan.run` (so long renders keep their long runs and little lead-in) and at least
 /// `plan.min_run()` (so the last claims are short and every view finishes together). A plan with
 /// ranges hands out exactly `plan.run` frames each time.
+///
+/// Frames past the first unfinished one wait for the encoder in pool buffers, so a claim waits
+/// until its run fits in `capacity` beside them. A view ahead of a slow one would otherwise take
+/// every buffer, and the slow view's next frame would wait for a buffer forever. The run that
+/// starts at that first unfinished frame never waits.
 struct Claims {
-    next: Mutex<u64>,
+    state: Mutex<ClaimState>,
+    freed: Condvar,
+    moved: Vec<u64>,
     count: u64,
     views: u64,
     max: u64,
     min: u64,
     fixed: bool,
+    capacity: u64,
+}
+
+struct ClaimState {
+    next: u64,
+    first: Vec<u64>,
+    runs: Vec<(u64, u64, bool)>,
+    cancelled: bool,
+}
+
+impl ClaimState {
+    /// The first frame of a run not yet finished, or of the frames nobody claimed yet.
+    fn frontier(&self) -> u64 {
+        let mut runs = self.runs.clone();
+        runs.sort_unstable();
+        let mut at = 0;
+        for (from, to, finished) in runs {
+            if from != at || !finished {
+                break;
+            }
+            at = to;
+        }
+        at
+    }
+
+    fn held(&self, frontier: u64) -> u64 {
+        self.runs
+            .iter()
+            .filter(|(from, _, _)| *from > frontier)
+            .map(|(from, to, _)| to - from)
+            .sum()
+    }
 }
 
 impl Claims {
-    fn new(plan: &Plan, count: u64) -> Claims {
+    fn new(plan: &Plan, count: u64, moved: &[u64], capacity: usize) -> Claims {
         Claims {
-            next: Mutex::new(0),
+            state: Mutex::new(ClaimState {
+                next: 0,
+                first: moved.iter().rev().copied().collect(),
+                runs: Vec::new(),
+                cancelled: false,
+            }),
+            freed: Condvar::new(),
+            moved: moved.to_vec(),
             count,
             fixed: plan.ranges.is_some(),
             views: plan.views as u64,
             max: plan.run,
             min: plan.min_run(),
+            capacity: capacity as u64,
         }
     }
 
@@ -586,16 +681,53 @@ impl Claims {
             .min(remaining)
     }
 
-    fn claim(&self) -> Option<(u64, u64)> {
-        let mut next = self.next.lock().unwrap();
-        let from = *next;
-        let remaining = self.count.saturating_sub(from);
-        if remaining == 0 {
-            return None;
+    fn skip_moved(&self, mut next: u64) -> u64 {
+        while self.moved.contains(&(next / self.max)) {
+            next += self.max;
         }
-        let to = from + self.size(remaining);
-        *next = to;
-        Some((from, to))
+        next
+    }
+
+    fn peek(&self, state: &ClaimState) -> Option<(u64, u64)> {
+        if let Some(&range) = state.first.last() {
+            let from = range * self.max;
+            return Some((from, (from + self.max).min(self.count)));
+        }
+        let from = self.skip_moved(state.next);
+        let remaining = self.count.saturating_sub(from);
+        (remaining > 0).then(|| (from, from + self.size(remaining)))
+    }
+
+    fn claim(&self) -> Option<(u64, u64)> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if state.cancelled {
+                return None;
+            }
+            let (from, to) = self.peek(&state)?;
+            let frontier = state.frontier();
+            if from == frontier || state.held(frontier) + (to - from) <= self.capacity {
+                if state.first.pop().is_none() {
+                    state.next = to;
+                }
+                state.runs.push((from, to, false));
+                return Some((from, to));
+            }
+            state = self.freed.wait(state).unwrap();
+        }
+    }
+
+    fn finish(&self, from: u64) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(run) = state.runs.iter_mut().find(|run| run.0 == from) {
+            run.2 = true;
+        }
+        self.freed.notify_all();
+    }
+
+    fn cancel(&self) {
+        self.state.lock().unwrap().cancelled = true;
+        self.freed.notify_all();
     }
 }
 
@@ -644,12 +776,14 @@ struct Shared<'a, T> {
     claims: Claims,
     done: AtomicU64,
     on_frame: &'a (dyn Fn(u64, u64, &T) -> Result<()> + Sync),
+    opened: Mutex<mpsc::Receiver<Result<View>>>,
     open: &'a (dyn Fn() -> Result<View> + Sync),
     seek: &'a (dyn Fn(&mut View, u64, bool) -> Result<(T, bool)> + Sync),
 }
 
 struct Worker<T> {
     frames: Vec<(u64, T)>,
+    runs: Vec<(u64, u64, Duration)>,
     seek: Vec<Duration>,
     lead_in: u64,
     capture: Capture,
@@ -729,12 +863,24 @@ fn work<T>(lane: &mut Lane, shared: &Shared<T>) -> Result<Worker<T>> {
     Ok(worker)
 }
 
+/// With `VRF_TIMELINE` set, writes a timestamped event of the calling view's thread to stderr:
+/// opens, runs and each frame's seek, wait and paint in milliseconds.
+fn tl(what: std::fmt::Arguments) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    static START: OnceLock<Instant> = OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("VRF_TIMELINE").is_some()) {
+        let at = START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0;
+        eprintln!("TL {:?} {at:.1} {what}", thread::current().id());
+    }
+}
+
 /// Seeks and captures the view's runs. A delivered surface stays valid until the next begin
 /// frame, so its conversion runs on the lane's thread while the page seeks the next frame, and
 /// is awaited just before that begin frame.
 fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
     let mut worker = Worker {
         frames: Vec::new(),
+        runs: Vec::new(),
         seek: Vec::new(),
         lead_in: 0,
         capture: Capture::default(),
@@ -742,7 +888,14 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
         skipped: 0,
         convert: Vec::new(),
     };
-    let mut view = (shared.open)()?;
+    tl(format_args!("open0"));
+    let mut view = shared
+        .opened
+        .lock()
+        .unwrap()
+        .recv()
+        .map_err(|_| anyhow!("no view was opened for this worker"))??;
+    tl(format_args!("opened"));
     let mut last = None;
     loop {
         let Some((from, to)) = shared.claims.claim() else {
@@ -750,9 +903,16 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
         };
         if shared.plan.ranges.is_some() && last.is_some() {
             handoff.wait()?;
-            std::mem::replace(&mut view, (shared.open)()?).close()?;
+            tl(format_args!("open"));
+            let fresh = (shared.open)()?;
+            tl(format_args!("opened"));
+            std::mem::replace(&mut view, fresh).close()?;
+            tl(format_args!("closed"));
             last = None;
         }
+        tl(format_args!("range {from} {to}"));
+        let run_started = Instant::now();
+        let (mut ts, mut tw, mut tc) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
         let start = shared.first + from;
         let resume = start
             .saturating_sub(shared.plan.lead_in)
@@ -774,23 +934,38 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
             let (value, unchanged) = (shared.seek)(&mut view, frame, ask)
                 .with_context(|| format!("seek to frame {frame}"))?;
             worker.seek.push(step.elapsed());
+            ts += step.elapsed();
             if unchanged && index > from {
                 handoff.send(index, Job::Skip)?;
             } else {
+                let w = Instant::now();
                 handoff.wait()?;
+                tw += w.elapsed();
+                let c = Instant::now();
                 let paint = worker
                     .capture
                     .next(&view, shared.watchdog)
                     .with_context(|| format!("capture frame {frame}"))?;
+                tc += c.elapsed();
+                tl(format_args!(
+                    "f {frame} s {:.2} w {:.2} p {:.2}",
+                    (w - step).as_secs_f64() * 1e3,
+                    (c - w).as_secs_f64() * 1e3,
+                    c.elapsed().as_secs_f64() * 1e3
+                ));
                 handoff.send(index, paint.map_or(Job::Repeat, Job::Paint))?;
             }
             let done = shared.done.fetch_add(1, Ordering::Relaxed) + 1;
             (shared.on_frame)(done, index, &value)?;
             worker.frames.push((index, value));
         }
+        tl(format_args!("ranged seek {ts:?} wait {tw:?} capture {tc:?}"));
+        worker.runs.push((from, to - from, run_started.elapsed()));
+        shared.claims.finish(from);
         last = Some(shared.first + to - 1);
     }
     handoff.wait()?;
+    tl(format_args!("done"));
     view.check_project()?;
     view.close()?;
     Ok(worker)
@@ -819,89 +994,107 @@ pub fn render_runs<T: Send>(
     let frame_bytes = u64::from(config.width) * u64::from(config.height) * 3 / 2;
     let plan = plan.fit(frame_bytes).sized(config.frames);
     let mut config = config.clone();
-    config.window = config.window.max(plan.window());
+    let moved = plan.moved(config.costs.as_deref(), frame_bytes);
+    tl(format_args!("moved {moved:?}"));
+    config.window = config.window.max(plan.window() + moved.len() * plan.run as usize);
     config.turbo &= plan.turbo;
     config.sessions = plan.sessions.max(1);
-    let step = Instant::now();
-    let mut pipeline = Pipeline::new(&config, out, warm)?;
-    let pipeline_s = step.elapsed();
+    tl(format_args!("render_runs"));
     let views = (plan.views as u64)
         .min(config.frames.div_ceil(plan.run))
         .max(1) as usize;
-    let specs: Vec<LaneSpec> = (1..views).map(|_| pipeline.spec()).collect();
-    let aborter = pipeline.producer.clone();
-    let shared = Shared {
-        first,
-        plan,
-        watchdog: config.watchdog,
-        skip: config.skip.as_ref(),
-        claims: Claims::new(&Plan { views, ..plan }, config.frames),
-        done: AtomicU64::new(0),
-        on_frame: &on_frame,
-        open: &open,
-        seek: &seek,
-    };
-    let failure = Mutex::new(None);
-    let guard = |result: Result<Worker<T>>| match result {
-        Ok(worker) => Some(worker),
-        Err(error) => {
-            failure.lock().unwrap().get_or_insert(error);
-            aborter.abort();
-            None
+    thread::scope(|opens| {
+        let (ready, opened) = mpsc::channel();
+        for _ in 0..views {
+            let (ready, open) = (ready.clone(), &open);
+            opens.spawn(move || {
+                let _ = ready.send(open());
+            });
         }
-    };
-    let workers: Vec<Option<Worker<T>>> = thread::scope(|scope| {
-        let handles: Vec<_> = specs
-            .into_iter()
-            .map(|spec| {
-                scope.spawn(|| guard(spec.open().and_then(|mut lane| work(&mut lane, &shared))))
-            })
-            .collect();
-        let mut workers = vec![guard(work(&mut pipeline, &shared))];
-        workers.extend(
-            handles
+        let step = Instant::now();
+        let mut pipeline = Pipeline::new(&config, out, warm)?;
+        let pipeline_s = step.elapsed();
+        tl(format_args!("pipeline {pipeline_s:?}"));
+        let specs: Vec<LaneSpec> = (1..views).map(|_| pipeline.spec()).collect();
+        let aborter = pipeline.producer.clone();
+        let shared = Shared {
+            first,
+            plan,
+            watchdog: config.watchdog,
+            skip: config.skip.as_ref(),
+            claims: Claims::new(&Plan { views, ..plan }, config.frames, &moved, config.window),
+            done: AtomicU64::new(0),
+            on_frame: &on_frame,
+            opened: Mutex::new(opened),
+            open: &open,
+            seek: &seek,
+        };
+        let failure = Mutex::new(None);
+        let guard = |result: Result<Worker<T>>| match result {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                failure.lock().unwrap().get_or_insert(error);
+                shared.claims.cancel();
+                aborter.abort();
+                None
+            }
+        };
+        let workers: Vec<Option<Worker<T>>> = thread::scope(|scope| {
+            let handles: Vec<_> = specs
                 .into_iter()
-                .map(|h| h.join().expect("view thread panicked")),
+                .map(|spec| {
+                    scope.spawn(|| guard(spec.open().and_then(|mut lane| work(&mut lane, &shared))))
+                })
+                .collect();
+            let mut workers = vec![guard(work(&mut pipeline, &shared))];
+            workers.extend(
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("view thread panicked")),
+            );
+            workers
+        });
+        drop(aborter);
+        tl(format_args!("workers joined"));
+        let finished = pipeline.finish();
+        tl(format_args!("finished"));
+        if let Some(error) = failure.into_inner().unwrap() {
+            return Err(error);
+        }
+        let (muxer, encode) = finished?;
+        let mut stats = Stats {
+            elapsed: started.elapsed(),
+            pipeline: pipeline_s,
+            encode,
+            ..Stats::default()
+        };
+        let mut frames = Vec::new();
+        let mut lead_in_frames = 0;
+        for worker in workers.into_iter().flatten() {
+            frames.extend(worker.frames);
+            lead_in_frames += worker.lead_in;
+            stats.repeats += worker.repeats;
+            stats.skipped += worker.skipped;
+            stats.retries += worker.capture.retries;
+            stats.seek.extend(worker.seek);
+            stats.runs.extend(worker.runs);
+            stats.begin_to_paint.extend(worker.capture.begin_to_paint);
+            stats.convert.extend(worker.convert);
+        }
+        frames.sort_by_key(|(index, _)| *index);
+        ensure!(
+            frames.len() as u64 == config.frames,
+            "{} frames rendered, expected {}",
+            frames.len(),
+            config.frames
         );
-        workers
-    });
-    drop(aborter);
-    let finished = pipeline.finish();
-    if let Some(error) = failure.into_inner().unwrap() {
-        return Err(error);
-    }
-    let (muxer, encode) = finished?;
-    let mut stats = Stats {
-        elapsed: started.elapsed(),
-        pipeline: pipeline_s,
-        encode,
-        ..Stats::default()
-    };
-    let mut frames = Vec::new();
-    let mut lead_in_frames = 0;
-    for worker in workers.into_iter().flatten() {
-        frames.extend(worker.frames);
-        lead_in_frames += worker.lead_in;
-        stats.repeats += worker.repeats;
-        stats.skipped += worker.skipped;
-        stats.retries += worker.capture.retries;
-        stats.seek.extend(worker.seek);
-        stats.begin_to_paint.extend(worker.capture.begin_to_paint);
-        stats.convert.extend(worker.convert);
-    }
-    frames.sort_by_key(|(index, _)| *index);
-    ensure!(
-        frames.len() as u64 == config.frames,
-        "{} frames rendered, expected {}",
-        frames.len(),
-        config.frames
-    );
-    Ok(Runs {
-        plan: Plan { views, ..plan },
-        muxer,
-        frames: frames.into_iter().map(|(_, value)| value).collect(),
-        stats,
-        lead_in_frames,
+        Ok(Runs {
+            plan: Plan { views, ..plan },
+            muxer,
+            frames: frames.into_iter().map(|(_, value)| value).collect(),
+            stats,
+            lead_in_frames,
+        })
     })
 }
 
@@ -916,7 +1109,7 @@ mod tests {
     }
 
     fn sizes(plan: Plan, frames: u64) -> Vec<u64> {
-        let claims = Claims::new(&plan, frames);
+        let claims = Claims::new(&plan, frames, &[], usize::MAX);
         let mut sizes = Vec::new();
         let mut at = 0;
         while let Some((from, to)) = claims.claim() {
@@ -968,6 +1161,55 @@ mod tests {
             assert_eq!(plan.sized(1185), plan);
         }
         assert_eq!(Plan::single().ranged(8, 5).run, 1);
+    }
+
+    #[test]
+    fn the_slowest_ranges_are_claimed_first_and_every_range_once() {
+        let plan = Plan::new(2, 7).ranged(5, 100);
+        let mut costs = vec![1.0; 100];
+        costs[80..].fill(5.0);
+        costs[20..40].fill(3.0);
+        let moved = plan.moved(Some(&costs), 1920 * 1080 * 3 / 2);
+        assert_eq!(moved[..2], [4, 1]);
+        let claims = Claims::new(&plan, 100, &moved[..2], usize::MAX);
+        let order: Vec<_> = std::iter::from_fn(|| claims.claim()).collect();
+        assert_eq!(order, [(80, 100), (20, 40), (0, 20), (40, 60), (60, 80)]);
+        assert!(Plan::new(5, 7).ranged(5, 100).moved(Some(&costs), 1).is_empty());
+    }
+
+    #[test]
+    fn a_short_render_claims_only_ranges_that_hold_frames() {
+        let plan = Plan::new(4, 7).ranged(8, 10);
+        let mut costs = vec![1.0; 10];
+        costs[8..].fill(5.0);
+        let moved = plan.moved(Some(&costs), 1);
+        assert!(moved.iter().all(|range| range * plan.run < 10), "{moved:?}");
+        let claims = Claims::new(&plan, 10, &moved, 4);
+        let mut claimed: Vec<_> = std::iter::from_fn(|| {
+            let run = claims.claim()?;
+            claims.finish(run.0);
+            Some(run)
+        })
+        .collect();
+        claimed.sort();
+        assert_eq!(claimed, [(0, 2), (2, 4), (4, 6), (6, 8), (8, 10)]);
+    }
+
+    #[test]
+    fn a_claim_past_the_buffers_waits_for_the_slow_run_before_it() {
+        let plan = Plan::new(2, 10).ranged(4, 40);
+        let claims = Claims::new(&plan, 40, &[], 15);
+        assert_eq!(claims.claim(), Some((0, 10)));
+        assert_eq!(claims.claim(), Some((10, 20)));
+        thread::scope(|scope| {
+            let ahead = scope.spawn(|| claims.claim());
+            thread::sleep(Duration::from_millis(50));
+            assert!(!ahead.is_finished());
+            claims.finish(0);
+            assert_eq!(ahead.join().unwrap(), Some((20, 30)));
+        });
+        claims.cancel();
+        assert_eq!(claims.claim(), None);
     }
 
     #[test]

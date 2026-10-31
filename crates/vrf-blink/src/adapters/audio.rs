@@ -196,13 +196,19 @@ fn same_source(a: &Clip, b: &Clip) -> bool {
         && a.mono_copy == b.mono_copy
 }
 
-fn same_volume(early: &Volume, last: &Volume) -> bool {
+/// Whether `early` and `last` give the same gain over the first `used` samples of the clip. A
+/// clip mixed at a constant volume may later gain a per-frame volume, such as a fade at its end.
+fn same_volume(early: &Volume, last: &Volume, used: u64) -> bool {
     match (early, last) {
         (Volume::Constant(a), Volume::Constant(b)) => a == b,
         (Volume::Frames { fps, values }, Volume::Frames { fps: f, values: v }) => {
             fps == f && v.starts_with(values)
         }
-        _ => false,
+        (Volume::Constant(level), Volume::Frames { fps, values })
+        | (Volume::Frames { fps, values }, Volume::Constant(level)) => {
+            let frames = (used as f64 / f64::from(SAMPLE_RATE) * fps + 0.5).floor() as usize + 1;
+            values[..frames.min(values.len())].iter().all(|value| value == level)
+        }
     }
 }
 
@@ -214,7 +220,11 @@ fn consistent(fed: &Fed, clips: &[Clip]) -> bool {
         clips.iter().any(|clip| {
             same_source(clip, &spec.clip)
                 && clip.start + clip.length >= spec.end
-                && same_volume(&spec.clip.volume, &clip.volume)
+                && same_volume(
+                    &spec.clip.volume,
+                    &clip.volume,
+                    spec.end.saturating_sub(spec.clip.start),
+                )
         })
     });
     let none_missing = clips
@@ -398,6 +408,17 @@ mod tests {
             assert!(early.is_some());
             assert_eq!(early, late);
         }
+    }
+
+    #[test]
+    fn a_fade_after_the_mixed_samples_keeps_them() {
+        let mut values = vec![0.8; 10];
+        values.extend([0.4; 5]);
+        let fade = Volume::Frames { fps: 30.0, values };
+        let frame = u64::from(vrf::audio::SAMPLE_RATE) / 30;
+        assert!(same_volume(&Volume::Constant(0.8), &fade, 9 * frame));
+        assert!(!same_volume(&Volume::Constant(0.8), &fade, 10 * frame));
+        assert!(!same_volume(&Volume::Constant(0.4), &fade, frame));
     }
 
     #[test]
