@@ -75,18 +75,12 @@ pub struct Clip {
     edits: usize,
 }
 
+#[derive(Clone)]
 struct D3d {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     manager: IMFDXGIDeviceManager,
 }
-
-struct Media {
-    d3d: Option<D3d>,
-}
-
-unsafe impl Send for Media {}
-unsafe impl Sync for Media {}
 
 fn d3d() -> Result<D3d> {
     unsafe {
@@ -121,17 +115,25 @@ fn d3d() -> Result<D3d> {
     }
 }
 
-fn media() -> Result<&'static Media> {
-    static MEDIA: OnceLock<std::result::Result<Media, String>> = OnceLock::new();
+fn media() -> Result<()> {
+    static MEDIA: OnceLock<std::result::Result<(), String>> = OnceLock::new();
     com();
     MEDIA
         .get_or_init(|| {
             unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }
-                .map_err(|error| format!("starting Media Foundation: {error}"))?;
-            Ok(Media { d3d: d3d().ok() })
+                .map_err(|error| format!("starting Media Foundation: {error}"))
         })
-        .as_ref()
+        .clone()
         .map_err(|error| anyhow!("{error}"))
+}
+
+/// The decoding device of the calling thread. Decoders that share one device across threads
+/// lose reference frames and drop frames when several views decode at once.
+fn thread_d3d() -> Option<D3d> {
+    thread_local! {
+        static D3D: Option<D3d> = d3d().ok();
+    }
+    D3D.with(Clone::clone)
 }
 
 fn com() {
@@ -197,6 +199,7 @@ struct Source {
     output: Output,
     first: Option<(i64, IMFSample)>,
     staging: Option<Staging>,
+    d3d: Option<D3d>,
 }
 
 unsafe impl Send for Source {}
@@ -230,13 +233,14 @@ impl Source {
     }
 
     fn start(path: &Path, from: Option<i64>, hardware: bool) -> Result<Source> {
-        let media = media()?;
+        media()?;
+        let d3d = hardware.then(thread_d3d).flatten();
         unsafe {
             let mut attributes: Option<IMFAttributes> = None;
             MFCreateAttributes(&mut attributes, 2)?;
             let attributes = attributes.context("no attributes")?;
             if hardware {
-                let d3d = media.d3d.as_ref().context("no hardware device")?;
+                let d3d = d3d.as_ref().context("no hardware device")?;
                 attributes.SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, &d3d.manager)?;
             } else {
                 attributes.SetUINT32(&MF_SOURCE_READER_DISABLE_DXVA, 1)?;
@@ -260,6 +264,7 @@ impl Source {
                 output,
                 first: None,
                 staging: None,
+                d3d,
             };
             source.first = Some(source.fetch()?.context("the file has no frames")?);
             if hardware {
@@ -331,7 +336,7 @@ impl Source {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>> {
-        let d3d = media()?.d3d.as_ref().context("no hardware device")?;
+        let d3d = self.d3d.as_ref().context("no hardware device")?;
         let mut raw = null_mut();
         unsafe { shared.GetResource(&ID3D11Texture2D::IID, &mut raw)? };
         let texture = unsafe { ID3D11Texture2D::from_raw(raw) };
