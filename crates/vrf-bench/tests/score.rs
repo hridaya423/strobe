@@ -4,7 +4,7 @@ use vrf_bench::score::{FrameScore, Rgb8, Sampling, compare, score};
 
 fn lab(name: &str) -> Rgb8 {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/research/2026-10-29/metric-lab")
+        .join("tests/metric-lab")
         .join(name);
     Rgb8::load_png(&p).unwrap()
 }

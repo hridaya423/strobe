@@ -656,7 +656,7 @@ fn chunks_with_identical_config_share_one_entry() {
 #[cfg(target_os = "macos")]
 fn avfoundation_md5s(file: &Path, dir: &Dir, width: &str, height: &str) -> Vec<String> {
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/research/2026-10-29/encode-bench/avdecode.swift");
+        .join("tests/video_support/avdecode.swift");
     let raw = dir.file("av.nv12");
     let log = run(
         "swift",
