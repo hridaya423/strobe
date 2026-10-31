@@ -577,6 +577,7 @@ impl Plan {
                 .take(self.run as usize)
                 .sum()
         };
+        let ranges = ranges.min((costs.len() as u64).div_ceil(self.run));
         let mut order: Vec<u64> = (0..ranges).collect();
         order.sort_by(|a, b| cost(*b).total_cmp(&cost(*a)));
         order.truncate(spare as usize);
@@ -1174,6 +1175,24 @@ mod tests {
         let order: Vec<_> = std::iter::from_fn(|| claims.claim()).collect();
         assert_eq!(order, [(80, 100), (20, 40), (0, 20), (40, 60), (60, 80)]);
         assert!(Plan::new(5, 7).ranged(5, 100).moved(Some(&costs), 1).is_empty());
+    }
+
+    #[test]
+    fn a_short_render_claims_only_ranges_that_hold_frames() {
+        let plan = Plan::new(4, 7).ranged(8, 10);
+        let mut costs = vec![1.0; 10];
+        costs[8..].fill(5.0);
+        let moved = plan.moved(Some(&costs), 1);
+        assert!(moved.iter().all(|range| range * plan.run < 10), "{moved:?}");
+        let claims = Claims::new(&plan, 10, &moved, 4);
+        let mut claimed: Vec<_> = std::iter::from_fn(|| {
+            let run = claims.claim()?;
+            claims.finish(run.0);
+            Some(run)
+        })
+        .collect();
+        claimed.sort();
+        assert_eq!(claimed, [(0, 2), (2, 4), (4, 6), (6, 8), (8, 10)]);
     }
 
     #[test]
