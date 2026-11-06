@@ -16,6 +16,8 @@ const CANDIDATES: [usize; 4] = [1, 2, 4, 8];
 const SAMPLE: Duration = Duration::from_millis(300);
 const WARMUP: Duration = Duration::from_millis(50);
 const GAIN: f64 = 1.25;
+const CORES_PER_VIEW: usize = 4;
+const FLOOR: f64 = 0.8;
 const BASE: u64 = 1_000_003;
 
 /// What a machine's measurement settles on: the views to run, and the frame rate measured at each
@@ -97,7 +99,8 @@ fn frames_in(view: &mut View, deadline: Instant, base: u64) -> Result<u64> {
 
 /// Runs a page of a hundred and fifty moving boxes in up to eight views, one view count at a time, for
 /// about two seconds in all, and keeps a view count only if it raises the frame rate by 25%
-/// over the last one kept.
+/// over the last one kept. A machine with four cores per view or more takes that many views
+/// anyway unless they cost it more than a fifth of the frame rate.
 pub fn measure(ui: &Ui) -> Result<Calibration> {
     let cores = thread::available_parallelism()?.get();
     let counts: Vec<usize> = CANDIDATES.into_iter().filter(|n| *n <= cores).collect();
@@ -148,16 +151,29 @@ pub fn measure(ui: &Ui) -> Result<Calibration> {
     for view in views {
         view.close()?;
     }
-    let mut chosen = 1;
-    for &count in counts.iter().skip(1) {
+    Ok(Calibration {
+        views: choose(&fps, cores),
+        fps,
+    })
+}
+
+fn choose(fps: &BTreeMap<usize, f64>, cores: usize) -> usize {
+    let mut counts = fps.keys().copied();
+    let mut chosen = counts.next().unwrap_or(1);
+    for count in counts {
         if fps[&count] >= fps[&chosen] * GAIN {
             chosen = count;
         }
     }
-    Ok(Calibration {
-        views: chosen,
-        fps,
-    })
+    let roomy = fps
+        .keys()
+        .copied()
+        .filter(|count| count * CORES_PER_VIEW <= cores)
+        .last();
+    match roomy {
+        Some(count) if count > chosen && fps[&count] >= fps[&chosen] * FLOOR => count,
+        _ => chosen,
+    }
 }
 
 fn read_entries(cache: &Path) -> BTreeMap<String, Calibration> {
@@ -224,4 +240,54 @@ pub fn plan(ui: &Ui, views: Option<usize>, run: Option<u64>, lead_in: u64) -> Re
 /// Like [`plan`], but `None` where it would have to measure, which needs a running CEF.
 pub fn cached_plan(views: Option<usize>, run: Option<u64>, lead_in: u64) -> Result<Option<Plan>> {
     plan_from(views, run, lead_in, || Ok(stored(&cache_path())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(rates: [f64; 4]) -> BTreeMap<usize, f64> {
+        CANDIDATES.into_iter().zip(rates).collect()
+    }
+
+    #[test]
+    fn the_mac_mini_keeps_four_views() {
+        let mini = map([170.8, 410.4, 653.4, 681.0]);
+        assert_eq!(choose(&mini, 10), 4);
+    }
+
+    #[test]
+    fn a_thirty_two_thread_windows_machine_takes_eight_views_on_either_rasteriser() {
+        let gpu = map([69.3, 245.1, 422.9, 524.1]);
+        let cpu = map([102.5, 269.9, 398.7, 379.6]);
+        let cpu_again = map([113.7, 259.4, 383.1, 343.3]);
+        assert_eq!(choose(&gpu, 32), 8);
+        assert_eq!(choose(&cpu, 32), 8);
+        assert_eq!(choose(&cpu_again, 32), 8);
+    }
+
+    #[test]
+    fn fewer_cores_leave_the_gain_rule_alone() {
+        let gpu = map([69.3, 245.1, 422.9, 524.1]);
+        assert_eq!(choose(&gpu, 24), 4);
+        assert_eq!(choose(&gpu, 16), 4);
+    }
+
+    #[test]
+    fn views_that_cost_over_a_fifth_of_the_rate_are_not_taken_for_the_cores() {
+        let slow = map([102.5, 269.9, 398.7, 300.0]);
+        assert_eq!(choose(&slow, 32), 4);
+    }
+
+    #[test]
+    fn a_clear_gain_wins_without_the_cores() {
+        let gain = map([100.0, 190.0, 360.0, 800.0]);
+        assert_eq!(choose(&gain, 8), 8);
+    }
+
+    #[test]
+    fn one_view_stays_when_more_gain_nothing() {
+        let flat = map([100.0, 101.0, 100.0, 99.0]);
+        assert_eq!(choose(&flat, 4), 1);
+    }
 }

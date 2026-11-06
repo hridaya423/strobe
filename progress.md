@@ -266,3 +266,19 @@ Kept for the orchestrator: Task 0.6, the spine_bench HEVC re-run, and spikes 1.4
   - `d9c951a`: Remotion renders with CPU raster on Windows. GPU raster there made the trailer 32.0 s against 16.0 s (paint 52 ms against 15 ms a frame), github 11.9 / 11.0 s, transitions 3.8 / 3.5 s. It also fixes the vrf-cli test `1330697` left failing.
   - Surprises: (1) with Defender on, a stopped benchmark showed spacex at 12.3 s; an alternating A/B of the old and new decoder gave 5.5 to 7.5 s for both, and Defender read 48 to 76% CPU right after renders, so Defender and a cold first launch, not the decoder fix, made the 12 s. (2) spacex is 16% slower than the 4.43 s `t3/windows-max` measured; not explained (the 240 Mbps cap is a candidate).
   - `4829cb3`: the binary is `strobe` (bundle `strobe.app`). Crate names, the `vrf` URL scheme, `VRF_*` variables and result labels keep the old name.
+- 2026-11-06, Windows views (`t3/windows-views`, win-pc over Tailscale as `win-ts`: i9-13900K, 32 logical processors, cargo release build of the branch; Defender real-time protection was on). `strobe render --json` total_ms, prepare cached, one warm-up round then median of 3 rounds alternating over the view counts. Seconds:
+
+  | Video | 4 | 6 | 8 | 12 | 16 |
+  |---|---|---|---|---|---|
+  | hf-spacex-launch | 5.44 | 5.58 | 5.40 | 5.45 | 5.36 |
+  | hf-heygen-stripe | 8.57 | 8.54 | 8.50 | 8.61 | 8.55 |
+  | hf-figma-launch | 12.83 | 12.79 | 11.61 | 11.28 | 11.17 |
+  | hf-hyperframes-launch | 12.18 | 12.14 | 11.67 | 12.12 | 12.05 |
+  | rm-transitions-video | 3.89 | 3.42 | 3.54 | 7.16 | 7.22 |
+  | rm-github-unwrapped | 11.87 | 11.11 | 11.28 | 12.35 | 12.21 |
+  | rm-4-0-trailer | 16.29 | 14.71 | 13.38 | fails | fails |
+
+  - 8 views is best or within 4% of best on every video; 12 and 16 gain nothing on HyperFrames and double transitions. rm-4-0-trailer at 12 views stops with "capture frame 1178: no delivery within 30s of a begin frame"; github failed in 3 of 6 runs at 12 and 16. Not investigated.
+  - Calibration picked 4 on both rasterisers. The GPU probe's 4 to 8 gain was 1.24, 1.32 and 1.17 over three probes (threshold 1.25); the CPU probe read 8 at 0.90 to 0.95 of 4, which the Remotion videos (CPU raster) contradict (8 beats 4 by 5 to 22%). No rule on the probe's rates alone can take 8 here and keep the Mac mini's 4 (4 to 8 gain 1.04), so `choose` adds a core floor: the largest candidate with 4 cores per view takes the machine unless its probe rate is below 0.8 of the gain rule's pick. 32 threads gives 8, 24 gives 4, the mini (10 cores) is untouched. One machine is one data point; the 4-cores rule is the guess.
+  - After, auto views: figma 11.99 s, rm-4-0-trailer 13.16 s, both at 8 views (cached calibration; the first render also pays the probe, 3 to 5 s).
+  - Surprise: on this machine's Windows build every native-video HyperFrames launch (heygen, figma, hyperframes-launch) failed at every view count with "cannot be decoded natively ... The network path was not found (0x80070035)": `canonicalize` gives `\\?\C:\...` and Media Foundation's source reader rejects it. The older installed binary fails the same way. Fixed by opening the path without the prefix (separate commit). Not known whether an earlier Windows build accepted it.
