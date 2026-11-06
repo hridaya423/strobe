@@ -245,7 +245,9 @@ impl Source {
             } else {
                 attributes.SetUINT32(&MF_SOURCE_READER_DISABLE_DXVA, 1)?;
             }
-            let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), &attributes)
+            let url = path.to_string_lossy();
+            let url = url.trim_start_matches(r"\\?\");
+            let reader = MFCreateSourceReaderFromURL(&HSTRING::from(url), &attributes)
                 .context("cannot open the file")?;
             let wanted = MFCreateMediaType()?;
             wanted.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
