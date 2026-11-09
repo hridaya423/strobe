@@ -242,7 +242,13 @@ impl X264Encoder {
         );
         let handle = unsafe { (api.encoder_open)(&mut param) };
         ensure!(!handle.is_null(), "x264_encoder_open failed");
-        let record = headers(&api, handle)?;
+        let record = match headers(&api, handle) {
+            Ok(record) => record,
+            Err(error) => {
+                unsafe { (api.encoder_close)(handle) };
+                return Err(error);
+            }
+        };
         Ok(X264Encoder {
             api,
             handle,
