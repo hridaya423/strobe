@@ -85,7 +85,6 @@ fn candidates() -> Vec<PathBuf> {
         [
             "/opt/homebrew/lib/libx264.dylib",
             "/usr/local/lib/libx264.dylib",
-            "libx264.dylib",
         ]
         .map(PathBuf::from),
     );
@@ -371,5 +370,19 @@ impl Encoder for X264Encoder {
 impl Drop for X264Encoder {
     fn drop(&mut self) {
         unsafe { (self.api.encoder_close)(self.handle) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_candidate_is_an_absolute_path_so_dlopen_never_searches_the_working_directory() {
+        let candidates = candidates();
+        assert!(candidates.len() >= 2);
+        for path in candidates {
+            assert!(path.is_absolute(), "{path:?}");
+        }
     }
 }
