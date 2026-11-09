@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use windows::Win32::Media::MediaFoundation::{
     AACMFTEncoder, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_MT_AAC_PAYLOAD_TYPE, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
@@ -13,12 +13,8 @@ use windows::Win32::System::Com::{
 };
 
 pub use crate::{AAC_FRAME_SAMPLES, AacConfig, AacStream};
+use crate::audio_specific_config;
 
-const SAMPLE_RATES: [u32; 13] = [
-    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
-    7_350,
-];
-const AAC_LC: u32 = 2;
 const PRIMING_FRAMES: u32 = AAC_FRAME_SAMPLES;
 const TAIL_FRAMES: usize = 2 * AAC_FRAME_SAMPLES as usize;
 const INPUT_CHUNK_FRAMES: usize = 4096;
@@ -42,17 +38,6 @@ impl Drop for Media {
             let _ = MFShutdown();
         }
     }
-}
-
-fn audio_specific_config(config: AacConfig) -> Result<Vec<u8>> {
-    let Some(rate) = SAMPLE_RATES.iter().position(|&r| r == config.sample_rate) else {
-        bail!(
-            "{} Hz has no AAC sampling frequency index",
-            config.sample_rate
-        );
-    };
-    let bits = (AAC_LC << 11) | ((rate as u32) << 7) | (config.channels << 3);
-    Ok((bits as u16).to_be_bytes().to_vec())
 }
 
 fn pcm_type(config: AacConfig) -> Result<IMFMediaType> {

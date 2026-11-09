@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::{NonNull, null_mut};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use objc2_audio_toolbox::{
     AudioConverterDispose, AudioConverterFillComplexBuffer, AudioConverterGetProperty,
     AudioConverterNew, AudioConverterPrimeInfo, AudioConverterRef, AudioConverterSetProperty,
@@ -15,15 +15,11 @@ use objc2_core_audio_types::{
 };
 
 pub use crate::{AAC_FRAME_SAMPLES, AacConfig, AacStream};
+use crate::{AAC_LC, audio_specific_config};
 
-const AAC_LC: u32 = 2;
 const BIT_RATE_CONTROL_MODE: u32 = u32::from_be_bytes(*b"acbf");
 const BIT_RATE_CONSTANT: u32 = 0;
 const CHUNK_FRAMES: usize = 16_384;
-const SAMPLE_RATES: [u32; 13] = [
-    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
-    7_350,
-];
 
 struct Input<'a> {
     chunks: &'a mut dyn Iterator<Item = Vec<f32>>,
@@ -101,17 +97,6 @@ fn set_u32(converter: &Converter, property: u32, value: u32, what: &str) -> Resu
             NonNull::from(&mut value).cast(),
         )
     })
-}
-
-fn audio_specific_config(config: AacConfig) -> Result<Vec<u8>> {
-    let Some(rate) = SAMPLE_RATES.iter().position(|&r| r == config.sample_rate) else {
-        bail!(
-            "{} Hz has no AAC sampling frequency index",
-            config.sample_rate
-        );
-    };
-    let bits = (AAC_LC << 11) | ((rate as u32) << 7) | (config.channels << 3);
-    Ok((bits as u16).to_be_bytes().to_vec())
 }
 
 /// Encodes interleaved `f32` samples with Apple's AAC-LC encoder. `samples.len()` must be a

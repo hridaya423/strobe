@@ -22,6 +22,27 @@ pub mod x264;
 
 pub const AAC_FRAME_SAMPLES: u32 = 1024;
 
+#[cfg(any(windows, target_os = "macos"))]
+const AAC_LC: u32 = 2;
+
+#[cfg(any(windows, target_os = "macos"))]
+const SAMPLE_RATES: [u32; 13] = [
+    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
+    7_350,
+];
+
+#[cfg(any(windows, target_os = "macos"))]
+fn audio_specific_config(config: AacConfig) -> Result<Vec<u8>> {
+    let Some(rate) = SAMPLE_RATES.iter().position(|&r| r == config.sample_rate) else {
+        anyhow::bail!(
+            "{} Hz has no AAC sampling frequency index",
+            config.sample_rate
+        );
+    };
+    let bits = (AAC_LC << 11) | ((rate as u32) << 7) | (config.channels << 3);
+    Ok((bits as u16).to_be_bytes().to_vec())
+}
+
 #[cfg(any(windows, target_os = "macos", test))]
 fn h264_profile_has_chroma_format(profile: u8) -> bool {
     matches!(
@@ -228,7 +249,20 @@ pub trait Encoder {
 
 #[cfg(test)]
 mod tests {
-    use super::h264_profile_has_chroma_format;
+    use super::{AacConfig, audio_specific_config, h264_profile_has_chroma_format};
+
+    #[test]
+    fn the_audio_specific_config_packs_profile_rate_index_and_channels() {
+        let config = |sample_rate, channels| AacConfig {
+            sample_rate,
+            channels,
+            bit_rate: 128_000,
+        };
+        assert_eq!(audio_specific_config(config(48_000, 2)).unwrap(), [0x11, 0x90]);
+        assert_eq!(audio_specific_config(config(48_000, 1)).unwrap(), [0x11, 0x88]);
+        assert_eq!(audio_specific_config(config(44_100, 2)).unwrap(), [0x12, 0x10]);
+        assert!(audio_specific_config(config(47_000, 2)).is_err());
+    }
 
     #[test]
     fn high_profiles_carry_the_chroma_extension_and_baseline_main_extended_do_not() {
