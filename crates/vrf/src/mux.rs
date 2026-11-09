@@ -436,18 +436,7 @@ impl Muxer {
 
         let ftyp = self.ftyp();
         let plan = self.plan();
-        let mut wide = self.wide;
-        let mut moov = self.moov(wide, 0, &plan)?;
-        if !wide
-            && ftyp.len() as u64 + moov.len() as u64 + 8 + self.mdat_len + self.audio_len()
-                > u32::MAX as u64
-        {
-            wide = true;
-            moov = self.moov(true, 0, &plan)?;
-        }
-        let header_len = if wide { 16 } else { 8 };
-        let base = (ftyp.len() + moov.len() + header_len) as u64;
-        moov = self.moov(wide, base, &plan)?;
+        let (wide, moov) = self.header(&ftyp, &plan)?;
 
         let mdat_len = self.mdat_len + self.audio_len();
         let mut out = BufWriter::new(
@@ -479,6 +468,17 @@ impl Muxer {
         }
         out.flush()?;
         Ok(())
+    }
+
+    fn header(&self, ftyp: &[u8], plan: &Plan) -> Result<(bool, Vec<u8>)> {
+        let widest = self.moov(true, 0, plan)?.len() as u64;
+        let wide = self.wide
+            || ftyp.len() as u64 + widest + 16 + self.mdat_len + self.audio_len()
+                > u32::MAX as u64;
+        let header_len = if wide { 16 } else { 8 };
+        let moov_len = self.moov(wide, 0, plan)?.len();
+        let base = (ftyp.len() + moov_len + header_len) as u64;
+        Ok((wide, self.moov(wide, base, plan)?))
     }
 
     fn audio_len(&self) -> u64 {
@@ -1090,4 +1090,62 @@ fn full(typ: &[u8; 4], version: u8, flags: u32, body: impl FnOnce(&mut W)) -> Ve
         w.u32(u32::from(version) << 24 | flags);
         body(w);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_over_four_gib_with_audio_gets_wide_offsets() {
+        let dir = std::env::temp_dir().join(format!("vrf-mux-wide-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.mov");
+        let mut muxer = Muxer::create(&path, Container::Mov, 30).unwrap();
+        muxer
+            .start_chunk(StreamConfig {
+                codec: Codec::ProRes422,
+                width: 320,
+                height: 192,
+                colour: Colour::BT709,
+                config: Vec::new(),
+            })
+            .unwrap();
+        for i in 0..40 {
+            muxer
+                .write(&Sample {
+                    data: vec![0; 16],
+                    pts: i,
+                    dts: i,
+                    duration: 1,
+                    keyframe: true,
+                })
+                .unwrap();
+        }
+        muxer
+            .set_audio(AudioTrack {
+                codec: AudioCodec::Aac {
+                    audio_specific_config: vec![0x11, 0x90],
+                    max_packet_bytes: 8,
+                },
+                sample_rate: 48_000,
+                channels: 2,
+                priming: 0,
+                frames: 63 * 1024,
+                packets: vec![vec![0; 8]; 63],
+            })
+            .unwrap();
+        muxer.close_chunk();
+        muxer.mdat_len += u64::from(u32::MAX) - u64::from(muxer.sizes[0]);
+        muxer.sizes[0] = u32::MAX;
+
+        let ftyp = muxer.ftyp();
+        let plan = muxer.plan();
+        let (wide, moov) = muxer.header(&ftyp, &plan).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(wide);
+        assert!(moov.windows(4).any(|w| w == b"co64"));
+        assert!(!moov.windows(4).any(|w| w == b"stco"));
+    }
 }
