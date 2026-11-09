@@ -243,6 +243,7 @@ impl AudioTrack {
 }
 
 const INTERLEAVE_SECONDS: f64 = 0.5;
+const FINAL_BUFFER_BYTES: usize = 1 << 20;
 
 enum Piece {
     Video { from: u64, len: u64 },
@@ -452,12 +453,36 @@ impl Muxer {
         let plan = self.plan();
         let (wide, moov) = self.header(&ftyp, &plan)?;
 
+        let mut part_name: OsString = self.path.as_os_str().to_owned();
+        part_name.push(".part");
+        let part = PathBuf::from(part_name);
+        let written = self
+            .write_final(&part, &ftyp, &moov, wide, &plan)
+            .and_then(|()| {
+                fs::rename(&part, &self.path)
+                    .with_context(|| format!("rename {part:?} to {:?}", self.path))
+            });
+        if written.is_err() {
+            let _ = fs::remove_file(&part);
+        }
+        written
+    }
+
+    fn write_final(
+        &self,
+        part: &Path,
+        ftyp: &[u8],
+        moov: &[u8],
+        wide: bool,
+        plan: &Plan,
+    ) -> Result<()> {
         let mdat_len = self.mdat_len + self.audio_len();
-        let mut out = BufWriter::new(
-            File::create(&self.path).with_context(|| format!("create {:?}", self.path))?,
+        let mut out = BufWriter::with_capacity(
+            FINAL_BUFFER_BYTES,
+            File::create(part).with_context(|| format!("create {part:?}"))?,
         );
-        out.write_all(&ftyp)?;
-        out.write_all(&moov)?;
+        out.write_all(ftyp)?;
+        out.write_all(moov)?;
         if wide {
             out.write_all(&1u32.to_be_bytes())?;
             out.write_all(b"mdat")?;
@@ -471,7 +496,12 @@ impl Muxer {
             match *piece {
                 Piece::Video { from, len } => {
                     video.seek(SeekFrom::Start(from))?;
-                    io::copy(&mut (&mut video).take(len), &mut out)?;
+                    let copied = io::copy(&mut (&mut video).take(len), &mut out)?;
+                    ensure!(
+                        copied == len,
+                        "{:?} holds {copied} of the {len} sample bytes at {from}",
+                        self.tmp_path
+                    );
                 }
                 Piece::Audio { first, last } => {
                     for packet in &self.audio.as_ref().unwrap().packets[first..last] {
@@ -1157,6 +1187,53 @@ mod tests {
         assert!(error.contains("runs past"), "{error}");
         muxer.set_audio(track(1024, 1024)).unwrap();
         drop(muxer);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn one_frame_muxer(path: &Path) -> Muxer {
+        let mut muxer = Muxer::create(path, Container::Mov, 30).unwrap();
+        muxer
+            .start_chunk(StreamConfig {
+                codec: Codec::ProRes422,
+                width: 320,
+                height: 192,
+                colour: Colour::BT709,
+                config: Vec::new(),
+            })
+            .unwrap();
+        muxer
+            .write(&Sample {
+                data: vec![7; 64],
+                pts: 0,
+                dts: 0,
+                duration: 1,
+                keyframe: true,
+            })
+            .unwrap();
+        muxer
+    }
+
+    #[test]
+    fn a_failed_finish_leaves_no_file_under_the_real_name() {
+        let dir = std::env::temp_dir().join(format!("vrf-mux-atomic-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.mov");
+
+        let mut broken = one_frame_muxer(&path);
+        broken.mdat.flush().unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&broken.tmp_path)
+            .unwrap()
+            .set_len(10)
+            .unwrap();
+        assert!(broken.finish().is_err());
+        assert!(!path.exists());
+        assert!(!dir.join("out.mov.part").exists());
+
+        one_frame_muxer(&path).finish().unwrap();
+        assert!(path.exists());
+        assert!(!dir.join("out.mov.part").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
