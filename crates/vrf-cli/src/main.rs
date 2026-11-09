@@ -354,6 +354,9 @@ fn start_daemon(cpu_raster: bool, socket: &Path) -> Option<Stream> {
     );
     let mut command = Process::new(std::env::current_exe().ok()?);
     command.args(["daemon", "--mode", mode]);
+    if vrf_blink::software_webgl() {
+        command.env(SOFTWARE_WEBGL, "1");
+    }
     let mut child = daemon::spawn_detached(&mut command).ok()?;
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
