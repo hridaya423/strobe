@@ -163,7 +163,11 @@ impl From<CodecArg> for Codec {
 fn parse_frames(text: &str) -> Result<RangeInclusive<u64>, String> {
     let (first, last) = text.split_once('-').unwrap_or((text, text));
     let number = |part: &str| part.parse::<u64>().map_err(|e| format!("{part:?}: {e}"));
-    Ok(number(first)?..=number(last)?)
+    let (first, last) = (number(first)?, number(last)?);
+    if first > last {
+        return Err(format!("frame {first} is after frame {last}"));
+    }
+    Ok(first..=last)
 }
 
 fn props(argument: Option<String>) -> Result<Option<String>> {
@@ -572,6 +576,17 @@ mod tests {
         let remotion = project("remotion", Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#));
         assert!(!render_args(&hyperframes, &[]).cpu_raster());
         assert_eq!(render_args(&remotion, &[]).cpu_raster(), cfg!(windows));
+    }
+
+    #[test]
+    fn frames_are_one_frame_or_an_ascending_range() {
+        assert_eq!(parse_frames("5"), Ok(5..=5));
+        assert_eq!(parse_frames("0-89"), Ok(0..=89));
+        assert_eq!(parse_frames("7-7"), Ok(7..=7));
+        assert!(parse_frames("5-3").is_err());
+        assert!(parse_frames("").is_err());
+        assert!(parse_frames("-5").is_err());
+        assert!(parse_frames("a-b").is_err());
     }
 
     #[test]
