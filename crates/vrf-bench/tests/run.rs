@@ -86,8 +86,11 @@ fn remotion_version_is_the_one_installed_in_the_project() {
     assert_eq!(installed_remotion(&project), None);
     assert_eq!(Engine::Remotion.version(&corpus), REMOTION);
 
-    std::fs::write(package.join("package.json"), r#"{"name":"remotion","version":"4.0.169"}"#)
-        .unwrap();
+    std::fs::write(
+        package.join("package.json"),
+        r#"{"name":"remotion","version":"4.0.169"}"#,
+    )
+    .unwrap();
     assert_eq!(installed_remotion(&project).as_deref(), Some("4.0.169"));
     assert_eq!(Engine::Remotion.version(&corpus), "4.0.169");
 
