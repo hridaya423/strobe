@@ -354,7 +354,7 @@ fn start_daemon(cpu_raster: bool, socket: &Path) -> Option<Stream> {
     }
     let mode = if cpu_raster { "reference" } else { "fast" };
     eprintln!(
-        "vrf: starting a {mode} daemon beside the running one; this render waits for it, later ones start warm"
+        "strobe: starting a {mode} daemon beside the running one; this render waits for it, later ones start warm"
     );
     let mut command = Process::new(std::env::current_exe().ok()?);
     command.args(["daemon", "--mode", mode]);
@@ -396,14 +396,14 @@ fn render_remote(
     let reply = daemon::call(
         stream,
         &request,
-        &mut |ahead| eprintln!("vrf: waiting for {ahead} render(s) ahead in the daemon"),
+        &mut |ahead| eprintln!("strobe: waiting for {ahead} render(s) ahead in the daemon"),
         &mut |frame, frames| show(frame, frames),
     )?;
     Ok(match reply {
         Reply::Rendered(report, _) => Some((*report).into()),
         Reply::RenderedHyperframes(report) => Some((*report).into()),
         Reply::Refused(reason) => {
-            eprintln!("vrf: the daemon refused this render ({reason}); rendering in this process");
+            eprintln!("strobe: the daemon refused this render ({reason}); rendering in this process");
             None
         }
         Reply::Gone | Reply::Pong => None,

@@ -508,7 +508,7 @@ pub fn serve(ui: &Ui, config: &Config) -> Result<()> {
     let mut renderer = Renderer::new(config.projects);
     renderer.prepare()?;
 
-    eprintln!("vrf daemon: ready on {}", config.socket.display());
+    eprintln!("strobe daemon: ready on {}", config.socket.display());
     let pending = Arc::new(AtomicUsize::new(0));
     let stopping = Arc::new(AtomicBool::new(false));
     let (jobs, queue) = mpsc::channel();
@@ -544,7 +544,7 @@ pub fn serve(ui: &Ui, config: &Config) -> Result<()> {
             break Ok(());
         }
         if let Err(error) = renderer.refill(ui) {
-            eprintln!("vrf daemon: cannot open a spare view: {error:#}");
+            eprintln!("strobe daemon: cannot open a spare view: {error:#}");
         }
     };
 
