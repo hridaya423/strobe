@@ -5,6 +5,11 @@
   const AHEAD_KEEP = 12;
   const BEHIND_KEEP = 2;
   const HEADER = 32;
+  const FRAME = 1;
+  const META = 2;
+  const FAILURE = 3;
+  const JPEG = 4;
+  const UNSEEN_PRESENTS = 8;
   let pixel = null;
   const placeholder = () => {
     if (!pixel) {
@@ -79,6 +84,7 @@
       return Promise.resolve(cached);
     }
     clip.last = k;
+    trim(clip, k);
     return new Promise((resolve, reject) => {
       if (!clip.waiters.has(k)) clip.waiters.set(k, []);
       clip.waiters.get(k).push({ resolve, reject });
@@ -161,10 +167,10 @@
 
   globalThis.__vrf_video_push = (buffer) => {
     const kind = new DataView(buffer).getUint32(0, true);
-    if (kind === 1) onFrame(buffer);
-    else if (kind === 3) onFailure(buffer);
-    else if (kind === 4) onJpeg(buffer);
-    else onMeta(buffer);
+    if (kind === FRAME) onFrame(buffer);
+    else if (kind === FAILURE) onFailure(buffer);
+    else if (kind === JPEG) onJpeg(buffer);
+    else if (kind === META) onMeta(buffer);
   };
 
   const VERTEX = `#version 300 es
@@ -259,12 +265,27 @@
   };
 
   const nativeCreateObjectURL = URL.createObjectURL.bind(URL);
+  const nativeRevokeObjectURL = URL.revokeObjectURL.bind(URL);
   const tagged = new WeakMap();
   const sources = new Map();
+  let presents = 0;
+  const shownSources = () => {
+    const urls = new Set();
+    for (const img of document.images) urls.add(img.src);
+    return urls;
+  };
+  const forget = (url, shownUrls) => {
+    const source = sources.get(url);
+    if (source?.presented && !shownUrls.has(url)) sources.delete(url);
+  };
   URL.createObjectURL = (object) => {
     const url = nativeCreateObjectURL(object);
-    if (tagged.has(object)) sources.set(url, tagged.get(object));
+    if (tagged.has(object)) sources.set(url, { ...tagged.get(object), presented: false, born: presents });
     return url;
+  };
+  URL.revokeObjectURL = (url) => {
+    if (sources.has(url)) forget(url, shownSources());
+    return nativeRevokeObjectURL(url);
   };
 
   const pool = [];
@@ -289,10 +310,14 @@
       surface.canvas.remove();
       pool.push(surface);
     }
+    presents++;
     const live = [];
+    const shownUrls = new Set();
     for (const img of document.images) {
+      shownUrls.add(img.src);
       const source = sources.get(img.src);
       if (!source) continue;
+      source.presented = true;
       const surface = pool.pop() ?? createSurface();
       const { canvas } = surface;
       canvas.className = img.className;
@@ -303,6 +328,10 @@
       live.push(surface);
     }
     shown = live;
+    for (const [url, source] of sources) {
+      if (source.presented) forget(url, shownUrls);
+      else if (presents - source.born > UNSEEN_PRESENTS) sources.delete(url);
+    }
     return live.length;
   };
 
@@ -317,6 +346,7 @@
     swsConfig,
     frame,
     clips,
+    sources,
     createSurface,
   };
 })();
