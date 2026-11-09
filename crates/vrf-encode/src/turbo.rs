@@ -206,7 +206,10 @@ fn run_lane(
         if packets.is_empty() {
             return;
         }
-        if let (LaneEncoder::VideoToolbox(_), Ok(info)) = (encoder, encoder.stream_info()) {
+        if matches!(encoder, LaneEncoder::VideoToolbox(_))
+            && shared.video_toolbox_config.get().is_none()
+            && let Ok(info) = encoder.stream_info()
+        {
             let _ = shared.video_toolbox_config.set(info.config);
         }
         counters.backlog.fetch_sub(packets.len(), Ordering::SeqCst);
