@@ -957,11 +957,10 @@ fn aac_round_trip(container: Container, name: &str) {
         let found = centroid(&decoded, expected as usize, 2_048);
         eprintln!("click {k}: audio {found:.1}, video frame {expected:.1}");
         assert!(
-            (found - expected).abs() < 1024.0,
+            (found - expected).abs() < 64.0,
             "click {k} is {} samples from its video frame",
             found - expected
         );
-        assert!((found - expected).abs() < 64.0);
     }
 }
 
@@ -1029,13 +1028,13 @@ fn ffmpeg_and_avfoundation_decode_the_same_audio_in_mov() {
     decoders_agree(Container::Mov, "av-mov.mov");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn audio_edit_list_skips_exactly_the_priming() {
     let dir = Dir::new("elst");
     let video = av_fixture(&dir, 150);
     let input = click_track(5);
-    let stream = vrf_encode::audiotoolbox::encode_aac(
+    let stream = encode_aac(
         &input,
         vrf_encode::AacConfig {
             sample_rate: RATE,
@@ -1071,7 +1070,7 @@ fn audio_edit_list_skips_exactly_the_priming() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn audio_and_video_chunks_alternate_by_time() {
     let dir = Dir::new("interleave");

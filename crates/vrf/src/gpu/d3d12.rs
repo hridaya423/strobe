@@ -136,7 +136,7 @@ impl Gpu {
         })
     }
 
-    /// Every D3D12 adapter by name and LUID, for `vrf doctor`.
+    /// Every D3D12 adapter by name and LUID, to pick one with [`Gpu::with_luid`].
     pub fn adapters() -> Vec<(String, Luid)> {
         pollster::block_on(instance().enumerate_adapters(wgpu::Backends::DX12))
             .iter()
