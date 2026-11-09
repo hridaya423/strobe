@@ -3,7 +3,6 @@
   "private": true,
   "dependencies": {
     "hyperframes": "0.8.216",
-    "kinetograph": "0.2.5",
     "@remotion/cli": "4.0.539",
     "@remotion/bundler": "4.0.539",
     "@remotion/renderer": "4.0.539",

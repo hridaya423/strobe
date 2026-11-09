@@ -6,9 +6,6 @@ use crate::corpus::{Corpus, Framework, bench_dir};
 pub enum Engine {
     Hyperframes,
     Remotion,
-    Kinetograph,
-    #[value(name = "kinetograph-4")]
-    Kinetograph4,
     /// This repository's `vrf`, built with `cargo build --release -p vrf-cli`.
     Vrf,
 }
@@ -23,8 +20,6 @@ impl Engine {
         match self {
             Engine::Hyperframes => "hyperframes",
             Engine::Remotion => "remotion",
-            Engine::Kinetograph => "kinetograph",
-            Engine::Kinetograph4 => "kinetograph-4",
             Engine::Vrf => "vrf",
         }
     }
@@ -33,7 +28,6 @@ impl Engine {
         match self {
             Engine::Hyperframes => "0.8.216",
             Engine::Remotion => "4.0.539",
-            Engine::Kinetograph | Engine::Kinetograph4 => "0.2.5",
             Engine::Vrf => env!("CARGO_PKG_VERSION"),
         }
     }
@@ -42,7 +36,6 @@ impl Engine {
         match self {
             Engine::Hyperframes => framework == Framework::Hyperframes,
             Engine::Remotion => framework == Framework::Remotion,
-            Engine::Kinetograph | Engine::Kinetograph4 => true,
             Engine::Vrf => true,
         }
     }
@@ -94,29 +87,6 @@ impl Engine {
                     ]);
                 }
                 argv.extend(["-o".into(), out]);
-                Invocation {
-                    cwd: corpus.project_dir(),
-                    argv,
-                }
-            }
-            Engine::Kinetograph | Engine::Kinetograph4 => {
-                let workers = if self == Engine::Kinetograph {
-                    "1"
-                } else {
-                    "4"
-                };
-                let mut argv = vec![
-                    s(bin("kinetograph")),
-                    "render".into(),
-                    s(corpus.entry_path()),
-                    "-o".into(),
-                    out,
-                    "--concurrency".into(),
-                    workers.into(),
-                ];
-                if let Some(comp) = &corpus.composition {
-                    argv.extend(["--comp".into(), comp.clone()]);
-                }
                 Invocation {
                     cwd: corpus.project_dir(),
                     argv,
