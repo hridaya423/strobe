@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use vrf::mux::{Container, Muxer};
 use vrf::sink::Sink;
 use vrf_encode::nvenc::{NvencEncoder, Options, Preset, RateControl, Tuning, nvidia_device};
@@ -105,11 +105,18 @@ pub fn main() -> Result<()> {
         sink.write(&encoder, packets)?;
         count += 1;
     }
+    let status = child.wait()?;
+    ensure!(status.success(), "ffmpeg exited with {status} after {count} frames");
+    if let Some(frames) = frames {
+        ensure!(
+            count == frames,
+            "ffmpeg delivered {count} of the {frames} frames asked for"
+        );
+    }
     let packets = encoder.flush()?;
     sink.write(&encoder, packets)?;
     let seconds = started.elapsed().as_secs_f64();
     sink.into_muxer().finish()?;
-    child.wait()?;
     let bytes = std::fs::metadata(&out)?.len();
     println!(
         "{options:?} frames {count} {seconds:.2}s ({:.1} fps in) {bytes} bytes {:.2} Mb/s",

@@ -90,7 +90,12 @@ fn parse_args() -> Result<Args> {
                     .collect::<Result<_>>()?
             }
             "--frames" => args.frames = value()?.parse()?,
-            "--runs" => args.runs = value()?.parse()?,
+            "--runs" => {
+                args.runs = value()?.parse()?;
+                if args.runs == 0 {
+                    bail!("--runs must be at least 1");
+                }
+            }
             "--pool" => args.pool = value()?.parse()?,
             other => bail!("unknown flag {other}"),
         }
