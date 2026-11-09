@@ -15,7 +15,7 @@ use vrf::audio::{HyperframesTrack, hyperframes_clips, mix};
 use vrf_encode::{Codec, Rational};
 
 use super::{
-    PerFrame, Progress, StageStats, add_track, encode_track, audio_samples, cache_dir, hash_tree, short_hex,
+    PerFrame, Progress, StageStats, add_track, encode_track, audio_samples, cache_dir, contained_join, hash_tree, short_hex,
     since,
 };
 use crate::driver::{Capture, Config, Plan, Runs, Warm, render_runs};
@@ -474,7 +474,8 @@ fn static_frames(probe: &mut View) -> Result<Vec<u64>> {
 
 fn track_file(project: &Path) -> impl Fn(&str) -> Result<PathBuf> + '_ {
     move |src| {
-        let path = project.join(src);
+        let path = contained_join(project, src)
+            .with_context(|| format!("audio source {src} is outside the project"))?;
         ensure!(path.is_file(), "audio source {src} is not in the project");
         Ok(path)
     }
@@ -639,4 +640,26 @@ pub fn render(
         skipped: stats.skipped,
         capture_retries: stats.retries,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_audio_source_must_stay_inside_the_project() -> Result<()> {
+        let outer = std::env::temp_dir().join(format!("vrf-track-file-{}", std::process::id()));
+        let project = outer.join("project");
+        fs::create_dir_all(project.join("assets"))?;
+        fs::write(project.join("assets/a.mp3"), "")?;
+        fs::write(outer.join("secret.mp3"), "")?;
+        let resolve = track_file(&project);
+        assert_eq!(resolve("assets/a.mp3")?, project.join("assets/a.mp3"));
+        assert!(resolve("../secret.mp3").is_err());
+        assert!(resolve("assets/../../secret.mp3").is_err());
+        let absolute = outer.join("secret.mp3");
+        assert!(resolve(absolute.to_str().unwrap()).is_err());
+        fs::remove_dir_all(&outer)?;
+        Ok(())
+    }
 }

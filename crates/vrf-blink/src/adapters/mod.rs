@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -144,6 +144,18 @@ pub(crate) fn hash_tree(context: &mut digest::Context, root: &Path, dir: &Path) 
     Ok(())
 }
 
+pub(crate) fn contained_join(root: &Path, relative: &str) -> Option<PathBuf> {
+    let mut path = root.to_owned();
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(part) => path.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(path)
+}
+
 pub(crate) fn short_hex(context: digest::Context) -> String {
     context.finish().as_ref()[..8]
         .iter()
@@ -212,6 +224,16 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn contained_join_refuses_parent_and_absolute_paths() {
+        let root = Path::new("/project");
+        assert_eq!(contained_join(root, "a/b.mp3"), Some(root.join("a/b.mp3")));
+        assert_eq!(contained_join(root, "./a.mp3"), Some(root.join("a.mp3")));
+        assert_eq!(contained_join(root, "../a.mp3"), None);
+        assert_eq!(contained_join(root, "a/../../a.mp3"), None);
+        assert_eq!(contained_join(root, "/etc/passwd"), None);
     }
 
     #[test]

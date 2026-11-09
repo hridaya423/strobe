@@ -19,7 +19,7 @@ use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
 use super::hyperframes;
 use super::{
-    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, hash_tree, short_hex,
+    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, contained_join, hash_tree, short_hex,
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
@@ -565,9 +565,13 @@ fn project_file(url: &str, roots: &[&Path]) -> Result<PathBuf> {
         .map(|rest| rest.split(['?', '#']).next().unwrap_or_default())
         .and_then(|rest| percent_decode_str(rest).decode_utf8().ok())
         .with_context(|| format!("audio source {url} is not a file of the project"))?;
+    ensure!(
+        contained_join(Path::new(""), &relative).is_some(),
+        "audio source {url} is outside the project"
+    );
     roots
         .iter()
-        .map(|root| root.join(&*relative))
+        .filter_map(|root| contained_join(root, &relative))
         .find(|path| path.is_file())
         .with_context(|| format!("audio source {url} is not in the project or its bundle"))
 }
@@ -1026,6 +1030,30 @@ mod tests {
         assert!(!known_webgl(&project, None, "Shader"));
         fs::remove_dir_all(&found.dir)?;
         fs::remove_dir_all(&project)?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_audio_url_must_stay_inside_the_project() -> Result<()> {
+        let outer = std::env::temp_dir().join(format!("vrf-project-file-{}", std::process::id()));
+        let project = outer.join("project");
+        fs::create_dir_all(project.join("public"))?;
+        fs::write(project.join("public/a.mp3"), "")?;
+        fs::write(outer.join("secret.mp3"), "")?;
+        let roots = [project.as_path()];
+        assert_eq!(
+            project_file("vrf://project/public/a.mp3?x=1", &roots)?,
+            project.join("public/a.mp3")
+        );
+        assert!(project_file("vrf://project/../secret.mp3", &roots).is_err());
+        assert!(project_file("vrf://project/%2E%2E/secret.mp3", &roots).is_err());
+        let secret = outer.join("secret.mp3");
+        let absolute = percent_encoding::utf8_percent_encode(
+            secret.to_str().unwrap(),
+            percent_encoding::NON_ALPHANUMERIC,
+        );
+        assert!(project_file(&format!("vrf://project/{absolute}"), &roots).is_err());
+        fs::remove_dir_all(&outer)?;
         Ok(())
     }
 }
