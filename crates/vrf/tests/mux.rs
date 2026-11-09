@@ -105,7 +105,7 @@ const PRORES: &[&str] = &[
     "-c:v",
     "prores_ks",
     "-profile:v",
-    "3",
+    "2",
     "-pix_fmt",
     "yuv422p10le",
 ];
@@ -476,7 +476,7 @@ fn prores_in_mov_round_trips() {
     let dir = Dir::new("prores");
     let src = dir.file("src.mov");
     encode(&src, 24, "30", PRORES);
-    let (config, samples) = read_chunk(&src, Codec::ProRes422Hq).unwrap();
+    let (config, samples) = read_chunk(&src, Codec::ProRes422).unwrap();
     assert_eq!(samples.len(), 24);
     let out = dir.file("out.mov");
     mux(
@@ -489,7 +489,7 @@ fn prores_in_mov_round_trips() {
 
     let s = stream(&out);
     assert_eq!(s["codec_name"], "prores");
-    assert_eq!(s["codec_tag_string"], "apch");
+    assert_eq!(s["codec_tag_string"], "apcn");
     assert_eq!(s["nb_read_frames"], "24");
     assert_eq!(frame_pts(&out), (0..24).collect::<Vec<_>>());
     let ftyp = fs::read(&out).unwrap();
@@ -1093,50 +1093,5 @@ fn audio_and_video_chunks_alternate_by_time() {
     assert!(
         worst_lag < 1.01,
         "a packet sits {worst_lag} s behind the file position"
-    );
-}
-
-#[test]
-fn pcm_in_mov_round_trips_exactly() {
-    let dir = Dir::new("pcm");
-    let src = dir.file("src.mov");
-    encode(&src, 60, "30", PRORES);
-    let (config, samples) = read_chunk(&src, Codec::ProRes422Hq).unwrap();
-    let input: Vec<f32> = (0..2 * RATE as usize * 2)
-        .map(|i| ((i / 2) as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin() * 0.9)
-        .collect();
-    let out = dir.file("out.mov");
-    mux_with_audio(
-        &out,
-        Container::Mov,
-        (config, retimed(&samples, 0, 1)),
-        AudioTrack::pcm_s16le(&input, RATE, 2),
-    )
-    .unwrap();
-
-    let a = audio_stream(&out);
-    assert_eq!(a["codec_name"], "pcm_s16le");
-    assert_eq!(a["codec_tag_string"], "sowt");
-    assert_eq!(a["duration"].parse::<f64>().unwrap(), 2.0);
-    decodes_cleanly(&out);
-    let decoded = decode_f32(&out);
-    assert_eq!(decoded.len(), input.len());
-    for (d, i) in decoded.iter().zip(&input) {
-        assert_eq!(*d, (i * 32768.0).round().clamp(-32768.0, 32767.0) / 32768.0);
-    }
-    #[cfg(target_os = "macos")]
-    assert_eq!(avfoundation_audio(&out, &dir), decoded);
-}
-
-#[test]
-fn pcm_is_only_allowed_in_mov() {
-    let dir = Dir::new("pcm-mp4");
-    let video = av_fixture(&dir, 30);
-    let mut muxer = Muxer::create(&dir.file("out.mp4"), Container::Mp4, 30).unwrap();
-    muxer.start_chunk(video.0).unwrap();
-    assert!(
-        muxer
-            .set_audio(AudioTrack::pcm_s16le(&[0.0; 4], RATE, 2))
-            .is_err()
     );
 }

@@ -16,7 +16,6 @@ pub enum Codec {
     H264,
     Hevc,
     Av1,
-    ProRes422Hq,
     ProRes422,
 }
 
@@ -26,7 +25,6 @@ impl Codec {
             Codec::H264 => b"avc1",
             Codec::Hevc => b"hvc1",
             Codec::Av1 => b"av01",
-            Codec::ProRes422Hq => b"apch",
             Codec::ProRes422 => b"apcn",
         }
     }
@@ -36,7 +34,7 @@ impl Codec {
             Codec::H264 => Some(b"avcC"),
             Codec::Hevc => Some(b"hvcC"),
             Codec::Av1 => Some(b"av1C"),
-            Codec::ProRes422Hq | Codec::ProRes422 => None,
+            Codec::ProRes422 => None,
         }
     }
 }
@@ -167,12 +165,9 @@ pub enum AudioCodec {
         audio_specific_config: Vec<u8>,
         max_packet_bytes: u32,
     },
-    /// 16-bit little-endian PCM (`sowt`), MOV only.
-    PcmS16Le,
 }
 
-/// A complete audio track. AAC `packets` hold one AAC frame of 1024 samples each. PCM `packets`
-/// hold any whole number of interleaved sample frames.
+/// A complete audio track. `packets` hold one AAC frame of 1024 samples each.
 ///
 /// `priming` samples at the start of the decoded stream are hidden by an edit list, and the
 /// track ends after `frames` samples more.
@@ -203,42 +198,8 @@ impl From<&vrf_encode::AacStream> for AudioTrack {
 }
 
 impl AudioTrack {
-    /// Quantises interleaved `f32` samples to 16 bits by rounding, clipping at full scale.
-    pub fn pcm_s16le(samples: &[f32], sample_rate: u32, channels: u16) -> AudioTrack {
-        let bytes = samples
-            .iter()
-            .flat_map(|&v| ((v * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes())
-            .collect();
-        AudioTrack {
-            codec: AudioCodec::PcmS16Le,
-            sample_rate,
-            channels,
-            priming: 0,
-            frames: (samples.len() / usize::from(channels)) as u64,
-            packets: vec![bytes],
-        }
-    }
-
-    fn pcm_frame_bytes(&self) -> usize {
-        2 * usize::from(self.channels)
-    }
-
-    fn packet_frames(&self, packet: &[u8]) -> u64 {
-        match self.codec {
-            AudioCodec::Aac { .. } => u64::from(vrf_encode::AAC_FRAME_SAMPLES),
-            AudioCodec::PcmS16Le => (packet.len() / self.pcm_frame_bytes()) as u64,
-        }
-    }
-
-    fn packet_units(&self, packet: &[u8]) -> u32 {
-        match self.codec {
-            AudioCodec::Aac { .. } => 1,
-            AudioCodec::PcmS16Le => self.packet_frames(packet) as u32,
-        }
-    }
-
     fn media_frames(&self) -> u64 {
-        self.packets.iter().map(|p| self.packet_frames(p)).sum()
+        self.packets.len() as u64 * u64::from(vrf_encode::AAC_FRAME_SAMPLES)
     }
 }
 
@@ -339,17 +300,6 @@ impl Muxer {
             audio.frames,
             audio.media_frames()
         );
-        if audio.codec == AudioCodec::PcmS16Le {
-            ensure!(
-                self.container == Container::Mov,
-                "PCM audio is only allowed in a MOV container"
-            );
-            let whole = audio
-                .packets
-                .iter()
-                .all(|p| p.len() % audio.pcm_frame_bytes() == 0);
-            ensure!(whole, "PCM packet is not whole sample frames");
-        }
         self.audio = Some(audio);
         Ok(())
     }
@@ -573,10 +523,9 @@ impl Muxer {
         let slice_frames = (INTERLEAVE_SECONDS * f64::from(audio.sample_rate)) as u64;
         let mut sound: Vec<(f64, Chunk, usize, usize)> = Vec::new();
         let (mut first, mut position, mut frames, mut units) = (0usize, 0u64, 0u64, 0u32);
-        for (i, packet) in audio.packets.iter().enumerate() {
-            let packet_frames = audio.packet_frames(packet);
-            frames += packet_frames;
-            units += audio.packet_units(packet);
+        for i in 0..audio.packets.len() {
+            frames += u64::from(vrf_encode::AAC_FRAME_SAMPLES);
+            units += 1;
             if frames >= slice_frames || i + 1 == audio.packets.len() {
                 let at = position.saturating_sub(u64::from(audio.priming)) as f64
                     / f64::from(audio.sample_rate);
@@ -794,28 +743,19 @@ impl Muxer {
         let stsd = full(b"stsd", 0, 0, |w| {
             w.u32(1).bytes(&audio_entry(audio, self.container));
         });
-        let aac = matches!(audio.codec, AudioCodec::Aac { .. });
         let stts = full(b"stts", 0, 0, |w| {
-            if aac {
-                w.u32(1)
-                    .u32(audio.packets.len() as u32)
-                    .u32(vrf_encode::AAC_FRAME_SAMPLES);
-            } else {
-                w.u32(1).u32(media).u32(1);
-            }
+            w.u32(1)
+                .u32(audio.packets.len() as u32)
+                .u32(vrf_encode::AAC_FRAME_SAMPLES);
         });
         let stsz = full(b"stsz", 0, 0, |w| {
-            if aac {
-                w.u32(0).u32(audio.packets.len() as u32);
-                for packet in &audio.packets {
-                    w.u32(packet.len() as u32);
-                }
-            } else {
-                w.u32(audio.pcm_frame_bytes() as u32).u32(media);
+            w.u32(0).u32(audio.packets.len() as u32);
+            for packet in &audio.packets {
+                w.u32(packet.len() as u32);
             }
         });
         let (stsc, stco) = chunk_tables(&plan.audio, wide, base)?;
-        let roll = if aac {
+        let roll = {
             let sgpd = full(b"sgpd", 1, 0, |w| {
                 w.bytes(b"roll").u32(2).u32(1).i16(-1);
             });
@@ -826,8 +766,6 @@ impl Muxer {
                     .u32(1);
             });
             [sgpd, sbgp].concat()
-        } else {
-            Vec::new()
         };
         let stbl = bx(b"stbl", |w| {
             w.bytes(&stsd)
@@ -963,28 +901,18 @@ fn lcm(a: u32, b: u32) -> Result<u32> {
 }
 
 fn audio_entry(audio: &AudioTrack, container: Container) -> Vec<u8> {
-    let aac = match &audio.codec {
-        AudioCodec::Aac {
-            audio_specific_config,
-            max_packet_bytes,
-        } => {
-            let bytes: u64 = audio.packets.iter().map(|p| p.len() as u64).sum();
-            let rate = u64::from(audio.sample_rate);
-            let average = (bytes * 8 * rate / audio.media_frames()) as u32;
-            let maximum = (u64::from(*max_packet_bytes) * 8 * rate
-                / u64::from(vrf_encode::AAC_FRAME_SAMPLES)) as u32;
-            Some(esds(
-                audio_specific_config,
-                *max_packet_bytes,
-                maximum,
-                average,
-            ))
-        }
-        AudioCodec::PcmS16Le => None,
-    };
-    let quicktime = aac.is_some() && container == Container::Mov;
-    let entry = if aac.is_some() { b"mp4a" } else { b"sowt" };
-    bx(entry, |w| {
+    let AudioCodec::Aac {
+        audio_specific_config,
+        max_packet_bytes,
+    } = &audio.codec;
+    let bytes: u64 = audio.packets.iter().map(|p| p.len() as u64).sum();
+    let rate = u64::from(audio.sample_rate);
+    let average = (bytes * 8 * rate / audio.media_frames()) as u32;
+    let maximum =
+        (u64::from(*max_packet_bytes) * 8 * rate / u64::from(vrf_encode::AAC_FRAME_SAMPLES)) as u32;
+    let esds = esds(audio_specific_config, *max_packet_bytes, maximum, average);
+    let quicktime = container == Container::Mov;
+    bx(b"mp4a", |w| {
         w.bytes(&[0; 6]).u16(1);
         w.u16(u16::from(quicktime)).u16(0).u32(0);
         w.u16(audio.channels)
@@ -992,9 +920,6 @@ fn audio_entry(audio: &AudioTrack, container: Container) -> Vec<u8> {
             .u16(if quicktime { 0xfffe } else { 0 })
             .u16(0);
         w.u32(audio.sample_rate << 16);
-        let Some(esds) = aac else {
-            return;
-        };
         if quicktime {
             w.u32(vrf_encode::AAC_FRAME_SAMPLES).u32(0).u32(0).u32(2);
             w.bytes(&bx(b"wave", |w| {
