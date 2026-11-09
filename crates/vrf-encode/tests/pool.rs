@@ -77,7 +77,7 @@ fn buffers_are_tagged_bt709_video_range_left_chroma() {
 }
 
 #[test]
-fn pool_holds_48_stable_surfaces_and_blocks_when_exhausted() {
+fn pool_holds_48_stable_surfaces_and_try_acquire_reports_exhaustion() {
     let pool = PixelPool::new(640, 360, PixelFormat::Nv12).unwrap();
     let held: Vec<PoolBuffer> = (0..POOL_SIZE).map(|_| pool.acquire().unwrap()).collect();
     assert_eq!(POOL_SIZE, 48);
@@ -93,4 +93,27 @@ fn pool_holds_48_stable_surfaces_and_blocks_when_exhausted() {
         .map(PoolBuffer::surface_id)
         .collect();
     assert_eq!(again, ids);
+}
+
+#[test]
+fn acquire_blocks_while_the_pool_is_exhausted_and_wakes_when_a_buffer_returns() {
+    let pool = PixelPool::new(640, 360, PixelFormat::Nv12).unwrap();
+    let mut held: Vec<PoolBuffer> = (0..POOL_SIZE).map(|_| pool.acquire().unwrap()).collect();
+    let (acquired, waiting) = std::sync::mpsc::channel();
+    let waiter = pool.clone();
+    let thread = std::thread::spawn(move || {
+        let _buffer = waiter.acquire().unwrap();
+        acquired.send(()).unwrap();
+    });
+    assert!(
+        waiting
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err(),
+        "acquire returned while the pool was exhausted"
+    );
+    held.pop();
+    waiting
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("acquire never woke after a buffer returned");
+    thread.join().unwrap();
 }
