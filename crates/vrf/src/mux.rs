@@ -1141,8 +1141,10 @@ mod tests {
 
         let ftyp = muxer.ftyp();
         let plan = muxer.plan();
-        let (wide, moov) = muxer.header(&ftyp, &plan).unwrap();
+        let header = muxer.header(&ftyp, &plan);
+        drop(muxer);
         fs::remove_dir_all(&dir).unwrap();
+        let (wide, moov) = header.unwrap();
 
         assert!(wide);
         assert!(moov.windows(4).any(|w| w == b"co64"));
