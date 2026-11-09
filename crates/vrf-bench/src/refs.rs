@@ -26,6 +26,15 @@ pub fn build(c: &Corpus, keep: Sampling, out: &Path) -> Result<Report> {
     Ok(floor)
 }
 
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if std::fs::rename(from, to).is_err() {
+        std::fs::copy(from, to)
+            .with_context(|| format!("copying {} to {}", from.display(), to.display()))?;
+        std::fs::remove_file(from)?;
+    }
+    Ok(())
+}
+
 fn render(c: &Corpus, keep: Sampling, dest: &Path) -> Result<()> {
     let raw = std::env::temp_dir().join(format!(
         "vrf-refs-{}-{}",
@@ -104,7 +113,7 @@ fn render(c: &Corpus, keep: Sampling, dest: &Path) -> Result<()> {
     for (n, path) in frames {
         let index = n - first;
         if keep.keeps(index) {
-            std::fs::rename(&path, dest.join(format!("{index:06}.png")))?;
+            move_file(&path, &dest.join(format!("{index:06}.png")))?;
         }
     }
     std::fs::remove_dir_all(&raw)?;
