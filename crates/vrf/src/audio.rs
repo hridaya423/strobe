@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -409,7 +409,7 @@ pub fn remotion_clip_states(
         }
     }
 
-    let mut open: HashMap<&str, Run> = HashMap::new();
+    let mut open: BTreeMap<&str, Run> = BTreeMap::new();
     let mut done: Vec<(Run, u32, bool)> = Vec::new();
     for (index, assets) in frames.iter().enumerate() {
         let frame = index as u32;
@@ -578,5 +578,34 @@ mod tests {
             let error = decode(&clip(rate)).unwrap_err().to_string();
             assert!(error.contains("playback rate"), "rate {rate}: {error}");
         }
+    }
+
+    #[test]
+    fn clips_that_tie_on_start_and_source_keep_id_order() {
+        let assets: Vec<RemotionAsset> = (0..16)
+            .rev()
+            .map(|n| RemotionAsset {
+                kind: "audio".into(),
+                src: "a.wav".into(),
+                id: format!("id-{n:02}"),
+                frame: 0,
+                volume: f64::from(n) / 16.0 + 0.01,
+                media_frame: 0.0,
+                playback_rate: 1.0,
+                tone_frequency: None,
+                audio_start_frame: 0.0,
+            })
+            .collect();
+        let states =
+            remotion_clip_states(&[assets], 30.0, |url| Ok(PathBuf::from(url))).unwrap();
+        let volumes: Vec<f64> = states
+            .iter()
+            .map(|(clip, _)| match clip.volume {
+                Volume::Constant(v) => v,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(volumes.len(), 16);
+        assert!(volumes.windows(2).all(|pair| pair[0] < pair[1]), "{volumes:?}");
     }
 }
