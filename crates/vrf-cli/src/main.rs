@@ -403,7 +403,9 @@ fn render_remote(
         Reply::Rendered(report, _) => Some((*report).into()),
         Reply::RenderedHyperframes(report) => Some((*report).into()),
         Reply::Refused(reason) => {
-            eprintln!("strobe: the daemon refused this render ({reason}); rendering in this process");
+            eprintln!(
+                "strobe: the daemon refused this render ({reason}); rendering in this process"
+            );
             None
         }
         Reply::Gone | Reply::Pong => None,
