@@ -115,22 +115,31 @@ pub(crate) fn hash_tree(context: &mut digest::Context, root: &Path, dir: &Path) 
         .collect::<std::io::Result<_>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        if NOT_HASHED
-            .iter()
-            .any(|name| entry.file_name() == OsStr::new(name))
+        if dir == root
+            && NOT_HASHED
+                .iter()
+                .any(|name| entry.file_name() == OsStr::new(name))
         {
             continue;
         }
         let path = entry.path();
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
             hash_tree(context, root, &path)?;
             continue;
         }
-        let metadata = fs::metadata(&path)?;
-        let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
         context.update(path.strip_prefix(root)?.as_os_str().as_encoded_bytes());
-        context.update(&metadata.len().to_le_bytes());
-        context.update(&modified.to_le_bytes());
+        match fs::metadata(&path) {
+            Ok(metadata) => {
+                let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
+                context.update(&metadata.len().to_le_bytes());
+                context.update(&modified.to_le_bytes());
+            }
+            Err(error) if file_type.is_symlink() && error.kind() == std::io::ErrorKind::NotFound => {
+                context.update(fs::read_link(&path)?.as_os_str().as_encoded_bytes());
+            }
+            Err(error) => return Err(error).with_context(|| format!("stat {}", path.display())),
+        }
     }
     Ok(())
 }
@@ -169,5 +178,91 @@ pub(crate) fn add_track(muxer: &mut Muxer, stream: Option<AacStream>) -> Result<
     match stream {
         Some(stream) => muxer.set_audio(AudioTrack::from(&stream)),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Tree(PathBuf);
+
+    impl Tree {
+        fn new(name: &str) -> Tree {
+            let dir = std::env::temp_dir().join(format!("vrf-hash-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Tree(dir)
+        }
+
+        fn write(&self, relative: &str, text: &str) {
+            let path = self.0.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+
+        fn hash(&self) -> Result<String> {
+            let mut context = digest::Context::new(&digest::SHA256);
+            hash_tree(&mut context, &self.0, &self.0)?;
+            Ok(short_hex(context))
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn sources_under_a_nested_out_folder_change_the_hash() -> Result<()> {
+        let tree = Tree::new("nested-out");
+        tree.write("src/out/scene.tsx", "a");
+        tree.write("public/out/logo.svg", "a");
+        let before = tree.hash()?;
+        tree.write("src/out/scene.tsx", "changed");
+        let after_src = tree.hash()?;
+        assert_ne!(before, after_src);
+        tree.write("public/out/logo.svg", "changed");
+        assert_ne!(after_src, tree.hash()?);
+        Ok(())
+    }
+
+    #[test]
+    fn the_root_level_output_and_dependency_folders_do_not_change_the_hash() -> Result<()> {
+        let tree = Tree::new("root-out");
+        tree.write("src/index.ts", "a");
+        let before = tree.hash()?;
+        for name in NOT_HASHED {
+            tree.write(&format!("{name}/file"), "x");
+        }
+        assert_eq!(before, tree.hash()?);
+        tree.write("out/file", "changed again, longer");
+        assert_eq!(before, tree.hash()?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_lock_file_at_the_project_root_changes_the_hash() -> Result<()> {
+        let tree = Tree::new("lock");
+        tree.write("package.json", "{}");
+        tree.write("package-lock.json", "1");
+        let before = tree.hash()?;
+        tree.write("package-lock.json", "22");
+        assert_ne!(before, tree.hash()?);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_does_not_fail_the_hash() -> Result<()> {
+        let tree = Tree::new("dangling");
+        tree.write("index.html", "a");
+        std::os::unix::fs::symlink("missing-target", tree.0.join("link"))?;
+        let before = tree.hash()?;
+        fs::remove_file(tree.0.join("link"))?;
+        std::os::unix::fs::symlink("other-target", tree.0.join("link"))?;
+        assert_ne!(before, tree.hash()?);
+        Ok(())
     }
 }
