@@ -106,7 +106,10 @@ pub fn main() -> Result<()> {
         count += 1;
     }
     let status = child.wait()?;
-    ensure!(status.success(), "ffmpeg exited with {status} after {count} frames");
+    ensure!(
+        status.success(),
+        "ffmpeg exited with {status} after {count} frames"
+    );
     if let Some(frames) = frames {
         ensure!(
             count == frames,

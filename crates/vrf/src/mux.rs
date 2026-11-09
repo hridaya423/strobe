@@ -127,7 +127,12 @@ impl Sample {
             timebase.den
         );
         let ticks = |time: vrf_encode::Rational| -> Result<i64> {
-            ensure!(time.den != 0, "{}/{} s has a zero denominator", time.num, time.den);
+            ensure!(
+                time.den != 0,
+                "{}/{} s has a zero denominator",
+                time.num,
+                time.den
+            );
             let scaled = i128::from(time.num) * i128::from(timebase.den);
             let divisor = i128::from(time.den) * i128::from(timebase.num);
             ensure!(
@@ -1079,8 +1084,14 @@ mod tests {
         use vrf_encode::Rational;
         let timebase = Rational::new(1, 30);
         let zero_den = Sample::from_packet(packet_at(Rational::new(1, 0)), timebase, 1);
-        assert!(zero_den.unwrap_err().to_string().contains("zero denominator"));
-        let zero_base = Sample::from_packet(packet_at(Rational::new(1, 30)), Rational::new(0, 30), 1);
+        assert!(
+            zero_den
+                .unwrap_err()
+                .to_string()
+                .contains("zero denominator")
+        );
+        let zero_base =
+            Sample::from_packet(packet_at(Rational::new(1, 30)), Rational::new(0, 30), 1);
         assert!(zero_base.unwrap_err().to_string().contains("zero term"));
         let wide = Sample::from_packet(
             packet_at(Rational::new(i64::MAX, i64::MAX - 1)),
@@ -1088,7 +1099,8 @@ mod tests {
             1,
         );
         assert!(wide.unwrap_err().to_string().contains("not a whole tick"));
-        let ok = Sample::from_packet(packet_at(Rational::new(i64::MAX, i64::MAX)), timebase, 1).unwrap();
+        let ok =
+            Sample::from_packet(packet_at(Rational::new(i64::MAX, i64::MAX)), timebase, 1).unwrap();
         assert_eq!(ok.pts, 30);
     }
 
