@@ -558,7 +558,6 @@ impl Plan {
         self
     }
 
-    /// Cuts `run` until the buffers the window needs fit in the memory budget.
     /// The heaviest fixed ranges by `costs`, as many as the memory budget holds beside the
     /// window, to be claimed before the rest. A range claimed early waits whole in the reorder
     /// buffer, and the slowest range no longer runs alone at the end.
@@ -584,6 +583,7 @@ impl Plan {
         order
     }
 
+    /// Cuts `run` until the buffers the window needs fit in the memory budget.
     fn fit(mut self, frame_bytes: u64) -> Plan {
         let allowed = allowed(frame_bytes);
         if let Some(ranges) = self.ranges {

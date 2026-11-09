@@ -253,12 +253,11 @@ fn av1c(parameters: &[Vec<u8>], ten_bit: bool) -> Result<Vec<u8>> {
         if bits.take(1)? == 1 {
             bits.uvlc()?;
         }
+        ensure!(
+            bits.take(1)? == 0,
+            "AV1 decoder model info is not supported"
+        );
     }
-    let decoder_model = bits.take(1)?;
-    ensure!(
-        decoder_model == 0,
-        "AV1 decoder model info is not supported"
-    );
     bits.take(1)?;
     bits.take(5)?;
     bits.take(12)?;
@@ -371,10 +370,17 @@ mod tests {
     fn av1_record_reads_profile_level_and_tier() {
         let sequence = [0x0a, 0x06, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00];
         let record = config_record(Codec::Av1, false, &[sequence.to_vec()]).unwrap();
-        assert_eq!(&record[..4], [0x81, 8, 0x8c, 0]);
+        assert_eq!(&record[..4], [0x81, 4, 0x0c, 0]);
         assert_eq!(&record[4..], sequence);
         let ten = config_record(Codec::Av1, true, &[sequence.to_vec()]).unwrap();
-        assert_eq!(ten[2], 0xcc);
+        assert_eq!(ten[2], 0x4c);
+    }
+
+    #[test]
+    fn av1_record_skips_timing_info_before_the_level() {
+        let sequence = [0x0a, 0x0c, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x11];
+        let record = config_record(Codec::Av1, false, &[sequence.to_vec()]).unwrap();
+        assert_eq!(&record[..4], [0x81, 8, 0x8c, 0]);
     }
 
     #[test]

@@ -7,14 +7,15 @@ corpus=${CORPUS:-all}
 runs=${RUNS:-5}
 here=$(cd "$(dirname "$0")" && pwd)
 
-cd "$here/.." && cargo build --release -p vrf-bench -p vrf-cli -q
-rsync -a target/release/vrf-bench "$host:$root/bin/"
-ssh "$host" "mkdir -p \$HOME/$root/target/release/bundle"
-rsync -a target/release/strobe "$host:$root/target/release/"
+cd "$here/.." || exit 1
+cargo build --release -p vrf-bench -p vrf-cli -q || exit 1
+rsync -a target/release/vrf-bench "$host:$root/bin/" || exit 1
+ssh "$host" "mkdir -p \$HOME/$root/target/release/bundle" || exit 1
+rsync -a target/release/strobe "$host:$root/target/release/" || exit 1
 rsync -a --delete target/release/bundle/strobe.app "$host:$root/target/release/bundle/"
 
 case $corpus in
-  all | synth | synth-*) rsync -a --exclude external --exclude .cache "$here/corpus/" "$host:$root/bench/corpus/" ;;
+  all | synth | synth-*) rsync -a --exclude external --exclude .cache "$here/corpus/" "$host:$root/bench/corpus/" || exit 1 ;;
 esac
 
 status=0

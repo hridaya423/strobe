@@ -163,7 +163,11 @@ impl From<CodecArg> for Codec {
 fn parse_frames(text: &str) -> Result<RangeInclusive<u64>, String> {
     let (first, last) = text.split_once('-').unwrap_or((text, text));
     let number = |part: &str| part.parse::<u64>().map_err(|e| format!("{part:?}: {e}"));
-    Ok(number(first)?..=number(last)?)
+    let (first, last) = (number(first)?, number(last)?);
+    if first > last {
+        return Err(format!("frame {first} is after frame {last}"));
+    }
+    Ok(first..=last)
 }
 
 fn props(argument: Option<String>) -> Result<Option<String>> {
@@ -350,10 +354,13 @@ fn start_daemon(cpu_raster: bool, socket: &Path) -> Option<Stream> {
     }
     let mode = if cpu_raster { "reference" } else { "fast" };
     eprintln!(
-        "vrf: starting a {mode} daemon beside the running one; this render waits for it, later ones start warm"
+        "strobe: starting a {mode} daemon beside the running one; this render waits for it, later ones start warm"
     );
     let mut command = Process::new(std::env::current_exe().ok()?);
     command.args(["daemon", "--mode", mode]);
+    if vrf_blink::software_webgl() {
+        command.env(SOFTWARE_WEBGL, "1");
+    }
     let mut child = daemon::spawn_detached(&mut command).ok()?;
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -389,14 +396,16 @@ fn render_remote(
     let reply = daemon::call(
         stream,
         &request,
-        &mut |ahead| eprintln!("vrf: waiting for {ahead} render(s) ahead in the daemon"),
+        &mut |ahead| eprintln!("strobe: waiting for {ahead} render(s) ahead in the daemon"),
         &mut |frame, frames| show(frame, frames),
     )?;
     Ok(match reply {
         Reply::Rendered(report, _) => Some((*report).into()),
         Reply::RenderedHyperframes(report) => Some((*report).into()),
         Reply::Refused(reason) => {
-            eprintln!("vrf: the daemon refused this render ({reason}); rendering in this process");
+            eprintln!(
+                "strobe: the daemon refused this render ({reason}); rendering in this process"
+            );
             None
         }
         Reply::Gone | Reply::Pong => None,
@@ -569,6 +578,17 @@ mod tests {
         let remotion = project("remotion", Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#));
         assert!(!render_args(&hyperframes, &[]).cpu_raster());
         assert_eq!(render_args(&remotion, &[]).cpu_raster(), cfg!(windows));
+    }
+
+    #[test]
+    fn frames_are_one_frame_or_an_ascending_range() {
+        assert_eq!(parse_frames("5"), Ok(5..=5));
+        assert_eq!(parse_frames("0-89"), Ok(0..=89));
+        assert_eq!(parse_frames("7-7"), Ok(7..=7));
+        assert!(parse_frames("5-3").is_err());
+        assert!(parse_frames("").is_err());
+        assert!(parse_frames("-5").is_err());
+        assert!(parse_frames("a-b").is_err());
     }
 
     #[test]

@@ -176,7 +176,7 @@ A daemon keeps one raster mode, and WebGL on SwiftShader needs a daemon of its o
 | `--offline` | Fails on any http(s) request that `vrf.lock.json` does not pin. |
 | `--video` | Selects the decoder for embedded video: `native` (the default) or `remotion`. |
 | `--views`, `--run` | Override the measured number of parallel views and the frames per view. |
-| `--lead-in` | Sets the frames that a view paints and discards before its run. The default is 20. |
+| `--lead-in` | Sets the frames that a view paints and discards before its run. The default is 0. |
 | `--no-skip` | Renders every frame, including unchanged frames. |
 | `--no-turbo` | macOS only: encodes H.264 on VideoToolbox alone, without the libx264 lane. |
 | `--encoder-sessions` | Windows only: sets the number of NVENC sessions that share the encoding. The default is 1. |

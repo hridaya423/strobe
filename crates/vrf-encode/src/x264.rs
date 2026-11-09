@@ -303,6 +303,7 @@ impl X264Encoder {
     ) -> Result<()> {
         let EncoderFrame::PixelBuffer(buffer) = frame;
         let surface = buffer.surface();
+        let index = self.index(pts)?;
         unsafe { surface.lock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
         let plane = |index| {
             (
@@ -314,7 +315,7 @@ impl X264Encoder {
         let mut picture = unsafe { std::mem::zeroed::<Picture>() };
         unsafe { (self.api.picture_init)(&mut picture) };
         picture.kind = if keyframe { TYPE_IDR } else { TYPE_AUTO };
-        picture.pts = self.index(pts)?;
+        picture.pts = index;
         picture.csp = CSP_NV12;
         picture.planes = 2;
         picture.stride = [luma_stride, chroma_stride, 0, 0];
