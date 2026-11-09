@@ -158,7 +158,8 @@ pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
         samples.len(),
         config.channels
     );
-    encode_aac_chunks(std::iter::once(samples.to_vec()), config)
+    let chunk = INPUT_CHUNK_FRAMES * (config.channels as usize).max(1);
+    encode_aac_chunks(samples.chunks(chunk).map(<[f32]>::to_vec), config)
 }
 
 fn feed(

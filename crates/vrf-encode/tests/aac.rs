@@ -77,3 +77,25 @@ fn chunks_of_any_size_encode_to_the_same_stream_as_one_buffer() {
         );
     }
 }
+
+#[test]
+fn a_buffer_longer_than_one_chunk_encodes_like_a_single_chunk() {
+    let config = AacConfig {
+        sample_rate: 48_000,
+        channels: 2,
+        bit_rate: 128_000,
+    };
+    let samples = tone(100_000, 2);
+    let whole = encode_aac_chunks(std::iter::once(samples.clone()), config).unwrap();
+    assert_eq!(encode_aac(&samples, config).unwrap(), whole);
+}
+
+#[test]
+fn no_channels_is_an_error_not_a_panic() {
+    let config = AacConfig {
+        sample_rate: 48_000,
+        channels: 0,
+        bit_rate: 128_000,
+    };
+    assert!(encode_aac(&[], config).is_err());
+}

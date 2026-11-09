@@ -19,6 +19,7 @@ pub use crate::{AAC_FRAME_SAMPLES, AacConfig, AacStream};
 const AAC_LC: u32 = 2;
 const BIT_RATE_CONTROL_MODE: u32 = u32::from_be_bytes(*b"acbf");
 const BIT_RATE_CONSTANT: u32 = 0;
+const CHUNK_FRAMES: usize = 16_384;
 const SAMPLE_RATES: [u32; 13] = [
     96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
     7_350,
@@ -122,7 +123,8 @@ pub fn encode_aac(samples: &[f32], config: AacConfig) -> Result<AacStream> {
         samples.len(),
         config.channels
     );
-    encode_aac_chunks(std::iter::once(samples.to_vec()), config)
+    let chunk = CHUNK_FRAMES * (config.channels as usize).max(1);
+    encode_aac_chunks(samples.chunks(chunk).map(<[f32]>::to_vec), config)
 }
 
 /// Like [`encode_aac`], for samples that arrive in `chunks`. The iterator may block until the
