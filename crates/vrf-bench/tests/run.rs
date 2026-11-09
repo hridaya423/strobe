@@ -38,6 +38,7 @@ fn vrf_engine_renders_both_frameworks() {
         [
             "render".to_string(),
             remotion.project_dir().display().to_string(),
+            "--no-daemon".into(),
             "--composition".into(),
             "Main".into(),
             "--entry".into(),
@@ -53,7 +54,8 @@ fn vrf_engine_renders_both_frameworks() {
         invocation.argv[2],
         hyperframes.project_dir().display().to_string()
     );
-    assert_eq!(invocation.argv[3], "--hyperframes");
-    assert!(invocation.argv[4].ends_with("engines/node_modules/hyperframes"));
-    assert_eq!(invocation.argv[5..], ["-o", "/tmp/out.mp4"]);
+    assert_eq!(invocation.argv[3], "--no-daemon");
+    assert_eq!(invocation.argv[4], "--hyperframes");
+    assert!(invocation.argv[5].ends_with("engines/node_modules/hyperframes"));
+    assert_eq!(invocation.argv[6..], ["-o", "/tmp/out.mp4"]);
 }

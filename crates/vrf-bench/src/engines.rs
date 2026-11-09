@@ -72,7 +72,12 @@ impl Engine {
                 }
             }
             Engine::Vrf => {
-                let mut argv = vec![s(vrf_binary()), "render".into(), s(corpus.project_dir())];
+                let mut argv = vec![
+                    s(vrf_binary()),
+                    "render".into(),
+                    s(corpus.project_dir()),
+                    "--no-daemon".into(),
+                ];
                 if corpus.framework == Framework::Remotion {
                     argv.extend([
                         "--composition".into(),
