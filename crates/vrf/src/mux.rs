@@ -122,18 +122,25 @@ impl Sample {
         timebase: vrf_encode::Rational,
         duration: u32,
     ) -> Result<Sample> {
+        ensure!(
+            timebase.num != 0 && timebase.den != 0,
+            "timebase {}/{} has a zero term",
+            timebase.num,
+            timebase.den
+        );
         let ticks = |time: vrf_encode::Rational| -> Result<i64> {
+            ensure!(time.den != 0, "{}/{} s has a zero denominator", time.num, time.den);
             let scaled = i128::from(time.num) * i128::from(timebase.den);
-            let whole = scaled % i128::from(time.den * timebase.num) == 0;
+            let divisor = i128::from(time.den) * i128::from(timebase.num);
             ensure!(
-                whole,
+                scaled % divisor == 0,
                 "{}/{} s is not a whole tick of {}/{}",
                 time.num,
                 time.den,
                 timebase.num,
                 timebase.den
             );
-            i64::try_from(scaled / i128::from(time.den * timebase.num)).context("time out of range")
+            i64::try_from(scaled / divisor).context("time out of range")
         };
         Ok(Sample {
             pts: ticks(packet.pts)?,
@@ -1095,6 +1102,33 @@ fn full(typ: &[u8; 4], version: u8, flags: u32, body: impl FnOnce(&mut W)) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn packet_at(pts: vrf_encode::Rational) -> vrf_encode::Packet {
+        vrf_encode::Packet {
+            data: vec![0],
+            pts,
+            dts: pts,
+            keyframe: true,
+        }
+    }
+
+    #[test]
+    fn a_packet_time_with_a_zero_term_or_a_huge_product_is_an_error_not_a_panic() {
+        use vrf_encode::Rational;
+        let timebase = Rational::new(1, 30);
+        let zero_den = Sample::from_packet(packet_at(Rational::new(1, 0)), timebase, 1);
+        assert!(zero_den.unwrap_err().to_string().contains("zero denominator"));
+        let zero_base = Sample::from_packet(packet_at(Rational::new(1, 30)), Rational::new(0, 30), 1);
+        assert!(zero_base.unwrap_err().to_string().contains("zero term"));
+        let wide = Sample::from_packet(
+            packet_at(Rational::new(i64::MAX, i64::MAX - 1)),
+            Rational::new(i64::MAX, 30),
+            1,
+        );
+        assert!(wide.unwrap_err().to_string().contains("not a whole tick"));
+        let ok = Sample::from_packet(packet_at(Rational::new(i64::MAX, i64::MAX)), timebase, 1).unwrap();
+        assert_eq!(ok.pts, 30);
+    }
 
     #[test]
     fn a_file_over_four_gib_with_audio_gets_wide_offsets() {
