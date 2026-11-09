@@ -278,6 +278,11 @@ fn tempo_stages(rate: f64) -> Vec<String> {
 }
 
 fn decode(clip: &Clip) -> Result<Vec<f32>> {
+    ensure!(
+        clip.playback_rate.is_finite() && clip.playback_rate > 0.0,
+        "playback rate {} is not a positive number",
+        clip.playback_rate
+    );
     let source_channels = channels(&clip.src)?;
     if source_channels == 0 {
         return Ok(Vec::new());
@@ -548,4 +553,30 @@ pub fn hyperframes_clips(
         });
     }
     Ok(clips)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip(playback_rate: f64) -> Clip {
+        Clip {
+            src: PathBuf::from("/nonexistent/vrf-audio-test.wav"),
+            start: 0,
+            source_start: 0.0,
+            length: 48_000,
+            playback_rate,
+            volume: Volume::Constant(1.0),
+            looped: false,
+            mono_copy: false,
+        }
+    }
+
+    #[test]
+    fn a_playback_rate_that_is_not_positive_is_refused() {
+        for rate in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let error = decode(&clip(rate)).unwrap_err().to_string();
+            assert!(error.contains("playback rate"), "rate {rate}: {error}");
+        }
+    }
 }
