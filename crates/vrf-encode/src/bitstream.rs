@@ -166,10 +166,7 @@ fn avcc(parameters: &[Vec<u8>]) -> Result<Vec<u8>> {
     out.push(1);
     out.extend_from_slice(&(pps.len() as u16).to_be_bytes());
     out.extend_from_slice(pps);
-    if matches!(
-        sps[1],
-        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134
-    ) {
+    if crate::h264_profile_has_chroma_format(sps[1]) {
         out.extend_from_slice(&[0xfc | 1, 0xf8, 0xf8, 0]);
     }
     Ok(out)

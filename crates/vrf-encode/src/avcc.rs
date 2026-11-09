@@ -52,7 +52,7 @@ impl AvcRecord {
             bail!("no SPS");
         };
         let (profile, compatibility, level) = (first[1], first[2], first[3]);
-        let extension = if matches!(profile, 100 | 110 | 122 | 144) {
+        let extension = if crate::h264_profile_has_chroma_format(profile) {
             vec![0xfc | 1, 0xf8, 0xf8, 0]
         } else {
             Vec::new()
@@ -154,5 +154,17 @@ mod tests {
         let mut other = record.clone();
         other.profile = 66;
         assert!(record.clone().merge(&other).is_err());
+    }
+
+    #[test]
+    fn high_444_predictive_carries_the_chroma_extension_and_main_does_not() {
+        let mut high = sps(1, 40);
+        high[1] = 244;
+        let record = AvcRecord::from_sets(vec![high], vec![vec![0x68]]).unwrap();
+        assert_eq!(record.extension, [0xfd, 0xf8, 0xf8, 0]);
+        let mut main = sps(1, 40);
+        main[1] = 77;
+        let record = AvcRecord::from_sets(vec![main], vec![vec![0x68]]).unwrap();
+        assert!(record.extension.is_empty());
     }
 }

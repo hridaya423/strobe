@@ -22,6 +22,14 @@ pub mod x264;
 
 pub const AAC_FRAME_SAMPLES: u32 = 1024;
 
+#[cfg(any(windows, target_os = "macos", test))]
+fn h264_profile_has_chroma_format(profile: u8) -> bool {
+    matches!(
+        profile,
+        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AacConfig {
     pub sample_rate: u32,
@@ -216,4 +224,19 @@ pub trait Encoder {
 
     /// Fails if packets are still undrained, so none are dropped silently.
     fn finish(self) -> Result<StreamInfo>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::h264_profile_has_chroma_format;
+
+    #[test]
+    fn high_profiles_carry_the_chroma_extension_and_baseline_main_extended_do_not() {
+        for profile in [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134] {
+            assert!(h264_profile_has_chroma_format(profile), "{profile}");
+        }
+        for profile in [66, 77, 88, 144] {
+            assert!(!h264_profile_has_chroma_format(profile), "{profile}");
+        }
+    }
 }
