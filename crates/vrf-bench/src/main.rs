@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
@@ -41,6 +41,28 @@ enum Cmd {
     },
 }
 
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+fn store(dir: &Path, stem: &str, outcome: &Result<run::RunResult>) -> Result<()> {
+    let json = dir.join(format!("{stem}.json"));
+    let failed = dir.join(format!("{stem}.failed.txt"));
+    match outcome {
+        Ok(r) => {
+            std::fs::write(&json, serde_json::to_string_pretty(r)?)?;
+            remove_if_present(&failed)
+        }
+        Err(err) => {
+            std::fs::write(&failed, format!("{err:#}\n"))?;
+            remove_if_present(&json)
+        }
+    }
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run {
@@ -55,12 +77,11 @@ fn main() -> Result<()> {
             let mut failed = 0;
             for c in corpus::select(&corpus)? {
                 for &e in engine.iter().filter(|e| e.supports(c.framework)) {
-                    let path = |suffix: &str| {
-                        run::results_dir().join(format!("{date}-{}-{}{suffix}", e.name(), c.id))
-                    };
-                    match run::run(e, &c, runs, &out_dir) {
+                    let stem = format!("{date}-{}-{}", e.name(), c.id);
+                    let outcome = run::run(e, &c, runs, &out_dir);
+                    store(&run::results_dir(), &stem, &outcome)?;
+                    match outcome {
                         Ok(r) => {
-                            std::fs::write(path(".json"), serde_json::to_string_pretty(&r)?)?;
                             println!(
                                 "{:<14} {:<24} {:>8.3} s {:>8.1} fps",
                                 r.engine, r.corpus_id, r.median_s, r.fps
@@ -68,7 +89,6 @@ fn main() -> Result<()> {
                         }
                         Err(err) => {
                             failed += 1;
-                            std::fs::write(path(".failed.txt"), format!("{err:#}\n"))?;
                             println!("{:<14} {:<24} FAILED: {err:#}", e.name(), c.id);
                         }
                     }
@@ -127,4 +147,49 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result() -> run::RunResult {
+        run::RunResult {
+            engine: "vrf".into(),
+            version: "0.1.0".into(),
+            corpus_id: "hf-tiny".into(),
+            frames: 30,
+            median_s: 1.0,
+            min_s: 0.9,
+            max_s: 1.1,
+            fps: 30.0,
+            runs: 5,
+            warmup: 1,
+            machine: "test".into(),
+            load_avg_before: 0.1,
+        }
+    }
+
+    #[test]
+    fn a_later_outcome_replaces_the_earlier_one_for_the_same_stem() {
+        let dir = std::env::temp_dir().join(format!("vrf-bench-store-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = dir.join("d-vrf-x.json");
+        let failed = dir.join("d-vrf-x.failed.txt");
+
+        store(&dir, "d-vrf-x", &Err(anyhow::anyhow!("boom"))).unwrap();
+        assert!(failed.is_file() && !json.exists());
+
+        store(&dir, "d-vrf-x", &Ok(result())).unwrap();
+        assert!(json.is_file() && !failed.exists());
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+        assert_eq!(written["runs"], 5);
+        assert_eq!(written["warmup"], 1);
+
+        store(&dir, "d-vrf-x", &Err(anyhow::anyhow!("again"))).unwrap();
+        assert!(failed.is_file() && !json.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

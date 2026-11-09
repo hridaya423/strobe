@@ -9,6 +9,7 @@ use crate::corpus::{Corpus, bench_dir};
 use crate::engines::Engine;
 
 pub const MAX_LOAD: f64 = 2.0;
+pub const WARMUP: usize = 1;
 pub const IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +83,8 @@ pub struct RunResult {
     pub min_s: f64,
     pub max_s: f64,
     pub fps: f64,
+    pub runs: usize,
+    pub warmup: usize,
     pub machine: String,
     pub load_avg_before: f64,
 }
@@ -192,7 +195,7 @@ pub fn run(engine: Engine, corpus: &Corpus, runs: usize, out_dir: &Path) -> Resu
         .env("REMOTION_DISABLE_TELEMETRY", "1")
         .args([
             "--warmup",
-            "1",
+            &WARMUP.to_string(),
             "--runs",
             &runs.to_string(),
             "--style",
@@ -219,6 +222,8 @@ pub fn run(engine: Engine, corpus: &Corpus, runs: usize, out_dir: &Path) -> Resu
         median_s: t.median_s,
         min_s: t.min_s,
         max_s: t.max_s,
+        runs: t.runs,
+        warmup: WARMUP,
         machine: machine()?,
         load_avg_before: load,
     })
