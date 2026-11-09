@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+if [ $# -eq 0 ]; then
+  echo "usage: bench/remote-run.sh <hyperframes|remotion|vrf>... (env: CORPUS, RUNS, VRF_REMOTE, VRF_REMOTE_ROOT)" >&2
+  exit 2
+fi
+
 host=${VRF_REMOTE:-mac-tailscale}
 root=${VRF_REMOTE_ROOT:-honey/videorenderingframework}
 corpus=${CORPUS:-all}
