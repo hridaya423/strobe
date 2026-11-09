@@ -97,8 +97,7 @@ pub enum RateControl {
 /// `From<Quality>` picks the high-quality tuning and constant quality for every level: in spike
 /// 6.7 that tuning ran at least as fast as low latency for all three codecs, and HEVC low latency
 /// ran slower because its auto-selected reference count is larger. `Balanced` is calibrated
-/// against the delivered-file rule in `docs/spikes/6.9-nvenc-quality.md`; `Draft` and `High` are
-/// not.
+/// against the delivered-file quality rule; `Draft` and `High` are not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
     pub preset: Preset,
