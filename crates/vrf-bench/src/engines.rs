@@ -91,6 +91,8 @@ impl Engine {
                     argv.extend([
                         "--hyperframes".into(),
                         s(bench_dir().join("engines/node_modules/hyperframes")),
+                        "--fps".into(),
+                        corpus.fps.to_string(),
                     ]);
                 }
                 argv.extend(["-o".into(), out]);

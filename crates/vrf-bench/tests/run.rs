@@ -57,7 +57,7 @@ fn vrf_engine_renders_both_frameworks() {
     assert_eq!(invocation.argv[3], "--no-daemon");
     assert_eq!(invocation.argv[4], "--hyperframes");
     assert!(invocation.argv[5].ends_with("engines/node_modules/hyperframes"));
-    assert_eq!(invocation.argv[6..], ["-o", "/tmp/out.mp4"]);
+    assert_eq!(invocation.argv[6..], ["--fps", "30", "-o", "/tmp/out.mp4"]);
 }
 
 #[test]
