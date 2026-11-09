@@ -150,6 +150,10 @@ fn create_session(
     height: u32,
     shared: Option<&Arc<Shared>>,
 ) -> Result<CFRetained<VTCompressionSession>> {
+    ensure!(
+        codec != Codec::Av1,
+        "VideoToolbox does not encode AV1; AV1 runs on the Windows GPU engines"
+    );
     let hardware = CFBoolean::new(true);
     let specification = unsafe {
         CFDictionary::<CFString, CFType>::from_slices(

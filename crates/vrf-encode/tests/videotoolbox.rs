@@ -351,6 +351,15 @@ fn sessions_never_exceed_the_recommended_limit() {
 }
 
 #[test]
+fn av1_is_refused_with_a_clear_error() {
+    let config = config(Codec::Av1, Rational::new(30, 1));
+    let error = VideoToolboxEncoder::new(config).err().unwrap();
+    assert!(error.to_string().contains("does not encode AV1"), "{error}");
+    let error = capabilities(Codec::Av1).unwrap_err();
+    assert!(error.to_string().contains("does not encode AV1"), "{error}");
+}
+
+#[test]
 fn ten_bit_is_rejected_outside_hevc() {
     let mut config = config(Codec::H264, Rational::new(30, 1));
     config.ten_bit = true;
