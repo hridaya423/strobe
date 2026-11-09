@@ -1,5 +1,7 @@
 target/
 bench/results/*.json
+bench/results/*.failed.txt
+bench/results/*.log
 bench/refs/
 bench/engines/node_modules/
 bench/corpus/external/
