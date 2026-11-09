@@ -63,7 +63,8 @@ pub enum Codec {
     ProRes422,
 }
 
-/// Rate control presets. Each value is a VideoToolbox `Quality` setting. Encoding Remotion's own
+/// Rate control presets. `value` is the VideoToolbox `Quality` setting; NVENC and D3D12 Video
+/// Encode map each preset themselves. Encoding Remotion's own
 /// frames of `rm-4-0-trailer`, `rm-github-unwrapped` and `rm-transitions-video`, `Balanced` scores
 /// within 10% of Remotion's MP4 on every FLIP metric; 0.70 did not on the trailer's mean. The
 /// libx264 CRF of `Balanced` passes the same bar.
@@ -71,10 +72,11 @@ pub enum Codec {
 pub enum Quality {
     /// `Quality` 0.50, 3 to 5 Mb/s at 1080p.
     Draft,
-    /// `Quality` 0.85.
+    /// `Quality` 0.90.
     #[default]
     Balanced,
-    /// `Quality` 0.90. About 13% slower than `Balanced` on the Mac mini's H.264 ceiling.
+    /// `Quality` 0.90, the same VideoToolbox setting as `Balanced`. Only the libx264 lane
+    /// differs: CRF 8 against 10.
     High,
 }
 
