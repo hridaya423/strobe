@@ -212,7 +212,7 @@ pub fn run(engine: Engine, corpus: &Corpus, runs: usize, out_dir: &Path) -> Resu
     let t = Timing::from_hyperfine(&std::fs::read_to_string(&json)?)?;
     Ok(RunResult {
         engine: engine.name().into(),
-        version: engine.version().into(),
+        version: engine.version(corpus),
         corpus_id: corpus.id.clone(),
         frames: corpus.frames,
         fps: t.fps(corpus.frames),

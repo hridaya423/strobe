@@ -59,3 +59,37 @@ fn vrf_engine_renders_both_frameworks() {
     assert!(invocation.argv[5].ends_with("engines/node_modules/hyperframes"));
     assert_eq!(invocation.argv[6..], ["-o", "/tmp/out.mp4"]);
 }
+
+#[test]
+fn remotion_version_is_the_one_installed_in_the_project() {
+    use vrf_bench::corpus::{Corpus, Framework};
+    use vrf_bench::engines::{Engine, REMOTION, installed_remotion};
+
+    let root = std::env::temp_dir().join(format!("vrf-bench-remotion-{}", std::process::id()));
+    let project = root.join("project");
+    let package = project.join("node_modules/remotion");
+    std::fs::create_dir_all(&package).unwrap();
+    let corpus = Corpus {
+        id: "rm-pinned".into(),
+        root: root.clone(),
+        framework: Framework::Remotion,
+        source: "project".into(),
+        entry: "src/index.ts".into(),
+        composition: Some("Main".into()),
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        frames: 30,
+        stresses: vec![],
+    };
+
+    assert_eq!(installed_remotion(&project), None);
+    assert_eq!(Engine::Remotion.version(&corpus), REMOTION);
+
+    std::fs::write(package.join("package.json"), r#"{"name":"remotion","version":"4.0.169"}"#)
+        .unwrap();
+    assert_eq!(installed_remotion(&project).as_deref(), Some("4.0.169"));
+    assert_eq!(Engine::Remotion.version(&corpus), "4.0.169");
+
+    std::fs::remove_dir_all(&root).unwrap();
+}

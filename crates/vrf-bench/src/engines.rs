@@ -24,11 +24,13 @@ impl Engine {
         }
     }
 
-    pub fn version(self) -> &'static str {
+    pub fn version(self, corpus: &Corpus) -> String {
         match self {
-            Engine::Hyperframes => "0.8.216",
-            Engine::Remotion => "4.0.539",
-            Engine::Vrf => env!("CARGO_PKG_VERSION"),
+            Engine::Hyperframes => HYPERFRAMES.into(),
+            Engine::Remotion => {
+                installed_remotion(&corpus.project_dir()).unwrap_or_else(|| REMOTION.into())
+            }
+            Engine::Vrf => env!("CARGO_PKG_VERSION").into(),
         }
     }
 
@@ -101,6 +103,12 @@ impl Engine {
     }
 }
 
+pub fn installed_remotion(project: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(project.join("node_modules/remotion/package.json")).ok()?;
+    let package: serde_json::Value = serde_json::from_str(&text).ok()?;
+    package.get("version")?.as_str().map(str::to_owned)
+}
+
 pub fn vrf_binary() -> PathBuf {
     let file = if cfg!(windows) { "strobe.exe" } else { "strobe" };
     bench_dir().join("../target/release").join(file)
@@ -133,5 +141,9 @@ pub fn headless_shell() -> PathBuf {
     };
     dir.join(format!("{platform}-{HEADLESS_SHELL}")).join(leaf)
 }
+
+pub const HYPERFRAMES: &str = "0.8.216";
+
+pub const REMOTION: &str = "4.0.539";
 
 pub const HEADLESS_SHELL: &str = "156.0.8078.73";
