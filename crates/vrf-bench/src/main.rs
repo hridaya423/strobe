@@ -76,7 +76,16 @@ fn main() -> Result<()> {
             std::fs::create_dir_all(run::results_dir())?;
             let mut failed = 0;
             for c in corpus::select(&corpus)? {
-                for &e in engine.iter().filter(|e| e.supports(c.framework)) {
+                for &e in &engine {
+                    if !e.supports(c.framework) {
+                        eprintln!(
+                            "skipped {} on {}: it cannot render {:?} projects",
+                            e.name(),
+                            c.id,
+                            c.framework
+                        );
+                        continue;
+                    }
                     let stem = format!("{date}-{}-{}", e.name(), c.id);
                     let outcome = run::run(e, &c, runs, &out_dir);
                     store(&run::results_dir(), &stem, &outcome)?;
