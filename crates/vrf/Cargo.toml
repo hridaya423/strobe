@@ -14,7 +14,6 @@ wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "std"
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 objc2 = "0.6.5"
-objc2-core-foundation = "0.3.2"
 objc2-io-surface = "0.3.2"
 objc2-metal = { version = "0.3.2", features = ["objc2-io-surface"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["metal"] }
@@ -33,6 +32,7 @@ windows = { version = "0.62", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-foundation = "0.3.2"
 objc2-core-video = { version = "0.3.2", features = ["objc2-io-surface"] }
 
 [target.'cfg(windows)'.dev-dependencies]
