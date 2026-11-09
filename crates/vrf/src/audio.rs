@@ -79,6 +79,7 @@ pub fn mix_with(decoder: &Predecoder, clips: &[Clip], length: u64) -> Result<Vec
 
 /// The timeline samples `from..to` of the sum of `clips`, as [`mix`] would hold them.
 pub fn mix_range(decoder: &Predecoder, clips: &[Clip], from: u64, to: u64) -> Result<Vec<f32>> {
+    ensure!(to >= from, "the range {from}..{to} ends before it starts");
     let mut out = vec![0.0f32; (to - from) as usize * 2];
     for clip in clips {
         if clip.start >= to || clip.start + clip.length <= from {
@@ -171,6 +172,14 @@ impl Predecoder {
 
     /// Starts decoding `clip` unless a decode that can serve it exists.
     pub fn prefetch(&self, clip: &Clip) {
+        self.prefetch_with(clip, decode);
+    }
+
+    fn prefetch_with(
+        &self,
+        clip: &Clip,
+        decode: impl FnOnce(&Clip) -> Result<Vec<f32>> + Send + 'static,
+    ) {
         let slot = {
             let mut pending = self.shared.pending.lock().unwrap();
             if pending.slots.iter().any(|slot| Self::usable(slot, clip)) {
@@ -195,7 +204,15 @@ impl Predecoder {
                 }
                 pending.running += 1;
             }
-            let result = decode(&clip)
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(&clip)))
+                .unwrap_or_else(|payload| {
+                    let message = payload
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_string())
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".into());
+                    Err(anyhow::anyhow!("decoder panicked: {message}"))
+                })
                 .map(Arc::new)
                 .map_err(|error| format!("{error:#}"));
             *slot.pcm.lock().unwrap() = Some(result);
@@ -258,8 +275,16 @@ fn channels(src: &Path) -> Result<u32> {
         "ffprobe: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text.trim().parse().unwrap_or(0))
+    parse_channels(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_channels(text: &str) -> Result<u32> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(0);
+    }
+    text.parse()
+        .with_context(|| format!("ffprobe printed {text:?} where a channel count was expected"))
 }
 
 fn tempo_stages(rate: f64) -> Vec<String> {
@@ -609,6 +634,45 @@ mod tests {
             .collect();
         assert_eq!(volumes.len(), 16);
         assert!(volumes.windows(2).all(|pair| pair[0] < pair[1]), "{volumes:?}");
+    }
+
+    #[test]
+    fn a_range_that_ends_before_it_starts_is_refused() {
+        let error = mix_range(&Predecoder::default(), &[], 10, 4)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ends before it starts"), "{error}");
+    }
+
+    #[test]
+    fn channel_output_is_a_count_or_empty() {
+        assert_eq!(parse_channels("2\n").unwrap(), 2);
+        assert_eq!(parse_channels("").unwrap(), 0);
+        assert_eq!(parse_channels("  \n").unwrap(), 0);
+        for bad in ["N/A", "2\n2", "stereo"] {
+            let error = parse_channels(bad).unwrap_err().to_string();
+            assert!(error.contains("channel count"), "{bad:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_decoder_that_panics_fails_its_clip_and_frees_its_slot() {
+        let decoder = Predecoder::default();
+        let clips: Vec<Clip> = (0..DECODES_AT_ONCE + 1)
+            .map(|n| {
+                let mut c = clip(1.0);
+                c.source_start = n as f64;
+                c
+            })
+            .collect();
+        for c in &clips {
+            decoder.prefetch_with(c, |_| panic!("decoder blew up"));
+        }
+        for c in &clips {
+            let error = decoder.pcm(c).unwrap_err().to_string();
+            assert!(error.contains("decoder blew up"), "{error}");
+        }
+        assert_eq!(decoder.shared.pending.lock().unwrap().running, 0);
     }
 
     #[test]
