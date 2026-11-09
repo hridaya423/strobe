@@ -70,7 +70,9 @@ pub fn mix(clips: &[Clip], length: u64) -> Result<Vec<f32>> {
 /// depend on which were ready.
 pub fn mix_with(decoder: &Predecoder, clips: &[Clip], length: u64) -> Result<Vec<f32>> {
     for clip in clips {
-        decoder.prefetch(clip);
+        if clip.start < length && clip.start + clip.length > 0 {
+            decoder.prefetch(clip);
+        }
     }
     mix_range(decoder, clips, 0, length)
 }
@@ -607,5 +609,16 @@ mod tests {
             .collect();
         assert_eq!(volumes.len(), 16);
         assert!(volumes.windows(2).all(|pair| pair[0] < pair[1]), "{volumes:?}");
+    }
+
+    #[test]
+    fn a_clip_past_the_end_is_not_decoded() {
+        let decoder = Predecoder::default();
+        let mut late = clip(1.0);
+        late.start = 100;
+        let mixed = mix_with(&decoder, &[late], 100).unwrap();
+        assert_eq!(mixed.len(), 200);
+        assert!(mixed.iter().all(|&sample| sample == 0.0));
+        assert!(decoder.shared.pending.lock().unwrap().slots.is_empty());
     }
 }
