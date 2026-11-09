@@ -126,6 +126,7 @@ enum Job {
 
 struct Ordered {
     next: u64,
+    emitted: u64,
     pending: BTreeMap<u64, Packet>,
     ready: Vec<Packet>,
 }
@@ -160,6 +161,32 @@ impl Shared {
             };
             ordered.ready.push(packet);
             ordered.next += 1;
+            ordered.emitted += 1;
+        }
+    }
+
+    fn fail(&self, message: String) {
+        let _ = self.error.set(message);
+    }
+
+    fn verify(&self, submitted: u64) -> Result<()> {
+        let ordered = self.lock();
+        ensure!(
+            ordered.pending.is_empty() && ordered.emitted == submitted,
+            "{submitted} frames were submitted but {} came back in order with {} out of sequence",
+            ordered.emitted,
+            ordered.pending.len()
+        );
+        Ok(())
+    }
+}
+
+struct LaneGuard<'a>(&'a Shared);
+
+impl Drop for LaneGuard<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.fail("a lane thread panicked".to_string());
         }
     }
 }
@@ -188,9 +215,8 @@ fn run_lane(
             .fetch_add(packets.len() as u64, Ordering::SeqCst);
         shared.push(packets);
     };
-    let fail = |error: anyhow::Error| {
-        let _ = shared.error.set(format!("{error:#}"));
-    };
+    let fail = |error: anyhow::Error| shared.fail(format!("{error:#}"));
+    let _guard = LaneGuard(&shared);
     for job in jobs {
         match job {
             Job::Frame {
@@ -388,6 +414,7 @@ impl TurboEncoder {
             frame_rate: config.frame_rate,
             ordered: Mutex::new(Ordered {
                 next: 0,
+                emitted: 0,
                 pending: BTreeMap::new(),
                 ready: Vec::new(),
             }),
@@ -568,7 +595,9 @@ impl Encoder for TurboEncoder {
                 let _ = wait.recv();
             }
         }
-        self.drain()
+        let packets = self.drain()?;
+        self.shared.verify(self.submitted)?;
+        Ok(packets)
     }
 
     fn stream_info(&self) -> Result<StreamInfo> {
@@ -616,5 +645,112 @@ impl Drop for TurboEncoder {
                 let _ = thread.join();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared(first: u64) -> Shared {
+        Shared {
+            frame_rate: Rational::new(30, 1),
+            ordered: Mutex::new(Ordered {
+                next: first,
+                emitted: 0,
+                pending: BTreeMap::new(),
+                ready: Vec::new(),
+            }),
+            video_toolbox_config: OnceLock::new(),
+            error: OnceLock::new(),
+        }
+    }
+
+    fn packet(index: i64) -> Packet {
+        let pts = Rational::new(index, 30);
+        Packet {
+            data: vec![index as u8],
+            pts,
+            dts: pts,
+            keyframe: false,
+        }
+    }
+
+    fn pts_of(shared: &Shared) -> Vec<i64> {
+        std::mem::take(&mut shared.lock().ready)
+            .iter()
+            .map(|p| p.pts.num)
+            .collect()
+    }
+
+    #[test]
+    fn packets_leave_in_order_however_the_lanes_deliver_them() {
+        let shared = shared(0);
+        shared.push(vec![packet(3), packet(4)]);
+        assert!(pts_of(&shared).is_empty());
+        shared.push(vec![packet(1), packet(0)]);
+        assert_eq!(pts_of(&shared), [0, 1]);
+        shared.push(vec![packet(2)]);
+        assert_eq!(pts_of(&shared), [2, 3, 4]);
+        shared.verify(5).unwrap();
+    }
+
+    #[test]
+    fn a_gap_in_the_indexes_fails_verification() {
+        let shared = shared(0);
+        shared.push(vec![packet(0), packet(1), packet(3), packet(4)]);
+        assert_eq!(pts_of(&shared), [0, 1]);
+        let error = shared.verify(5).unwrap_err().to_string();
+        assert!(error.contains("2 came back in order with 2 out of sequence"), "{error}");
+    }
+
+    #[test]
+    fn a_lost_trailing_packet_fails_verification() {
+        let shared = shared(10);
+        shared.push(vec![packet(10), packet(11)]);
+        assert!(shared.verify(3).is_err());
+        shared.verify(2).unwrap();
+    }
+
+    #[test]
+    fn a_repeated_index_does_not_hide_a_lost_frame() {
+        let shared = shared(0);
+        shared.push(vec![packet(1), packet(1)]);
+        shared.push(vec![packet(0)]);
+        assert_eq!(pts_of(&shared), [0, 1]);
+        assert!(shared.verify(3).is_err());
+    }
+
+    #[test]
+    fn a_packet_behind_the_cursor_fails_verification() {
+        let shared = shared(0);
+        shared.push(vec![packet(0), packet(1)]);
+        shared.push(vec![packet(0)]);
+        assert!(shared.verify(2).is_err());
+    }
+
+    #[test]
+    fn a_panicking_lane_thread_records_a_failure() {
+        let shared = Arc::new(shared(0));
+        let lane = shared.clone();
+        let joined = thread::spawn(move || {
+            let _guard = LaneGuard(&lane);
+            panic!("lane");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert_eq!(shared.error.get().map(String::as_str), Some("a lane thread panicked"));
+    }
+
+    #[test]
+    fn a_lane_thread_that_returns_records_nothing() {
+        let shared = Arc::new(shared(0));
+        let lane = shared.clone();
+        thread::spawn(move || {
+            let _guard = LaneGuard(&lane);
+        })
+        .join()
+        .unwrap();
+        assert!(shared.error.get().is_none());
     }
 }
