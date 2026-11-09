@@ -330,7 +330,6 @@ fn capabilities_are_read_from_the_session() {
         let caps = capabilities(codec).unwrap();
         println!("{codec:?}: {caps:?}");
         assert!(caps.parallelization_limit >= 1);
-        assert!(caps.min_subdivision_frames >= 1);
     }
 }
 

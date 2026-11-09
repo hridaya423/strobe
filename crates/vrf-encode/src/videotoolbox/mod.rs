@@ -26,7 +26,6 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
     kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_Quality,
     kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_RecommendedParallelizationLimit,
-    kVTCompressionPropertyKey_RecommendedParallelizedSubdivisionMinimumFrameCount,
     kVTCompressionPropertyKey_TransferFunction, kVTCompressionPropertyKey_YCbCrMatrix,
     kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_High_AutoLevel,
     kVTProfileLevel_HEVC_Main_AutoLevel, kVTProfileLevel_HEVC_Main10_AutoLevel,
@@ -46,7 +45,6 @@ static SHARED_ENGINE_SESSIONS: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     pub parallelization_limit: usize,
-    pub min_subdivision_frames: usize,
 }
 
 struct Shared {
@@ -143,10 +141,6 @@ fn read_capabilities(session: &VTCompressionSession) -> Result<Capabilities> {
             kVTCompressionPropertyKey_RecommendedParallelizationLimit
         })
         .context("RecommendedParallelizationLimit is not readable")?,
-        min_subdivision_frames: read_usize(session, unsafe {
-            kVTCompressionPropertyKey_RecommendedParallelizedSubdivisionMinimumFrameCount
-        })
-        .context("RecommendedParallelizedSubdivisionMinimumFrameCount is not readable")?,
     })
 }
 
@@ -419,7 +413,6 @@ impl VideoToolboxEncoder {
         let session = create_session(config.codec, config.width, config.height, Some(&shared))?;
         let capabilities = read_capabilities(&session).unwrap_or(Capabilities {
             parallelization_limit: 1,
-            min_subdivision_frames: 0,
         });
         let slot = match config.codec {
             Codec::ProRes422 => None,
