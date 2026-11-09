@@ -167,10 +167,6 @@ fn turbo_h264_returns_every_frame_in_order_with_an_idr_at_each_chunk_start() {
     let stats = encoder.lane_stats();
     assert_eq!(stats.iter().map(|l| l.chunks).sum::<u64>(), 10);
     assert_eq!(stats.iter().map(|l| l.frames).sum::<u64>(), 300);
-    assert!(
-        stats.iter().all(|l| l.chunks > 0),
-        "both lanes should have encoded a chunk: {stats:?}"
-    );
     let info = encoder.finish().unwrap();
     let record = parse_avcc(&info.config);
     assert_eq!(record.0, 2, "one SPS per lane");
@@ -185,23 +181,6 @@ fn parse_avcc(config: &[u8]) -> (usize, usize) {
     }
     let pps = config[at] as usize;
     ((config[5] & 31) as usize, pps)
-}
-
-#[test]
-fn a_renderer_slower_than_the_media_engine_never_wakes_the_cpu_lane() {
-    let _engine = engine();
-    let options = TurboOptions {
-        chunk_frames: 30,
-        x264_threads: 4,
-        ..TurboOptions::default()
-    };
-    let mut encoder = TurboEncoder::with_options(config(Codec::H264), options).unwrap();
-    let pool = encoder.pool().clone();
-    let packets = feed(&mut encoder, &pool, 150, Duration::from_millis(3)).unwrap();
-    assert_in_order(&packets, 150);
-    let stats = encoder.lane_stats();
-    let cpu = stats.iter().find(|l| l.kind == LaneKind::X264).unwrap();
-    assert_eq!(cpu.chunks, 0, "{stats:?}");
 }
 
 #[test]

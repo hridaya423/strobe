@@ -295,6 +295,37 @@ impl Meter {
     }
 }
 
+struct LaneView {
+    kind: LaneKind,
+    backlog: usize,
+    rate: f64,
+}
+
+fn arriving_slowly(elapsed: Duration, submitted: u64, pixels: f64) -> bool {
+    elapsed >= ARRIVAL_WINDOW
+        && (submitted as f64 / elapsed.as_secs_f64())
+            < SLOW_ARRIVAL_SHARE * VT_PRIOR_PIXELS_PER_SECOND / pixels
+}
+
+fn choose_lane(lanes: &[LaneView], chunk_frames: u32, vt_headroom: usize, slow: bool) -> usize {
+    let chunk = f64::from(chunk_frames);
+    let finish = |i: usize| (lanes[i].backlog as f64 + chunk) / lanes[i].rate;
+    let video_toolbox = (0..lanes.len())
+        .filter(|&i| lanes[i].kind == LaneKind::VideoToolbox)
+        .min_by(|&a, &b| finish(a).total_cmp(&finish(b)))
+        .expect("a VideoToolbox lane exists");
+    match lanes.iter().position(|l| l.kind == LaneKind::X264) {
+        Some(cpu)
+            if !slow
+                && lanes[video_toolbox].backlog > vt_headroom
+                && finish(cpu) < finish(video_toolbox) =>
+        {
+            cpu
+        }
+        _ => video_toolbox,
+    }
+}
+
 struct Lane {
     kind: LaneKind,
     jobs: Option<Sender<Job>>,
@@ -492,30 +523,20 @@ impl TurboEncoder {
     }
 
     fn pick(&self) -> usize {
-        let chunk = f64::from(self.options.chunk_frames);
-        let backlog = |i: usize| self.lanes[i].counters.backlog.load(Ordering::SeqCst);
-        let finish = |i: usize| (backlog(i) as f64 + chunk) / self.lanes[i].meter.rate;
-        let video_toolbox = (0..self.lanes.len())
-            .filter(|&i| self.lanes[i].kind == LaneKind::VideoToolbox)
-            .min_by(|&a, &b| finish(a).total_cmp(&finish(b)))
-            .expect("a VideoToolbox lane exists");
+        let views: Vec<_> = self
+            .lanes
+            .iter()
+            .map(|lane| LaneView {
+                kind: lane.kind,
+                backlog: lane.counters.backlog.load(Ordering::SeqCst),
+                rate: lane.meter.rate,
+            })
+            .collect();
         let pixels = f64::from(self.config.width) * f64::from(self.config.height);
-        let slow = self.started.is_some_and(|started| {
-            let elapsed = started.elapsed();
-            elapsed >= ARRIVAL_WINDOW
-                && (self.submitted as f64 / elapsed.as_secs_f64())
-                    < SLOW_ARRIVAL_SHARE * VT_PRIOR_PIXELS_PER_SECOND / pixels
-        });
-        match self.lanes.iter().position(|l| l.kind == LaneKind::X264) {
-            Some(cpu)
-                if !slow
-                    && backlog(video_toolbox) > self.options.vt_headroom
-                    && finish(cpu) < finish(video_toolbox) =>
-            {
-                cpu
-            }
-            _ => video_toolbox,
-        }
+        let slow = self
+            .started
+            .is_some_and(|started| arriving_slowly(started.elapsed(), self.submitted, pixels));
+        choose_lane(&views, self.options.chunk_frames, self.options.vt_headroom, slow)
     }
 
     fn index_of(&self, pts: Rational) -> Result<u64> {
@@ -755,5 +776,67 @@ mod tests {
         .join()
         .unwrap();
         assert!(shared.error.get().is_none());
+    }
+
+    fn lanes(video_toolbox_backlog: usize) -> Vec<LaneView> {
+        vec![
+            LaneView {
+                kind: LaneKind::VideoToolbox,
+                backlog: video_toolbox_backlog,
+                rate: 100.0,
+            },
+            LaneView {
+                kind: LaneKind::X264,
+                backlog: 0,
+                rate: 50.0,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_cpu_lane_takes_a_chunk_when_videotoolbox_is_backed_up_and_it_would_finish_sooner() {
+        assert_eq!(choose_lane(&lanes(100), 30, 32, false), 1);
+    }
+
+    #[test]
+    fn slow_arrival_keeps_the_cpu_lane_idle_however_backed_up_videotoolbox_is() {
+        assert_eq!(choose_lane(&lanes(100), 30, 32, true), 0);
+    }
+
+    #[test]
+    fn the_cpu_lane_waits_for_the_headroom_and_for_a_sooner_finish() {
+        assert_eq!(choose_lane(&lanes(32), 30, 32, false), 0);
+        assert_eq!(choose_lane(&lanes(33), 30, 32, false), 1);
+        let mut busy_cpu = lanes(100);
+        busy_cpu[1].backlog = 400;
+        assert_eq!(choose_lane(&busy_cpu, 30, 32, false), 0);
+    }
+
+    #[test]
+    fn videotoolbox_chunks_go_to_the_session_that_finishes_first() {
+        let mut views = lanes(0);
+        views.insert(
+            1,
+            LaneView {
+                kind: LaneKind::VideoToolbox,
+                backlog: 10,
+                rate: 100.0,
+            },
+        );
+        views[0].backlog = 50;
+        assert_eq!(choose_lane(&views, 30, 1000, false), 1);
+    }
+
+    #[test]
+    fn arrival_is_slow_only_after_the_window_and_below_the_share_of_the_media_engine_rate() {
+        let pixels = 1920.0 * 1080.0;
+        let engine_rate = VT_PRIOR_PIXELS_PER_SECOND / pixels;
+        let seconds = 2.0;
+        let fast = (engine_rate * seconds) as u64;
+        let slow = (engine_rate * seconds * (SLOW_ARRIVAL_SHARE - 0.1)) as u64;
+        let elapsed = Duration::from_secs_f64(seconds);
+        assert!(!arriving_slowly(elapsed, fast, pixels));
+        assert!(arriving_slowly(elapsed, slow, pixels));
+        assert!(!arriving_slowly(ARRIVAL_WINDOW - Duration::from_millis(1), 0, pixels));
     }
 }
