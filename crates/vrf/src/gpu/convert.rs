@@ -19,7 +19,11 @@ pub struct Converter {
     format: Format,
 }
 
-pub struct Source(wgpu::BindGroup);
+pub struct Source {
+    group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
+}
 
 pub struct Target(wgpu::BindGroup);
 
@@ -103,14 +107,19 @@ impl Converter {
     }
 
     pub fn source(&self, view: &wgpu::TextureView) -> Source {
-        Source(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("convert source"),
-            layout: &self.source_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(view),
-            }],
-        }))
+        let size = view.texture().size();
+        Source {
+            group: self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("convert source"),
+                layout: &self.source_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                }],
+            }),
+            width: size.width,
+            height: size.height,
+        }
     }
 
     pub fn target(&self, y: &wgpu::TextureView, cbcr: &wgpu::TextureView) -> Target {
@@ -150,6 +159,13 @@ impl Converter {
             "NV12 and P010 need even dimensions"
         );
         assert!(
+            u64::from(rect.x) + u64::from(rect.width) <= u64::from(src.width)
+                && u64::from(rect.y) + u64::from(rect.height) <= u64::from(src.height),
+            "{rect:?} is not inside the source, which is {}x{}",
+            src.width,
+            src.height
+        );
+        assert!(
             self.format == Format::Nv12 || !matches!(chroma, Chroma::Exact(_)),
             "exact conversion is for NV12"
         );
@@ -177,7 +193,7 @@ impl Converter {
             *chunk = value.to_ne_bytes();
         }
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &src.0, &[]);
+        pass.set_bind_group(0, &src.group, &[]);
         pass.set_bind_group(1, &target.0, &[]);
         pass.set_immediates(0, &bytes);
         pass.dispatch_workgroups(

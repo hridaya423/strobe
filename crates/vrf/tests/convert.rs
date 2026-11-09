@@ -323,6 +323,25 @@ fn swscale_extremes_matches_ffmpeg() {
 }
 
 #[test]
+#[should_panic(expected = "is not inside the source")]
+fn a_rect_past_the_source_is_refused() {
+    let gpu = Gpu::new().unwrap();
+    let image = Image {
+        name: "small",
+        width: 64,
+        height: 64,
+        rgba: vec![0; 64 * 64 * 4],
+    };
+    let rect = Rect {
+        x: 32,
+        y: 0,
+        width: 64,
+        height: 64,
+    };
+    gpu_convert(&gpu, &image, rect, Chroma::Swscale, Format::Nv12, false);
+}
+
+#[test]
 fn swscale_crops_in_all_parities_match_ffmpeg_crop() {
     let gpu = Gpu::new().unwrap();
     let image = noise();
