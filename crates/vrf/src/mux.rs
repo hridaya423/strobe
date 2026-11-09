@@ -331,6 +331,13 @@ impl Muxer {
             "sample rate {} does not fit the sample entry",
             audio.sample_rate
         );
+        ensure!(
+            u64::from(audio.priming) + audio.frames <= audio.media_frames(),
+            "audio edit list ({} priming + {} frames) runs past the {} samples in the packets",
+            audio.priming,
+            audio.frames,
+            audio.media_frames()
+        );
         if audio.codec == AudioCodec::PcmS16Le {
             ensure!(
                 self.container == Container::Mov,
@@ -1128,6 +1135,29 @@ mod tests {
         assert!(wide.unwrap_err().to_string().contains("not a whole tick"));
         let ok = Sample::from_packet(packet_at(Rational::new(i64::MAX, i64::MAX)), timebase, 1).unwrap();
         assert_eq!(ok.pts, 30);
+    }
+
+    #[test]
+    fn audio_whose_edit_list_runs_past_its_packets_is_refused() {
+        let dir = std::env::temp_dir().join(format!("vrf-mux-edit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut muxer = Muxer::create(&dir.join("out.mov"), Container::Mov, 30).unwrap();
+        let track = |priming, frames| AudioTrack {
+            codec: AudioCodec::Aac {
+                audio_specific_config: vec![0x11, 0x90],
+                max_packet_bytes: 8,
+            },
+            sample_rate: 48_000,
+            channels: 2,
+            priming,
+            frames,
+            packets: vec![vec![0; 8]; 2],
+        };
+        let error = muxer.set_audio(track(1024, 1025)).unwrap_err().to_string();
+        assert!(error.contains("runs past"), "{error}");
+        muxer.set_audio(track(1024, 1024)).unwrap();
+        drop(muxer);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
