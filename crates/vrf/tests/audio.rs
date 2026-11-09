@@ -19,6 +19,15 @@ fn bench_dir() -> PathBuf {
     }
 }
 
+fn require_installed(paths: &[&Path]) {
+    let missing: Vec<_> = paths.iter().filter(|path| !path.exists()).collect();
+    assert!(
+        missing.is_empty(),
+        "these tests render with the engines that bench/fetch-external.sh installs, \
+         which are missing: {missing:?}. Run bench/fetch-external.sh first."
+    );
+}
+
 fn support(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/audio_support")
@@ -224,6 +233,7 @@ fn public_file(project: &Path) -> impl Fn(&str) -> Result<PathBuf> + '_ {
 }
 
 fn remotion_tone_matches_ref(version: &str, modules: PathBuf) {
+    require_installed(&[&modules, &headless_shell()]);
     let fixture = remotion_fixture(&format!("rm-{version}"), modules, 7);
     let project = fixture.dir.0.clone();
     let reference = fixture.dir.file("ref.wav");
@@ -317,6 +327,7 @@ fn hyperframes_tracks(project: &Path) -> Vec<HyperframesTrack> {
 
 #[test]
 fn hyperframes_tone_at_an_offset_matches_ref_within_one_millisecond() {
+    require_installed(&[&hyperframes_dir()]);
     let dir = hyperframes_fixture("hf", "0.2335");
     let reference = dir.file("ref.mp4");
     run(
