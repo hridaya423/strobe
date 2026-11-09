@@ -5,10 +5,7 @@ use std::sync::Mutex;
 use anyhow::{Result, ensure};
 use vrf_blink::video::Frame;
 
-const GENERATOR: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../spikes/5.1-video-into-page/gen.sh"
-);
+const GENERATOR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/clips/gen.sh");
 
 static GENERATING: Mutex<()> = Mutex::new(());
 
