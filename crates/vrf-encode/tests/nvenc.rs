@@ -271,10 +271,13 @@ fn sessions_reject_b_frames() {
 
 fn check_late_drain(codec: Codec) {
     let _engine = engine();
-    let watchdog = std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_secs(60));
-        eprintln!("deadlock: 300 undrained frames did not finish within 60 s");
-        std::process::exit(1);
+    let (cancel, cancelled) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let wait = cancelled.recv_timeout(Duration::from_secs(60));
+        if wait == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            eprintln!("deadlock: 300 undrained frames did not finish within 60 s");
+            std::process::exit(1);
+        }
     });
     let device = nvidia_device().unwrap();
     let mut encoder = NvencEncoder::new(
@@ -294,7 +297,7 @@ fn check_late_drain(codec: Codec) {
     let packets = encoder.flush().unwrap();
     assert_eq!(packets.len(), 300);
     encoder.finish().unwrap();
-    drop(watchdog);
+    drop(cancel);
 }
 
 #[test]

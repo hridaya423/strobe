@@ -370,10 +370,13 @@ fn ten_bit_is_rejected_outside_hevc() {
 #[test]
 fn a_caller_that_drains_only_at_the_end_does_not_deadlock() {
     let _engine = engine();
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        eprintln!("deadlock: 300 undrained frames did not finish within 60 s");
-        std::process::exit(1);
+    let (_cancel, cancelled) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let wait = cancelled.recv_timeout(std::time::Duration::from_secs(60));
+        if wait == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            eprintln!("deadlock: 300 undrained frames did not finish within 60 s");
+            std::process::exit(1);
+        }
     });
     let config = config(Codec::H264, Rational::new(30, 1));
     let mut encoder = VideoToolboxEncoder::new(config).unwrap();
