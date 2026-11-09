@@ -38,7 +38,7 @@ strobe render ./launch-film -o launch.mp4
 
 ## The numbers
 
-I rendered seven public launch videos, each one on the framework it was built for: Remotion 4.0.539 or HyperFrames 0.8.216. Each time is wall clock, from the command to the finished file.
+I rendered seven public launch videos, each one on the framework it was built for. The four HyperFrames videos ran on HyperFrames 0.8.216. Each Remotion video ran on the Remotion version its project pins: 4.0.169 for `4-0-trailer`, 4.0.60 for `transitions-video` and 4.0.240 for `github-unwrapped`. Each time is wall clock, from the command to the finished file.
 
 <p align="center">
   <picture>
@@ -59,6 +59,8 @@ Seven videos are a start, not proof. The repository also holds 26 synthetic proj
 <summary><b>Run the benchmark on your machine</b></summary>
 <br>
 
+You need Node, `git-lfs` and `hyperfine` 2.x. The bench reads the 2.x JSON, and I ran 2.0.0. Scoring and the synthetic assets also need `ffmpeg` with `ffprobe`, and `bench/skip-check.sh` needs `jq`.
+
 ```sh
 bench/fetch-external.sh
 cargo build --release -p vrf-cli -p vrf-bench
@@ -66,6 +68,8 @@ target/release/vrf-bench run --engine vrf,remotion,hyperframes --corpus all --ru
 ```
 
 In the bench, `vrf` is the label for Strobe. The bench waits up to 600 seconds for an idle machine and refuses to start if the machine stays busy. On macOS, busy means a load average of 2 or higher. On Windows, which has no load average, the bench samples CPU use for 200 ms and counts the busy cores. Close other apps first.
+
+To score a render against the framework's own pixels, run `vrf-bench refs` first. It renders each reference twice, keeps the frames under `bench/refs` and records the noise floor. `vrf-bench score` compares against those frames.
 
 </details>
 
@@ -82,7 +86,7 @@ Remotion and HyperFrames drive headless Chrome over DevTools. For every frame, t
 
 Strobe embeds CEF 156, the Chromium Embedded Framework, and renders off screen. The painted frame arrives as an IOSurface. A wgpu compute shader converts it to NV12, and VideoToolbox encodes it. On that path, no frame comes back to the CPU.
 
-On Windows, the frame arrives as a D3D12 texture. NVENC encodes it on an NVIDIA GPU. On an Intel GPU, Strobe falls back to D3D12 Video Encode, which does H.264 only. AMD GPUs are not tested yet.
+On Windows, the frame arrives as a D3D12 texture. NVENC encodes it, so Windows needs an NVIDIA GPU.
 
 The GPU path is the big win. These smaller parts add up too:
 
@@ -120,7 +124,7 @@ Windows on x64: unzip `strobe-windows-x64.zip` and put the `strobe-windows-x64` 
 Strobe renders your project with your project's own dependencies, so you need Node and a `node_modules` folder.
 
 - **macOS:** for the second H.264 lane, run `brew install x264`. If the library is not at `/opt/homebrew/lib/libx264.dylib`, set `VRF_LIBX264` to its path.
-- **Windows:** for full speed, you need an NVIDIA GPU for NVENC. An Intel GPU works through D3D12 Video Encode, for H.264 only.
+- **Windows:** you need an NVIDIA GPU for NVENC.
 
 <details>
 <summary><b>Build from source</b></summary>
@@ -155,7 +159,7 @@ strobe render ./a --composition Main -o a.mp4
 strobe render ./b --composition Main -o b.mp4
 ```
 
-A daemon keeps one raster mode, and WebGL on SwiftShader needs a daemon of its own. If a render needs a daemon that is not running, Strobe starts that daemon and waits for it.
+A daemon keeps one raster mode, and WebGL on SwiftShader needs a daemon of its own. With no daemon running, `strobe render` renders in its own process. If a daemon is running but not the one a render needs, Strobe starts the right one and waits for it.
 
 <details>
 <summary><b>All the flags</b></summary>
@@ -165,14 +169,14 @@ A daemon keeps one raster mode, and WebGL on SwiftShader needs a daemon of its o
 |---|---|
 | `-o`, `--output` | Sets the output file. |
 | `--composition` | Selects the Remotion composition. A Remotion project requires it. |
-| `--codec` | Selects `h264` (the default), `hevc` or `prores`. |
+| `--codec` | Selects `h264` (the default), `hevc` or `prores`. Windows also accepts `av1`. |
 | `--mode` | Selects the `fast` or `reference` raster mode. `fast` is the default, except for Remotion projects on Windows. |
 | `--frames` | Renders one frame, or a range such as `0-89`. |
-| `--props` | Passes input props as JSON, or as the path of a JSON file. |
-| `--fps` | Sets the frame rate of a HyperFrames render. The default is 30. |
+| `--props` | Remotion only: passes input props as JSON, or as the path of a JSON file. |
+| `--fps` | HyperFrames only: sets the frame rate. The default is 30. |
 | `--entry` | Sets the Remotion file that calls `registerRoot`. Strobe finds it if you leave it out. |
-| `--hyperframes` | Sets the path of the installed `hyperframes` package. Strobe looks in `node_modules` above the project if you leave it out. |
-| `--timeout` | Sets the milliseconds before a `delayRender` that never clears fails the frame. The default is 30000. |
+| `--hyperframes` | HyperFrames only: sets the path of the installed `hyperframes` package. Strobe looks in `node_modules` above the project if you leave it out. |
+| `--timeout` | Remotion only: sets the milliseconds before a `delayRender` that never clears fails the frame. The default is 30000. |
 | `--offline` | Fails on any http(s) request that `vrf.lock.json` does not pin. |
 | `--video` | Selects the decoder for embedded video: `native` (the default) or `remotion`. |
 | `--views`, `--run` | Override the measured number of parallel views and the frames per view. |
@@ -186,6 +190,21 @@ A daemon keeps one raster mode, and WebGL on SwiftShader needs a daemon of its o
 
 `strobe render --help` lists every flag with its default.
 
+`strobe daemon` takes these flags:
+
+| Flag | What it does |
+|---|---|
+| `--idle-timeout` | Sets the seconds with nothing to do before the daemon exits. The default is 600. |
+| `--mode` | Selects the `fast` or `reference` raster mode that the daemon renders with. The default is `fast`. |
+| `--projects` | Sets the number of projects that stay loaded. The default is 2. |
+| `--stop` | Stops every running daemon after its current renders. |
+
+Strobe reads these environment variables:
+
+- `VRF_SOCKET` sets the path of the daemon socket. The default is a file in the system temp directory.
+- `VRF_NO_DAEMON` renders in this process, like `--no-daemon`, when it is set to any value.
+- `VRF_CACHE_DIR` sets where Strobe caches the prepared project. The default is `vrf-cache` in the system temp directory.
+
 </details>
 
 ## What does not work yet
@@ -194,6 +213,7 @@ I would rather you read this here than find it in production.
 
 - **Linux.** Strobe runs on macOS and Windows. Linux is not done.
 - **WebGL shaders on Windows.** Some shaders hash with `sin`, so their output depends on the GPU. Strobe runs WebGL on the same NVIDIA GPU as the encoder. HyperFrames runs it on the default adapter, which can be the Intel iGPU. On `hf-hyperframes-launch`, frames 625 to 660 differ from HyperFrames' own render for that reason.
+- **Intel GPUs on Windows.** The D3D12 Video Encode path for Intel GPUs, which does H.264 only, is written and tested. It is not connected to `strobe render` yet.
 - **HEVC and AV1 on NVENC.** H.264 has a 240 Mbps ceiling, so grainy footage keeps its detail. HEVC and AV1 have no ceiling yet, so they may starve grainy footage of bits. I have not tested that.
 
 ## License
