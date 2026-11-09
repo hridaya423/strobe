@@ -9,6 +9,11 @@ use crate::corpus::{Corpus, bench_dir};
 use crate::engines::Engine;
 
 pub const MAX_LOAD: f64 = 2.0;
+#[cfg(windows)]
+const IDLE_SIGNAL: &str = "CPU use, in busy cores,";
+#[cfg(not(windows))]
+const IDLE_SIGNAL: &str = "load average";
+
 pub const WARMUP: usize = 1;
 pub const IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -142,7 +147,7 @@ pub fn ensure_idle() -> Result<f64> {
         .map(|p| format!("  {:6.1}%  {}", p.cpu_usage(), p.name().to_string_lossy()))
         .collect();
     bail!(
-        "load average {load:.2} stayed at or over {MAX_LOAD} for {IDLE_WAIT:?}; busiest processes:\n{}",
+        "{IDLE_SIGNAL} {load:.2} stayed at or over {MAX_LOAD} for {IDLE_WAIT:?}; busiest processes:\n{}",
         top.join("\n")
     )
 }
