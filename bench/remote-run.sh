@@ -12,7 +12,7 @@ cargo build --release -p vrf-bench -p vrf-cli -q || exit 1
 rsync -a target/release/vrf-bench "$host:$root/bin/" || exit 1
 ssh "$host" "mkdir -p \$HOME/$root/target/release/bundle" || exit 1
 rsync -a target/release/strobe "$host:$root/target/release/" || exit 1
-rsync -a --delete target/release/bundle/strobe.app "$host:$root/target/release/bundle/" || exit 1
+rsync -a --delete target/release/bundle/strobe.app "$host:$root/target/release/bundle/"
 
 case $corpus in
   all | synth | synth-*) rsync -a --exclude external --exclude .cache "$here/corpus/" "$host:$root/bench/corpus/" || exit 1 ;;
