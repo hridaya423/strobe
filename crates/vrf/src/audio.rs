@@ -215,10 +215,10 @@ impl Predecoder {
                 })
                 .map(Arc::new)
                 .map_err(|error| format!("{error:#}"));
-            *slot.pcm.lock().unwrap() = Some(result);
-            slot.ready.notify_all();
             shared.pending.lock().unwrap().running -= 1;
             shared.freed.notify_one();
+            *slot.pcm.lock().unwrap() = Some(result);
+            slot.ready.notify_all();
         });
     }
 
