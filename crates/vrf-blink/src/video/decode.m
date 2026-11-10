@@ -24,6 +24,7 @@ typedef struct {
 @property(nonatomic, strong) AVAssetReader *reader;
 @property(nonatomic, strong) AVAssetReaderTrackOutput *output;
 @property(nonatomic) int32_t timescale;
+@property(nonatomic, copy) NSString *failure;
 @end
 @implementation VrfReader
 @end
@@ -155,12 +156,16 @@ void vrf_clip_close(void *clip) {
     CFBridgingRelease(clip);
 }
 
-void *vrf_reader_open(void *clip_ref, int64_t from, uint32_t pixel_format) {
+static void *reader_open(void *clip_ref, int64_t from, uint32_t pixel_format, char *error, size_t error_length) {
     @autoreleasepool {
         VrfClip *clip = (__bridge VrfClip *)clip_ref;
         int32_t timescale = clip.track.naturalTimeScale;
-        AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:clip.asset error:nil];
-        if (!reader) return NULL;
+        NSError *reason = nil;
+        AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:clip.asset error:&reason];
+        if (!reader) {
+            fail(error, error_length, reason.localizedDescription ?: @"cannot create a reader");
+            return NULL;
+        }
         AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:clip.track outputSettings:@{
             (id)kCVPixelBufferPixelFormatTypeKey: @(pixel_format),
             (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
@@ -168,7 +173,10 @@ void *vrf_reader_open(void *clip_ref, int64_t from, uint32_t pixel_format) {
         output.alwaysCopiesSampleData = NO;
         reader.timeRange = CMTimeRangeMake(CMTimeMake(from, timescale), kCMTimePositiveInfinity);
         [reader addOutput:output];
-        if (![reader startReading]) return NULL;
+        if (![reader startReading]) {
+            fail(error, error_length, reader.error.localizedDescription ?: @"the reader did not start");
+            return NULL;
+        }
         VrfReader *handle = [VrfReader new];
         handle.reader = reader;
         handle.output = output;
@@ -177,22 +185,59 @@ void *vrf_reader_open(void *clip_ref, int64_t from, uint32_t pixel_format) {
     }
 }
 
+void *vrf_reader_open(void *clip_ref, int64_t from, uint32_t pixel_format, char *error, size_t error_length) {
+    @try {
+        return reader_open(clip_ref, from, pixel_format, error, error_length);
+    } @catch (NSException *exception) {
+        fail(error, error_length, [NSString stringWithFormat:@"%@: %@", exception.name, exception.reason]);
+        return NULL;
+    }
+}
+
 CVPixelBufferRef vrf_reader_next(void *reader_ref, int64_t *pts) {
-    @autoreleasepool {
-        VrfReader *handle = (__bridge VrfReader *)reader_ref;
-        CMSampleBufferRef sample = [handle.output copyNextSampleBuffer];
-        if (!sample) return NULL;
-        CVPixelBufferRef buffer = CMSampleBufferGetImageBuffer(sample);
-        if (buffer) {
-            CFRetain(buffer);
-            *pts = ticks(CMSampleBufferGetPresentationTimeStamp(sample), handle.timescale);
+    VrfReader *handle = (__bridge VrfReader *)reader_ref;
+    @try {
+        @autoreleasepool {
+            CMSampleBufferRef sample = [handle.output copyNextSampleBuffer];
+            if (!sample) return NULL;
+            CVPixelBufferRef buffer = CMSampleBufferGetImageBuffer(sample);
+            if (buffer) {
+                CFRetain(buffer);
+                *pts = ticks(CMSampleBufferGetPresentationTimeStamp(sample), handle.timescale);
+            }
+            CFRelease(sample);
+            return buffer;
         }
-        CFRelease(sample);
-        return buffer;
+    } @catch (NSException *exception) {
+        handle.failure = [NSString stringWithFormat:@"%@: %@", exception.name, exception.reason];
+        return NULL;
+    }
+}
+
+int vrf_reader_failed(void *reader_ref, char *error, size_t error_length) {
+    @try {
+        @autoreleasepool {
+            VrfReader *handle = (__bridge VrfReader *)reader_ref;
+            if (handle.failure) {
+                fail(error, error_length, handle.failure);
+                return 1;
+            }
+            if (handle.reader.status == AVAssetReaderStatusFailed) {
+                fail(error, error_length, handle.reader.error.localizedDescription ?: @"the reader failed");
+                return 1;
+            }
+            return 0;
+        }
+    } @catch (NSException *exception) {
+        fail(error, error_length, [NSString stringWithFormat:@"%@: %@", exception.name, exception.reason]);
+        return 1;
     }
 }
 
 void vrf_reader_close(void *reader_ref) {
-    VrfReader *handle = (VrfReader *)CFBridgingRelease(reader_ref);
-    [handle.reader cancelReading];
+    @try {
+        VrfReader *handle = (VrfReader *)CFBridgingRelease(reader_ref);
+        [handle.reader cancelReading];
+    } @catch (NSException *exception) {
+    }
 }

@@ -37,8 +37,15 @@ unsafe extern "C" {
         error_length: usize,
     ) -> *mut c_void;
     fn vrf_clip_close(clip: *mut c_void);
-    fn vrf_reader_open(clip: *mut c_void, from: i64, pixel_format: u32) -> *mut c_void;
+    fn vrf_reader_open(
+        clip: *mut c_void,
+        from: i64,
+        pixel_format: u32,
+        error: *mut c_char,
+        error_length: usize,
+    ) -> *mut c_void;
     fn vrf_reader_next(reader: *mut c_void, pts: *mut i64) -> *mut CVPixelBuffer;
+    fn vrf_reader_failed(reader: *mut c_void, error: *mut c_char, error_length: usize) -> i32;
     fn vrf_reader_close(reader: *mut c_void);
     fn free(pointer: *mut c_void);
 }
@@ -210,9 +217,19 @@ impl Reader {
             .partition_point(|key| *key <= from)
             .saturating_sub(1);
         let start = clip.pts[clip.keyframes.get(keyframe).copied().unwrap_or(0)];
-        let handle = unsafe { vrf_reader_open(clip.handle.as_ptr(), start, clip.pixel_format) };
-        let handle =
-            NonNull::new(handle).ok_or_else(|| anyhow::anyhow!("cannot start decoding"))?;
+        let mut error = [0 as c_char; 256];
+        let handle = unsafe {
+            vrf_reader_open(
+                clip.handle.as_ptr(),
+                start,
+                clip.pixel_format,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        let Some(handle) = NonNull::new(handle) else {
+            bail!("cannot start decoding: {}", error_text(&error));
+        };
         Ok(Reader {
             handle,
             first: from,
@@ -221,13 +238,24 @@ impl Reader {
     }
 
     /// The next displayed frame and its index, or `None` at the end of the stream. Fails if the
-    /// decoder's timestamps stop agreeing with the clip's table, which would mean a wrong frame.
+    /// decoder stopped with an error, or if its timestamps stop agreeing with the clip's table,
+    /// which would mean a wrong frame.
     pub fn next(&mut self, clip: &Clip) -> Result<Option<(usize, Frame)>> {
         loop {
             let mut pts = 0;
             let Some(buffer) =
                 NonNull::new(unsafe { vrf_reader_next(self.handle.as_ptr(), &mut pts) })
             else {
+                let mut error = [0 as c_char; 256];
+                let failed = unsafe {
+                    vrf_reader_failed(self.handle.as_ptr(), error.as_mut_ptr(), error.len())
+                };
+                ensure!(
+                    failed == 0,
+                    "decoding failed after frame {}: {}",
+                    self.first + self.produced,
+                    error_text(&error)
+                );
                 return Ok(None);
             };
             let frame = Frame(unsafe { CFRetained::from_raw(buffer) });
@@ -244,6 +272,12 @@ impl Reader {
             return Ok(Some((index, frame)));
         }
     }
+}
+
+fn error_text(error: &[c_char]) -> String {
+    unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl Drop for Reader {
