@@ -31,19 +31,24 @@ struct Segment {
     target: i64,
 }
 
+const MAX_SAMPLES: usize = 1 << 24;
+
+fn bytes_at(data: &[u8], at: usize, length: usize) -> Result<&[u8]> {
+    at.checked_add(length)
+        .and_then(|end| data.get(at..end))
+        .context("a box is cut short")
+}
+
 fn u16_at(data: &[u8], at: usize) -> Result<u16> {
-    let bytes = data.get(at..at + 2).context("a box is cut short")?;
-    Ok(u16::from_be_bytes(bytes.try_into()?))
+    Ok(u16::from_be_bytes(bytes_at(data, at, 2)?.try_into()?))
 }
 
 fn u32_at(data: &[u8], at: usize) -> Result<u32> {
-    let bytes = data.get(at..at + 4).context("a box is cut short")?;
-    Ok(u32::from_be_bytes(bytes.try_into()?))
+    Ok(u32::from_be_bytes(bytes_at(data, at, 4)?.try_into()?))
 }
 
 fn u64_at(data: &[u8], at: usize) -> Result<u64> {
-    let bytes = data.get(at..at + 8).context("a box is cut short")?;
-    Ok(u64::from_be_bytes(bytes.try_into()?))
+    Ok(u64::from_be_bytes(bytes_at(data, at, 8)?.try_into()?))
 }
 
 fn boxes(data: &[u8]) -> Result<Vec<([u8; 4], &[u8])>> {
@@ -54,17 +59,17 @@ fn boxes(data: &[u8]) -> Result<Vec<([u8; 4], &[u8])>> {
         let kind: [u8; 4] = data[at + 4..at + 8].try_into()?;
         let mut header = 8;
         if size == 1 {
-            size = u64_at(data, at + 8)? as usize;
+            size = usize::try_from(u64_at(data, at + 8)?).context("a box is too large")?;
             header = 16;
         } else if size == 0 {
             size = data.len() - at;
         }
-        ensure!(
-            size >= header && at + size <= data.len(),
-            "a box is cut short"
-        );
-        found.push((kind, &data[at + header..at + size]));
-        at += size;
+        let end = at
+            .checked_add(size)
+            .filter(|end| *end <= data.len() && size >= header)
+            .context("a box is cut short")?;
+        found.push((kind, &data[at + header..end]));
+        at = end;
     }
     Ok(found)
 }
@@ -107,7 +112,14 @@ fn movie(path: &Path) -> Result<Vec<u8>> {
         } else if size == 0 {
             size = length - at;
         }
-        ensure!(size >= skip && at + size <= length, "a box is cut short");
+        ensure!(
+            size >= skip && at.checked_add(size).is_some_and(|end| end <= length),
+            "a box is cut short"
+        );
+        ensure!(
+            &header[4..8] != b"moof",
+            "fragmented MP4 is not supported"
+        );
         if &header[4..8] == b"moov" {
             let mut body = vec![0; (size - skip) as usize];
             file.seek(SeekFrom::Start(at + skip))?;
@@ -139,7 +151,7 @@ fn segments(trak: &[u8], movie_scale: i64, track_scale: i64) -> Result<Vec<Segme
             target: 0,
         }]);
     };
-    let version = list[0];
+    let version = *list.first().context("the edit list is empty")?;
     let count = u32_at(list, 4)? as usize;
     let size = if version == 1 { 20 } else { 12 };
     let mut found = Vec::new();
@@ -165,28 +177,53 @@ fn segments(trak: &[u8], movie_scale: i64, track_scale: i64) -> Result<Vec<Segme
                 target: rescale(elapsed, movie_scale, track_scale),
             });
         }
-        elapsed += duration;
+        elapsed = elapsed.checked_add(duration).context("the edit list is too long")?;
     }
     ensure!(!found.is_empty(), "the edit list shows nothing");
     Ok(found)
 }
 
-fn runs(body: &[u8]) -> Result<Vec<(u32, i32)>> {
+fn runs(body: &[u8], declared: usize, what: &str) -> Result<Vec<(u32, i32)>> {
     let count = u32_at(body, 4)? as usize;
-    (0..count)
+    let table = bytes_at(body, 8, count.checked_mul(8).context("a box is cut short")?)?;
+    let runs: Vec<(u32, i32)> = table
+        .chunks_exact(8)
         .map(|entry| {
-            Ok((
-                u32_at(body, 8 + entry * 8)?,
-                u32_at(body, 12 + entry * 8)? as i32,
-            ))
+            (
+                u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]),
+                i32::from_be_bytes([entry[4], entry[5], entry[6], entry[7]]),
+            )
         })
-        .collect()
+        .collect();
+    let listed: u64 = runs.iter().map(|(samples, _)| u64::from(*samples)).sum();
+    ensure!(
+        listed <= declared as u64,
+        "{what} lists {listed} samples, the track declares {declared}"
+    );
+    Ok(runs)
+}
+
+fn declared_samples(stbl: &[u8]) -> Result<usize> {
+    let body = match child(stbl, b"stsz")? {
+        Some(body) => body,
+        None => child(stbl, b"stz2")?.context("no sample sizes")?,
+    };
+    let count = u32_at(body, 8)? as usize;
+    ensure!(
+        count <= MAX_SAMPLES,
+        "the track declares {count} samples, more than {MAX_SAMPLES}"
+    );
+    Ok(count)
 }
 
 pub fn read(path: &Path) -> Result<Track> {
     let moov = movie(path)?;
     let header = child(&moov, b"mvhd")?.context("no movie header")?;
     let movie_scale = timescale(header)? as i64;
+    ensure!(
+        child(&moov, b"mvex")?.is_none(),
+        "fragmented MP4 is not supported"
+    );
     for (kind, trak) in boxes(&moov)? {
         if &kind != b"trak" {
             continue;
@@ -231,9 +268,11 @@ fn track(trak: &[u8], mdia: &[u8], movie_scale: i64) -> Result<Track> {
         }
     }
 
-    let mut decode = Vec::new();
+    let declared = declared_samples(stbl)?;
+    let mut decode = Vec::with_capacity(declared);
     let mut time = 0i64;
-    for (count, delta) in runs(child(stbl, b"stts")?.context("no sample times")?)? {
+    let times = child(stbl, b"stts")?.context("no sample times")?;
+    for (count, delta) in runs(times, declared, "the time table")? {
         for _ in 0..count {
             decode.push(time);
             time += delta as i64;
@@ -242,7 +281,7 @@ fn track(trak: &[u8], mdia: &[u8], movie_scale: i64) -> Result<Track> {
     ensure!(!decode.is_empty(), "no samples");
     let mut offsets = Vec::with_capacity(decode.len());
     if let Some(body) = child(stbl, b"ctts")? {
-        for (count, offset) in runs(body)? {
+        for (count, offset) in runs(body, declared, "the composition offsets")? {
             offsets.extend(std::iter::repeat_n(offset as i64, count as usize));
         }
     }
@@ -300,4 +339,104 @@ fn track(trak: &[u8], mdia: &[u8], movie_scale: i64) -> Result<Track> {
         lead,
         edits,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut bytes = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    fn full(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        boxed(kind, &[&[0u8; 4], payload].concat())
+    }
+
+    fn words(values: &[u32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_be_bytes()).collect()
+    }
+
+    fn media(stts: &[u32], stsz_count: u32, ctts: Option<&[u32]>) -> Vec<u8> {
+        let mut entry = vec![0u8; 86];
+        entry[..4].copy_from_slice(&86u32.to_be_bytes());
+        entry[4..8].copy_from_slice(b"avc1");
+        entry[32..34].copy_from_slice(&64u16.to_be_bytes());
+        entry[34..36].copy_from_slice(&48u16.to_be_bytes());
+        let mut stbl = full(b"stsd", &[&words(&[1]), entry.as_slice()].concat());
+        stbl.extend(full(b"stts", &[words(&[stts.len() as u32 / 2]), words(stts)].concat()));
+        stbl.extend(full(b"stsz", &words(&[0, stsz_count])));
+        if let Some(ctts) = ctts {
+            stbl.extend(full(b"ctts", &[words(&[ctts.len() as u32 / 2]), words(ctts)].concat()));
+        }
+        let minf = boxed(b"minf", &boxed(b"stbl", &stbl));
+        let mut mdia = full(b"mdhd", &[&[0u8; 8][..], &words(&[1000, 0, 0])].concat());
+        mdia.extend(minf);
+        mdia
+    }
+
+    fn parse(mdia_body: &[u8], trak_body: &[u8]) -> Result<Track> {
+        track(trak_body, mdia_body, 1000)
+    }
+
+    #[test]
+    fn a_plain_track_gives_its_presentation_times() -> Result<()> {
+        let track = parse(&media(&[3, 1000], 3, None), &[])?;
+        assert_eq!(track.pts, [0, 1000, 2000]);
+        assert_eq!((track.width, track.height), (64, 48));
+        Ok(())
+    }
+
+    #[test]
+    fn a_time_run_longer_than_the_declared_sample_count_is_refused() {
+        let error = parse(&media(&[4_000_000_000, 1], 3, None), &[]).unwrap_err();
+        assert!(format!("{error:#}").contains("declares 3"), "{error:#}");
+    }
+
+    #[test]
+    fn an_offset_run_longer_than_the_declared_sample_count_is_refused() {
+        let error = parse(&media(&[3, 1000], 3, Some(&[4_000_000_000, 0])), &[]).unwrap_err();
+        assert!(format!("{error:#}").contains("declares 3"), "{error:#}");
+    }
+
+    #[test]
+    fn a_declared_sample_count_beyond_the_limit_is_refused() {
+        let error = parse(&media(&[3, 1000], u32::MAX, None), &[]).unwrap_err();
+        assert!(format!("{error:#}").contains("more than"), "{error:#}");
+    }
+
+    #[test]
+    fn a_box_size_that_overflows_is_an_error() {
+        let mut data = vec![0, 0, 0, 1];
+        data.extend_from_slice(b"free");
+        data.extend_from_slice(&u64::MAX.to_be_bytes());
+        assert!(boxes(&data).is_err());
+    }
+
+    #[test]
+    fn an_empty_edit_list_is_an_error() {
+        let trak = boxed(b"edts", &boxed(b"elst", &[]));
+        let error = parse(&media(&[3, 1000], 3, None), &trak).unwrap_err();
+        assert!(format!("{error:#}").contains("edit list"), "{error:#}");
+    }
+
+    #[test]
+    fn a_fragmented_file_is_refused_by_name() -> Result<()> {
+        let mut moov = full(b"mvhd", &[&[0u8; 8][..], &words(&[1000, 0])].concat());
+        moov.extend(boxed(b"mvex", &[]));
+        let mut file = boxed(b"ftyp", b"isom\0\0\0\0");
+        file.extend(boxed(b"moov", &moov));
+        let path = std::env::temp_dir().join(format!("vrf-fragmented-{}.mp4", std::process::id()));
+        fs::write(&path, file)?;
+        let result = read(&path);
+        fs::remove_file(&path)?;
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("fragmented MP4 is not supported"), "{error:#}");
+        Ok(())
+    }
 }
