@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use vrf::colour::{Chroma, Format};
 use vrf::gpu::Gpu;
 use vrf::gpu::convert::Converter;
@@ -10,11 +10,13 @@ use vrf::gpu::d3d12::{PoolTarget, Releaser};
 use vrf::mux::Muxer;
 use vrf::sched::Consumer;
 use vrf::sink::Sink;
+use vrf_encode::d3d12ve::D3d12H264Encoder;
 use vrf_encode::nvenc::{InputPool, NvencEncoder, NvencSessions, Options, PoolFrame};
-use vrf_encode::{Codec, ColourSpace};
+use vrf_encode::{Codec, ColourSpace, Encoder};
 
 use crate::Paint;
 use crate::driver::{Config, submit_loop};
+use crate::win;
 
 pub const POOL_MARGIN: usize = 32;
 
@@ -45,7 +47,10 @@ unsafe impl Send for Warm {}
 
 impl Warm {
     pub fn new() -> Result<Warm> {
-        let gpu = Gpu::new()?;
+        let gpu = match win::adapter() {
+            Some(luid) => Gpu::with_luid(luid)?,
+            None => Gpu::new()?,
+        };
         let converter = Converter::new(&gpu, Format::Nv12);
         Ok(Warm {
             gpu,
@@ -91,22 +96,51 @@ pub fn start(
         let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
         (converting, submit)
     } else {
-        let encoder = NvencEncoder::with_pool_size(&device, encoder_config, options, pool_size)?;
-        let converting = Converting::new(
-            warm.gpu.clone(),
-            warm.converter.clone(),
-            vec![encoder.pool().clone()],
-            chunk,
-            config.chroma(),
-        )?;
-        let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
-        (converting, submit)
+        match NvencEncoder::with_pool_size(&device, encoder_config.clone(), options, pool_size) {
+            Ok(encoder) => {
+                let pool = encoder.pool().clone();
+                single(warm, config, encoder, pool, consumer, sink)?
+            }
+            Err(nvenc) if encoder_config.codec == Codec::H264 => {
+                let encoder = D3d12H264Encoder::new(&device, &encoder_config, pool_size)
+                    .with_context(|| {
+                        format!("NVENC cannot open ({nvenc:#}) and neither can D3D12 Video Encode")
+                    })?;
+                let pool = encoder.pool().clone();
+                single(warm, config, encoder, pool, consumer, sink)?
+            }
+            Err(nvenc) => {
+                return Err(nvenc.context(
+                    "NVENC cannot open, and the D3D12 Video Encode fallback encodes H.264 only",
+                ));
+            }
+        }
     };
     Ok(Started {
         converting,
         keep: (),
         submit,
     })
+}
+
+fn single<E: Encoder + Send + 'static>(
+    warm: &Warm,
+    config: &Config,
+    encoder: E,
+    pool: InputPool,
+    consumer: Consumer<Frame>,
+    sink: Sink,
+) -> Result<(Converting, Submit)> {
+    let converting = Converting::new(
+        warm.gpu.clone(),
+        warm.converter.clone(),
+        vec![pool],
+        chunk_frames(config.width, config.height),
+        config.chroma(),
+    )?;
+    let frame_rate = config.frame_rate;
+    let submit = thread::spawn(move || submit_loop(encoder, consumer, sink, frame_rate));
+    Ok((converting, submit))
 }
 
 pub struct ConvertingSpec {

@@ -425,6 +425,8 @@ pub struct D3d12H264Encoder {
     record: Option<Vec<u8>>,
 }
 
+unsafe impl Send for D3d12H264Encoder {}
+
 impl D3d12H264Encoder {
     pub fn new(
         device: &ID3D12Device,

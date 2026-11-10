@@ -12,7 +12,7 @@ use windows::Win32::System::Threading::{
 
 static ADAPTER: OnceLock<Option<Luid>> = OnceLock::new();
 
-fn adapter() -> Option<Luid> {
+pub fn adapter() -> Option<Luid> {
     *ADAPTER.get_or_init(|| match std::env::var("VRF_ADAPTER_LUID") {
         Ok(text) => {
             let (high, low) = text.split_once(',')?;

@@ -86,7 +86,7 @@ Remotion and HyperFrames drive headless Chrome over DevTools. For every frame, t
 
 Strobe embeds CEF 156, the Chromium Embedded Framework, and renders off screen. The painted frame arrives as an IOSurface. A wgpu compute shader converts it to NV12, and VideoToolbox encodes it. On that path, no frame comes back to the CPU.
 
-On Windows, the frame arrives as a D3D12 texture. NVENC encodes it, so Windows needs an NVIDIA GPU.
+On Windows, the frame arrives as a D3D12 texture. NVENC encodes it. Where NVENC cannot open, as on an Intel GPU, H.264 falls back to D3D12 Video Encode, which takes the same texture. HEVC and AV1 need NVENC.
 
 The GPU path is the big win. These smaller parts add up too:
 
@@ -124,7 +124,7 @@ Windows on x64: unzip `strobe-windows-x64.zip` and put the `strobe-windows-x64` 
 Strobe renders your project with your project's own dependencies, so you need Node and a `node_modules` folder.
 
 - **macOS:** for the second H.264 lane, run `brew install x264`. If the library is not at `/opt/homebrew/lib/libx264.dylib`, set `VRF_LIBX264` to its path.
-- **Windows:** you need an NVIDIA GPU for NVENC.
+- **Windows:** you need an NVIDIA GPU for NVENC. Without one, only H.264 renders, through D3D12 Video Encode. On a machine with both an NVIDIA and an Intel GPU, set `VRF_ADAPTER_LUID` to the Intel adapter's `high,low` id to render on it.
 
 <details>
 <summary><b>Build from source</b></summary>
@@ -213,7 +213,7 @@ I would rather you read this here than find it in production.
 
 - **Linux.** Strobe runs on macOS and Windows. Linux is not done.
 - **WebGL shaders on Windows.** Some shaders hash with `sin`, so their output depends on the GPU. Strobe runs WebGL on the same NVIDIA GPU as the encoder. HyperFrames runs it on the default adapter, which can be the Intel iGPU. On `hf-hyperframes-launch`, frames 625 to 660 differ from HyperFrames' own render for that reason.
-- **Intel GPUs on Windows.** The D3D12 Video Encode path for Intel GPUs, which does H.264 only, is written and tested. It is not connected to `strobe render` yet.
+- **Intel GPUs on Windows.** `strobe render` encodes H.264 on an Intel GPU with D3D12 Video Encode, in Main profile with constant quality and one reference frame. It renders on an Intel UHD 770, and HEVC and AV1 fail there with an error. I have not scored its quality against NVENC's.
 - **HEVC and AV1 on NVENC.** H.264 has a 240 Mbps ceiling, so grainy footage keeps its detail. HEVC and AV1 have no ceiling yet, so they may starve grainy footage of bits. I have not tested that.
 
 ## License
