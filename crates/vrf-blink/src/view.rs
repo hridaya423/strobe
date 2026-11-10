@@ -468,9 +468,6 @@ impl View {
                 .add_dev_tools_message_observer(Some(&mut BlinkObserver::new(channels.methods)));
             Ok((OnUi(host), OnUi(observer)))
         })?;
-        loaded
-            .recv_timeout(LOAD_TIMEOUT)
-            .context("the page did not finish loading")?;
         let mut view = View {
             ui: ui.clone(),
             host,
@@ -488,6 +485,9 @@ impl View {
             resized: Cell::new(false),
             closing: false,
         };
+        loaded
+            .recv_timeout(LOAD_TIMEOUT)
+            .context("the page did not finish loading")?;
         if view.ticking {
             view.evaluate(
                 "document.readyState === 'complete' || new Promise((resolve) => addEventListener('load', () => resolve(true), { once: true }))",
