@@ -20,6 +20,10 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt
       - run: cargo fmt --all --check
+      - if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
       - run: cargo test --release -p vrf-encode --lib
       - run: cargo test --release -p vrf --lib
       - run: cargo test --release -p vrf-bench --test corpus --test score --test run --test versions
