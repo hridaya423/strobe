@@ -344,6 +344,7 @@ pub fn run<R: Send + 'static>(work: impl FnOnce(Ui) -> R + Send + 'static) -> R 
         end_trace(&file);
     }
     let Ok(result) = result else {
+        let _ = std::fs::remove_dir_all(&cache);
         exit(101);
     };
     shutdown();
