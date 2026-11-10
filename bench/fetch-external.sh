@@ -32,7 +32,7 @@ remotion_project() {
     cd "$dir"
     if git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then npm ci --no-fund --no-audit --loglevel=error --legacy-peer-deps
     else npm install --no-fund --no-audit --loglevel=error --legacy-peer-deps; fi
-    ./node_modules/.bin/remotion browser ensure >/dev/null
+    ./node_modules/.bin/remotion browser ensure >/dev/null 2>&1 || true
     local shell=node_modules/.remotion/chrome-headless-shell
     [ -d "$shell" ] || return 0
     local bin=$(find "$shell" -name chrome-headless-shell -type f | head -1)
