@@ -90,16 +90,7 @@ impl Project {
             .map(|dir| canonical(dir))
             .collect::<Result<Vec<_>>>()?;
         let lock = match fs::read(root.join(LOCK_FILE)) {
-            Ok(bytes) => {
-                let lock: Lock = serde_json::from_slice(&bytes)
-                    .with_context(|| format!("{LOCK_FILE} is not valid"))?;
-                ensure!(
-                    lock.version == 1,
-                    "{LOCK_FILE} has unknown version {}",
-                    lock.version
-                );
-                lock
-            }
+            Ok(bytes) => parse_lock(&bytes)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Lock {
                 version: 1,
                 pins: Vec::new(),
@@ -298,6 +289,25 @@ impl Project {
     }
 }
 
+fn parse_lock(bytes: &[u8]) -> Result<Lock> {
+    let lock: Lock =
+        serde_json::from_slice(bytes).with_context(|| format!("{LOCK_FILE} is not valid"))?;
+    ensure!(
+        lock.version == 1,
+        "{LOCK_FILE} has unknown version {}",
+        lock.version
+    );
+    for pin in &lock.pins {
+        ensure!(
+            safe_join(Path::new(""), &pin.path).is_some(),
+            "{LOCK_FILE} pins {} at {:?}, which is not a path inside the project",
+            pin.url,
+            pin.path
+        );
+    }
+    Ok(lock)
+}
+
 fn sha256_of(path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
     let mut context = digest::Context::new(&digest::SHA256);
@@ -424,6 +434,20 @@ struct Served {
 }
 
 impl Served {
+    fn pull(&mut self, buffer: &mut [u8]) -> Result<usize> {
+        let Some(file) = self.body.as_mut() else {
+            return Ok(0);
+        };
+        let read = file.read(buffer).context("cannot read the file")?;
+        ensure!(
+            read > 0 || buffer.is_empty() || self.remaining == 0,
+            "the file ended {} bytes before its announced length",
+            self.remaining
+        );
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+
     fn not_found() -> Served {
         Served {
             status: 404,
@@ -565,15 +589,18 @@ wrap_resource_handler! {
             let Some(served) = served.as_mut() else {
                 return 0;
             };
-            let Some(file) = served.body.as_mut() else {
-                return 0;
-            };
             let wanted = served.remaining.min(bytes_to_read as u64) as usize;
             let buffer = unsafe { std::slice::from_raw_parts_mut(data_out, wanted) };
-            let read = file.read(buffer).unwrap_or(0);
-            served.remaining -= read as u64;
-            *bytes_read = read as _;
-            (read > 0) as _
+            match served.pull(buffer) {
+                Ok(read) => {
+                    *bytes_read = read as _;
+                    (read > 0) as _
+                }
+                Err(error) => {
+                    self.project.fail(format!("{}: {error:#}", self.url));
+                    0
+                }
+            }
         }
     }
 }
@@ -738,6 +765,49 @@ mod tests {
             url_path("vrf://project/%2E%2E/secret").as_deref(),
             Some("../secret")
         );
+    }
+
+    #[test]
+    fn a_lock_pins_only_paths_inside_the_project() {
+        let lock = |path: &str| {
+            let pin = serde_json::json!({
+                "url": "https://example.com/a.js",
+                "sha256": "00",
+                "path": path,
+                "content_type": "text/javascript"
+            });
+            let text = serde_json::json!({ "version": 1, "pins": [pin] }).to_string();
+            parse_lock(text.as_bytes()).map(|lock| lock.pins.len())
+        };
+        assert_eq!(lock(".vrf/cache/abc").unwrap(), 1);
+        for path in ["/etc/passwd", "../outside", ".vrf/../../outside"] {
+            let message = format!("{:#}", lock(path).unwrap_err());
+            assert!(
+                message.contains(LOCK_FILE) && message.contains(path),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_that_ends_early_is_an_error_not_the_end_of_the_response() {
+        let path = std::env::temp_dir().join(format!("vrf-scheme-short-{}", std::process::id()));
+        fs::write(&path, [7u8; 10]).unwrap();
+        let mut served = Served::file(&path, "application/octet-stream", None).unwrap();
+        fs::write(&path, [7u8; 4]).unwrap();
+        let mut buffer = [0u8; 16];
+        assert_eq!(served.pull(&mut buffer[..10]).unwrap(), 4);
+        let error = served.pull(&mut buffer[..6]).unwrap_err();
+        fs::remove_file(&path).unwrap();
+        assert!(format!("{error:#}").contains("6 bytes"), "{error:#}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_error_is_an_error_not_the_end_of_the_response() {
+        let mut served = Served::file(&std::env::temp_dir(), "text/plain", None).unwrap();
+        served.remaining = 8;
+        assert!(served.pull(&mut [0u8; 8]).is_err());
     }
 
     #[test]
