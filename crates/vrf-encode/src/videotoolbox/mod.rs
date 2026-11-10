@@ -128,10 +128,10 @@ fn read_usize(session: &VTCompressionSession, key: &CFString) -> Option<usize> {
             (&mut out as *mut *const CFType).cast(),
         )
     };
-    let value = unsafe { CFRetained::from_raw(NonNull::new(out as *mut CFType)?) };
     if status != 0 {
         return None;
     }
+    let value = unsafe { CFRetained::from_raw(NonNull::new(out as *mut CFType)?) };
     usize::try_from(value.downcast_ref::<CFNumber>()?.as_i64()?).ok()
 }
 
