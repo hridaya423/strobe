@@ -102,10 +102,16 @@ fn frames_in(view: &mut View, deadline: Instant, base: u64) -> Result<u64> {
 /// over the last one kept. A machine with four cores per view or more takes that many views
 /// anyway unless they cost it more than a fifth of the frame rate.
 pub fn measure(ui: &Ui) -> Result<Calibration> {
+    let page = std::env::temp_dir().join(format!("vrf-calibrate-{}.html", std::process::id()));
+    fs::write(&page, PROBE)?;
+    let measured = measure_page(ui, &page);
+    let _ = fs::remove_file(&page);
+    measured
+}
+
+fn measure_page(ui: &Ui, page: &Path) -> Result<Calibration> {
     let cores = thread::available_parallelism()?.get();
     let counts: Vec<usize> = CANDIDATES.into_iter().filter(|n| *n <= cores).collect();
-    let page = std::env::temp_dir().join("vrf-calibrate.html");
-    fs::write(&page, PROBE)?;
     let url = format!(
         "file:///{}",
         page.display()
@@ -176,16 +182,40 @@ fn choose(fps: &BTreeMap<usize, f64>, cores: usize) -> usize {
     }
 }
 
-fn read_entries(cache: &Path) -> BTreeMap<String, Calibration> {
-    fs::read(cache)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+fn read_entries(cache: &Path) -> Result<BTreeMap<String, Calibration>> {
+    match fs::read(cache) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .with_context(|| format!("{} is not valid", cache.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error).with_context(|| format!("cannot read {}", cache.display())),
+    }
 }
 
 /// The cached measurement for this machine and CEF build, if there is one.
 pub fn stored(cache: &Path) -> Option<Calibration> {
-    read_entries(cache).remove(&key())
+    read_entries(cache).ok()?.remove(&key())
+}
+
+fn record(cache: &Path, key: String, measured: Calibration) -> Result<()> {
+    let mut entries = match read_entries(cache) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let kept = cache.with_extension("json.bad");
+            fs::rename(cache, &kept)
+                .with_context(|| format!("{error:#}, and it cannot be moved aside"))?;
+            eprintln!("strobe: {error:#}; kept as {}", kept.display());
+            BTreeMap::new()
+        }
+    };
+    entries.insert(key, measured);
+    fs::create_dir_all(cache.parent().context("cache path has no parent")?)?;
+    let staging = cache.with_extension(format!("json.{}.tmp", std::process::id()));
+    let written = fs::write(&staging, serde_json::to_vec_pretty(&entries)?)
+        .and_then(|()| fs::rename(&staging, cache));
+    if written.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
+    written.with_context(|| format!("write {}", cache.display()))
 }
 
 /// The cached measurement for this machine and CEF build, made and stored first if there is
@@ -195,10 +225,7 @@ pub fn calibrated(ui: &Ui, cache: &Path) -> Result<Calibration> {
         return Ok(found);
     }
     let measured = measure(ui)?;
-    let mut entries = read_entries(cache);
-    entries.insert(key(), measured.clone());
-    fs::create_dir_all(cache.parent().context("cache path has no parent")?)?;
-    fs::write(cache, serde_json::to_vec_pretty(&entries)?)?;
+    record(cache, key(), measured.clone())?;
     Ok(measured)
 }
 
@@ -248,6 +275,51 @@ mod tests {
 
     fn map(rates: [f64; 4]) -> BTreeMap<usize, f64> {
         CANDIDATES.into_iter().zip(rates).collect()
+    }
+
+    fn cache_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("vrf-calibration-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn entry(views: usize) -> Calibration {
+        Calibration {
+            views,
+            fps: BTreeMap::from([(views, 1.0)]),
+        }
+    }
+
+    #[test]
+    fn recording_keeps_the_other_machines_entries() {
+        let dir = cache_dir("keeps");
+        let cache = dir.join("c.json");
+        record(&cache, "other".into(), entry(2)).unwrap();
+        record(&cache, "this".into(), entry(4)).unwrap();
+        let entries = read_entries(&cache).unwrap();
+        assert_eq!(entries["other"], entry(2));
+        assert_eq!(entries["this"], entry(4));
+        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(leftovers.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_cache_is_kept_aside_not_overwritten() {
+        let dir = cache_dir("bad");
+        let cache = dir.join("c.json");
+        fs::write(&cache, "{ truncated").unwrap();
+        assert!(read_entries(&cache).is_err());
+        assert!(stored(&cache).is_none());
+        record(&cache, "this".into(), entry(4)).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("c.json.bad")).unwrap(),
+            "{ truncated"
+        );
+        assert_eq!(read_entries(&cache).unwrap()["this"], entry(4));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
