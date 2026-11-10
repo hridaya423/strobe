@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail};
 
 const FRAMEWORK: &str = "Chromium Embedded Framework.framework";
 const HELPER_KINDS: [&str; 5] = ["", " (GPU)", " (Renderer)", " (Plugin)", " (Alerts)"];
@@ -62,11 +62,45 @@ fn install_executable(source: &Path, copy: &Path) -> Result<()> {
 fn bundle_app(app: &Path, executable: &str, identifier: &str, source: &Path) -> Result<PathBuf> {
     let installed = app.join("Contents/MacOS").join(executable);
     install_executable(source, &installed)?;
-    fs::write(
-        app.join("Contents/Info.plist"),
-        plist(executable, identifier),
+    write_if_changed(
+        &app.join("Contents/Info.plist"),
+        plist(executable, identifier).as_bytes(),
     )?;
     Ok(installed)
+}
+
+fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if fs::read(path).is_ok_and(|current| current == bytes) {
+        return Ok(());
+    }
+    fs::write(path, bytes)
+}
+
+/// Copies the framework to a sibling name and renames it into place, so a copy that was
+/// interrupted never leaves a partial framework under its real name.
+fn install_framework(source: &Path, frameworks: &Path) -> Result<()> {
+    let framework = frameworks.join(FRAMEWORK);
+    if framework.exists() {
+        return Ok(());
+    }
+    let partial = frameworks.join(format!("{FRAMEWORK}.partial"));
+    match fs::remove_dir_all(&partial) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    let status = Command::new("cp")
+        .arg("-c")
+        .arg("-R")
+        .arg(source)
+        .arg(&partial)
+        .status()
+        .context("run cp")?;
+    if !status.success() {
+        let _ = fs::remove_dir_all(&partial);
+        bail!("cannot copy {}", source.display());
+    }
+    fs::rename(&partial, &framework)
+        .with_context(|| format!("move the copy to {}", framework.display()))
 }
 
 /// Builds `<profile dir>/bundle/<name>.app` around `exe` with the CEF framework and the five
@@ -91,18 +125,7 @@ pub fn build(exe: &Path) -> Result<PathBuf> {
     fs::create_dir_all(&frameworks)?;
     let main = bundle_app(&app, name, &identifier, exe)?;
 
-    let framework = frameworks.join(FRAMEWORK);
-    if !framework.exists() {
-        let source = cef_path().join(FRAMEWORK);
-        let status = Command::new("cp")
-            .arg("-c")
-            .arg("-R")
-            .arg(&source)
-            .arg(&frameworks)
-            .status()
-            .context("run cp")?;
-        ensure!(status.success(), "cannot copy {}", source.display());
-    }
+    install_framework(&cef_path().join(FRAMEWORK), &frameworks)?;
     for kind in HELPER_KINDS {
         let helper = format!("{name} Helper{kind}");
         let suffix: String = kind
@@ -123,4 +146,67 @@ pub fn build(exe: &Path) -> Result<PathBuf> {
         )?;
     }
     Ok(main)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vrf-bundle-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_plist_is_written_only_when_it_changes() {
+        let dir = scratch("plist");
+        let path = dir.join("Info.plist");
+        write_if_changed(&path, b"one").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+        write_if_changed(&path, b"one").unwrap();
+        assert!(write_if_changed(&path, b"two").is_err());
+        fs::remove_dir_all(&dir).unwrap_or_default();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_interrupted_framework_copy_is_replaced_not_used() {
+        let dir = scratch("framework");
+        let source = dir.join("cef").join(FRAMEWORK);
+        fs::create_dir_all(source.join("Resources")).unwrap();
+        fs::write(source.join("Resources/a"), "a").unwrap();
+        fs::write(source.join("Resources/b"), "b").unwrap();
+        let frameworks = dir.join("Frameworks");
+        let partial = frameworks.join(format!("{FRAMEWORK}.partial"));
+        fs::create_dir_all(partial.join("Resources")).unwrap();
+        fs::write(partial.join("Resources/a"), "half").unwrap();
+        install_framework(&source, &frameworks).unwrap();
+        let framework = frameworks.join(FRAMEWORK);
+        assert_eq!(
+            fs::read_to_string(framework.join("Resources/a")).unwrap(),
+            "a"
+        );
+        assert_eq!(
+            fs::read_to_string(framework.join("Resources/b")).unwrap(),
+            "b"
+        );
+        assert!(!partial.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_failed_framework_copy_leaves_nothing_under_the_real_name() {
+        let dir = scratch("missing");
+        let frameworks = dir.join("Frameworks");
+        fs::create_dir_all(&frameworks).unwrap();
+        assert!(install_framework(&dir.join("absent"), &frameworks).is_err());
+        assert!(!frameworks.join(FRAMEWORK).exists());
+        assert!(!frameworks.join(format!("{FRAMEWORK}.partial")).exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
