@@ -20,4 +20,4 @@ jobs:
           toolchain: 1.99.1
       - run: cargo test -p vrf-encode --lib
       - run: cargo test -p vrf --lib
-      - run: cargo test -p vrf-bench --lib
+      - run: cargo test -p vrf-bench --test corpus --test score --test run --test versions
