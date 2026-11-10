@@ -1,23 +1,17 @@
 #![cfg(windows)]
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use vrf_encode::nvenc::{
     NvencEncoder, NvencSessions, Options, POOL_SIZE, PixelFormat, PoolFrame, Preset, RateControl,
-    Ready, Tuning, capabilities, nvidia_device,
+    Tuning, capabilities, nvidia_device,
 };
 use vrf_encode::{
     Codec, Encoder, EncoderConfig, EncoderFrame, Packet, Quality, Rational, StreamInfo,
 };
-use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 use windows::core::Interface;
 
 #[allow(dead_code)]
@@ -167,6 +161,29 @@ fn hevc_main10_encodes_p010_frames() {
 #[test]
 fn av1_encodes_60_frames_and_frame_37_decodes_as_37() {
     check_mp4(Codec::Av1, false, 0, "nv-av1", "av1");
+}
+
+#[test]
+fn av1_record_level_is_the_level_ffprobe_reads_from_the_stream() {
+    let _engine = engine();
+    let frame_rate = Rational::new(30, 1);
+    let (packets, info) = encode(
+        {
+            let mut config = EncoderConfig::new(Codec::Av1, 1920, 1080, frame_rate);
+            config.keyframe_interval = 30;
+            config
+        },
+        options(0),
+        8,
+    )
+    .unwrap();
+    let scratch = Scratch::new("nv-av1-level");
+    let file = scratch.path("out.mp4");
+    write_mp4(&file, packets, &info, frame_rate);
+    assert_eq!(
+        probe(&file, "stream=level"),
+        (info.config[1] & 0x1f).to_string()
+    );
 }
 
 #[test]
