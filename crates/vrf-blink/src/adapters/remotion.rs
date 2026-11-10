@@ -5,6 +5,7 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -19,7 +20,7 @@ use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
 use super::hyperframes;
 use super::{
-    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, contained_join, hash_tree, short_hex,
+    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, contained_join, hash_tree, partial_path, short_hex, write_if_changed,
     since,
 };
 use crate::driver::{Config, Plan, Runs, Warm, render_runs};
@@ -301,8 +302,8 @@ pub fn bundle(project: &Path, entry: Option<&Path>) -> Result<Bundle> {
     }
     fs::create_dir_all(&root)?;
     let script = root.join("remotion-bundle.mjs");
-    fs::write(&script, BUNDLE_JS)?;
-    let partial = root.join(format!("{hash}.partial-{}", std::process::id()));
+    write_if_changed(&script, BUNDLE_JS)?;
+    let partial = partial_path(&root, &hash);
     let _ = fs::remove_dir_all(&partial);
     let output = Command::new("node")
         .arg(&script)
@@ -336,11 +337,32 @@ pub struct Offthread {
     pub serve_url: String,
 }
 
+const FRAME_SERVER_START: Duration = Duration::from_secs(30);
+
+fn first_line(
+    stdout: impl std::io::Read + Send + 'static,
+    timeout: Duration,
+) -> Result<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut line = String::new();
+        let read = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+        let _ = sender.send(read);
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(line) => Ok(line?),
+        Err(_) => Err(anyhow!(
+            "the frame server printed nothing within {} s",
+            timeout.as_secs_f64()
+        )),
+    }
+}
+
 impl Offthread {
     pub fn start(project: &Path, bundle_dir: &Path) -> Result<Offthread> {
         let script = cache_dir().join("remotion").join("remotion-serve.mjs");
         fs::create_dir_all(script.parent().context("cache path has no parent")?)?;
-        fs::write(&script, SERVE_JS)?;
+        write_if_changed(&script, SERVE_JS)?;
         let mut child = Command::new("node")
             .arg(&script)
             .arg(project)
@@ -350,28 +372,31 @@ impl Offthread {
             .spawn()
             .context("run node to serve video frames")?;
         let stdin = child.stdin.take();
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().context("no stdout")?).read_line(&mut line)?;
-        let started: Value =
-            serde_json::from_str(&line).context("the frame server did not start")?;
-        let port = started["offthreadPort"]
-            .as_u64()
-            .context("the frame server reported no port")?;
-        Ok(Offthread {
+        let stdout = child.stdout.take();
+        let mut server = Offthread {
             child,
             stdin,
-            port: port as u16,
-            serve_url: started["serveUrl"]
-                .as_str()
-                .context("the frame server reported no URL")?
-                .to_owned(),
-        })
+            port: 0,
+            serve_url: String::new(),
+        };
+        let line = first_line(stdout.context("no stdout")?, FRAME_SERVER_START)?;
+        let started: Value =
+            serde_json::from_str(&line).context("the frame server did not start")?;
+        server.port = started["offthreadPort"]
+            .as_u64()
+            .context("the frame server reported no port")? as u16;
+        server.serve_url = started["serveUrl"]
+            .as_str()
+            .context("the frame server reported no URL")?
+            .to_owned();
+        Ok(server)
     }
 }
 
 impl Drop for Offthread {
     fn drop(&mut self) {
         drop(self.stdin.take());
+        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
@@ -1054,6 +1079,51 @@ mod tests {
         );
         assert!(project_file(&format!("vrf://project/{absolute}"), &roots).is_err());
         fs::remove_dir_all(&outer)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_frame_server_kills_a_child_that_ignores_its_stdin() -> Result<()> {
+        let child = Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::piped())
+            .spawn()?;
+        let pid = child.id();
+        let stdin = None;
+        let server = Offthread {
+            child,
+            stdin,
+            port: 0,
+            serve_url: String::new(),
+        };
+        let started = Instant::now();
+        drop(server);
+        assert!(started.elapsed() < Duration::from_secs(20));
+        let alive = Command::new("kill").arg("-0").arg(pid.to_string()).output()?;
+        assert!(!alive.status.success());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_frame_server_that_prints_nothing_fails_after_the_timeout() -> Result<()> {
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().context("no stdout")?;
+        let error = first_line(stdout, Duration::from_millis(200)).unwrap_err();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(format!("{error:#}").contains("printed nothing"), "{error:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_first_line_of_a_frame_server_is_read() -> Result<()> {
+        let line = first_line(&b"{\"offthreadPort\":1}\nmore"[..], Duration::from_secs(5))?;
+        assert_eq!(line.trim(), "{\"offthreadPort\":1}");
         Ok(())
     }
 }

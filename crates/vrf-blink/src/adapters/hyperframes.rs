@@ -15,7 +15,7 @@ use vrf::audio::{HyperframesTrack, hyperframes_clips, mix};
 use vrf_encode::{Codec, Rational};
 
 use super::{
-    PerFrame, Progress, StageStats, add_track, encode_track, audio_samples, cache_dir, contained_join, hash_tree, short_hex,
+    PerFrame, Progress, StageStats, add_track, encode_track, audio_samples, cache_dir, contained_join, hash_tree, partial_path, short_hex, write_if_changed,
     since,
 };
 use crate::driver::{Capture, Config, Plan, Runs, Warm, render_runs};
@@ -173,9 +173,9 @@ pub fn prepare(
     }
     fs::create_dir_all(&root)?;
     let script = root.join("hyperframes-prepare.mjs");
-    fs::write(&script, PREPARE_JS)?;
-    fs::write(root.join("hyperframes-native.mjs"), NATIVE_JS)?;
-    let partial = root.join(format!("{hash}.partial-{}", std::process::id()));
+    write_if_changed(&script, PREPARE_JS)?;
+    write_if_changed(&root.join("hyperframes-native.mjs"), NATIVE_JS)?;
+    let partial = partial_path(&root, &hash);
     let _ = fs::remove_dir_all(&partial);
     let output = Command::new("node")
         .arg(&script)
@@ -226,15 +226,17 @@ pub fn prepare_for(options: &Options) -> Result<Prepare> {
     {
         Some(refused) => refused,
         None => {
-            let refused = NativeVideos::new(
+            let found = NativeVideos::new(
                 &first.prepared.natives,
                 &[&first.dir.join("plan/compiled"), &options.project],
             )?
             .refused();
-            let partial = checked.with_extension(format!("partial-{}", std::process::id()));
-            fs::write(&partial, serde_json::to_vec(&refused)?)?;
-            fs::rename(&partial, &checked)?;
-            refused
+            if found.cacheable {
+                let partial = partial_path(&first.dir, "refused.json");
+                fs::write(&partial, serde_json::to_vec(&found.clips)?)?;
+                fs::rename(&partial, &checked)?;
+            }
+            found.clips
         }
     };
     if refused.is_empty() {
@@ -391,9 +393,10 @@ impl Page {
     }
 
     fn keep(&self, probe: &Probe) -> Result<()> {
-        let partial = self
-            .probed
-            .with_extension(format!("partial-{}", std::process::id()));
+        let partial = partial_path(
+            self.probed.parent().context("the probe cache has a directory")?,
+            "probed",
+        );
         fs::write(&partial, serde_json::to_vec(probe)?)?;
         fs::rename(&partial, &self.probed)?;
         Ok(())

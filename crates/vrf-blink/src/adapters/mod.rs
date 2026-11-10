@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -156,6 +157,29 @@ pub(crate) fn contained_join(root: &Path, relative: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+pub(crate) fn partial_path(root: &Path, name: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    root.join(format!(
+        "{name}.partial-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+pub(crate) fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
+    if fs::read(path).is_ok_and(|existing| existing == contents.as_bytes()) {
+        return Ok(());
+    }
+    let name = path.file_name().context("a script path has a file name")?;
+    let partial = partial_path(
+        path.parent().context("a script path has a parent")?,
+        &name.to_string_lossy(),
+    );
+    fs::write(&partial, contents)?;
+    fs::rename(&partial, path)?;
+    Ok(())
+}
+
 pub(crate) fn short_hex(context: digest::Context) -> String {
     context.finish().as_ref()[..8]
         .iter()
@@ -224,6 +248,32 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn partial_paths_differ_for_every_call() {
+        let root = Path::new("/cache");
+        let first = partial_path(root, "abc");
+        assert_ne!(first, partial_path(root, "abc"));
+        assert!(first.starts_with(root));
+    }
+
+    #[test]
+    fn a_script_is_replaced_by_rename_and_left_alone_when_unchanged() -> Result<()> {
+        let tree = Tree::new("script");
+        let script = tree.0.join("run.mjs");
+        write_if_changed(&script, "one")?;
+        assert_eq!(fs::read_to_string(&script)?, "one");
+        #[cfg(unix)]
+        let inode = std::os::unix::fs::MetadataExt::ino(&fs::metadata(&script)?);
+        write_if_changed(&script, "one")?;
+        #[cfg(unix)]
+        assert_eq!(inode, std::os::unix::fs::MetadataExt::ino(&fs::metadata(&script)?));
+        write_if_changed(&script, "two")?;
+        assert_eq!(fs::read_to_string(&script)?, "two");
+        let leftovers = fs::read_dir(&tree.0)?.count();
+        assert_eq!(leftovers, 1);
+        Ok(())
     }
 
     #[test]
