@@ -1,4 +1,5 @@
 use std::ops::{Deref, DerefMut};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock, mpsc};
@@ -761,11 +762,29 @@ impl Limit {
             .changed
             .wait_while(self.free.lock().unwrap(), |free| *free == 0)
             .unwrap() -= 1;
-        let result = f();
-        *self.free.lock().unwrap() += 1;
-        self.changed.notify_one();
-        result
+        let _slot = Slot(self);
+        f()
     }
+}
+
+struct Slot<'a>(&'a Limit);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        *self.0.free.lock().unwrap() += 1;
+        self.0.changed.notify_one();
+    }
+}
+
+fn caught<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        Err(anyhow!("{what} panicked: {message}"))
+    })
 }
 
 struct Shared<'a, T> {
@@ -806,9 +825,13 @@ struct Handoff {
 
 impl Handoff {
     fn send(&mut self, index: u64, job: Job) -> Result<()> {
-        self.jobs
-            .send((index, job))
-            .map_err(|_| anyhow!("the converter stopped"))?;
+        if self.jobs.send((index, job)).is_err() {
+            return Err(self
+                .finished
+                .try_iter()
+                .find_map(Result::err)
+                .unwrap_or_else(|| anyhow!("the converter stopped")));
+        }
         self.pending += 1;
         Ok(())
     }
@@ -830,11 +853,11 @@ fn convert_frames(
     finished: mpsc::Sender<Result<()>>,
 ) {
     for (index, job) in queued {
-        let result = match job {
+        let result = caught("the converter", || match job {
             Job::Paint(paint) => lane.frame(index, &paint),
             Job::Repeat => lane.repeat(index),
             Job::Skip => lane.skip(index),
-        };
+        });
         let failed = result.is_err();
         let _ = finished.send(result);
         if failed {
@@ -1008,9 +1031,10 @@ pub fn render_runs<T: Send>(
         for _ in 0..views {
             let (ready, open) = (ready.clone(), &open);
             opens.spawn(move || {
-                let _ = ready.send(open());
+                let _ = ready.send(caught("opening a view", open));
             });
         }
+        drop(ready);
         let step = Instant::now();
         let mut pipeline = Pipeline::new(&config, out, warm)?;
         let pipeline_s = step.elapsed();
@@ -1043,10 +1067,14 @@ pub fn render_runs<T: Send>(
             let handles: Vec<_> = specs
                 .into_iter()
                 .map(|spec| {
-                    scope.spawn(|| guard(spec.open().and_then(|mut lane| work(&mut lane, &shared))))
+                    scope.spawn(|| {
+                        guard(caught("a view", || {
+                            spec.open().and_then(|mut lane| work(&mut lane, &shared))
+                        }))
+                    })
                 })
                 .collect();
-            let mut workers = vec![guard(work(&mut pipeline, &shared))];
+            let mut workers = vec![guard(caught("a view", || work(&mut pipeline, &shared)))];
             workers.extend(
                 handles
                     .into_iter()
@@ -1100,6 +1128,8 @@ pub fn render_runs<T: Send>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -1150,6 +1180,51 @@ mod tests {
             ..Plan::new(4, 200)
         };
         assert_eq!(sizes(plan.sized(300), 300), vec![80, 80, 80, 60]);
+    }
+
+    #[test]
+    fn a_stopped_converter_reports_its_own_error() {
+        let (jobs, queued) = mpsc::channel();
+        let (acks, finished) = mpsc::channel();
+        let mut handoff = Handoff {
+            jobs,
+            finished,
+            pending: 1,
+        };
+        acks.send(Ok(())).unwrap();
+        acks.send(Err(anyhow!("the encoder refused frame 3"))).unwrap();
+        drop(queued);
+        let error = handoff.send(4, Job::Skip).unwrap_err();
+        assert_eq!(error.to_string(), "the encoder refused frame 3");
+        let (jobs, queued) = mpsc::channel();
+        let (acks, finished) = mpsc::channel::<Result<()>>();
+        let mut handoff = Handoff {
+            jobs,
+            finished,
+            pending: 0,
+        };
+        drop((queued, acks));
+        let error = handoff.send(0, Job::Skip).unwrap_err();
+        assert_eq!(error.to_string(), "the converter stopped");
+    }
+
+    #[test]
+    fn a_panic_becomes_an_error_and_frees_its_opening_slot() {
+        let error = caught::<()>("a view", || panic!("no frame {}", 7)).unwrap_err();
+        assert_eq!(error.to_string(), "a view panicked: no frame 7");
+        let error = caught::<()>("a view", || panic!("plain")).unwrap_err();
+        assert_eq!(error.to_string(), "a view panicked: plain");
+        assert_eq!(caught("a view", || Ok(3)).unwrap(), 3);
+
+        let limit = Arc::new(Limit::new(1));
+        let _ = caught::<()>("opening a view", || limit.run(|| panic!("open failed")));
+        let (done, finished) = mpsc::channel();
+        let again = limit.clone();
+        thread::spawn(move || {
+            again.run(|| ());
+            let _ = done.send(());
+        });
+        assert!(finished.recv_timeout(Duration::from_secs(5)).is_ok());
     }
 
     #[test]
