@@ -184,8 +184,7 @@ fn run(ui: Ui) -> Result<()> {
         view.evaluate(&SHIM.replace("__PROF_NOANIM__", if noanim { "true" } else { "false" }))?;
     }
     let step = Instant::now();
-    for n in 0..200 {
-        let _ = n;
+    for _ in 0..200 {
         view.evaluate("1")?;
     }
     let null_rt = ms(step.elapsed()) / 200.0;
@@ -228,7 +227,6 @@ fn run(ui: Ui) -> Result<()> {
         view.execute("Profiler.start", serde_json::json!({}))?;
     }
     view.evaluate("console.timeStamp('vrf-render-begin')")?;
-    let mut stale = 0u64;
     let hashing = std::env::var_os("VRF_HASH").is_some();
     let render_started = Instant::now();
     for index in 0..count {
@@ -257,13 +255,7 @@ fn run(ui: Ui) -> Result<()> {
             .sum();
         let before_capture = Instant::now();
         let b2p_before = capture.begin_to_paint.len();
-        let paint = loop {
-            match capture.next(&view, config.watchdog) {
-                Ok(paint) => break paint,
-                Err(error) if error.to_string().contains("delivery from before") => stale += 1,
-                Err(error) => return Err(error),
-            }
-        };
+        let paint = capture.next(&view, config.watchdog)?;
         let capture_wall = ms(before_capture.elapsed());
         let (watchdog, b2p) = match capture.begin_to_paint.get(b2p_before) {
             Some(d) => (capture_wall - ms(*d), ms(*d)),
@@ -305,6 +297,7 @@ fn run(ui: Ui) -> Result<()> {
         std::fs::write(csv.with_extension("fetches.json"), text)?;
     }
     let repeats = pipeline.repeats;
+    let stale = capture.retries;
     let convert = std::mem::take(&mut pipeline.convert);
     let (muxer, _) = pipeline.finish()?;
     let drain_s = render_started.elapsed() - render_s;
@@ -326,11 +319,9 @@ fn run(ui: Ui) -> Result<()> {
 }
 
 fn main() {
-    let is_helper = std::env::args().any(|a| a.starts_with("--type="));
     if std::env::args().any(|a| a == "--cpu") {
         vrf_blink::set_cpu_raster(true);
     }
-    let _ = is_helper;
     let result = vrf_blink::run(|ui| run(ui).context("profile run"));
     if let Err(error) = result {
         eprintln!("error: {error:#}");
