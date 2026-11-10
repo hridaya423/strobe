@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Result, anyhow, bail};
@@ -27,7 +28,7 @@ impl State {
 }
 
 struct Shared {
-    clip: Arc<Clip>,
+    frames: usize,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -44,16 +45,25 @@ pub struct Stream {
 
 impl Stream {
     pub fn new(clip: Arc<Clip>) -> Stream {
+        Stream::start(clip.pts.len(), move |shared| decode(shared, &clip))
+    }
+
+    fn start(frames: usize, work: impl FnOnce(&Shared) -> Result<()> + Send + 'static) -> Stream {
         let shared = Arc::new(Shared {
-            clip,
+            frames,
             state: Mutex::default(),
             changed: Condvar::new(),
         });
         let worker = thread::spawn({
             let shared = shared.clone();
             move || {
-                if let Err(error) = decode(&shared) {
-                    shared.state.lock().unwrap().error = Some(format!("{error:#}"));
+                let failure = match panic::catch_unwind(AssertUnwindSafe(|| work(&shared))) {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(format!("{error:#}")),
+                    Err(payload) => Some(panic_text(payload.as_ref())),
+                };
+                if let Some(failure) = failure {
+                    shared.lock().error = Some(failure);
                     shared.changed.notify_all();
                 }
             }
@@ -67,7 +77,7 @@ impl Stream {
     /// Asks for frames `from..=from + ahead` to be decoded, and returns without waiting.
     pub fn want(&self, from: usize, ahead: usize) {
         let mut state = self.shared.state.lock().unwrap();
-        let (low, high) = (from, (from + ahead).min(self.shared.clip.pts.len() - 1));
+        let (low, high) = (from, (from + ahead).min(self.shared.frames - 1));
         state.low = low;
         state.high = high;
         state
@@ -91,6 +101,9 @@ impl Stream {
             }
             if let Some(error) = &state.error {
                 bail!("{error}");
+            }
+            if state.closed {
+                bail!("the stream was closed");
             }
             state = self.shared.changed.wait(state).unwrap();
         }
@@ -120,11 +133,6 @@ impl Stream {
         self.shared.changed.notify_all();
     }
 
-    /// The frame if it is already decoded.
-    pub fn peek(&self, index: usize) -> Option<Arc<Frame>> {
-        self.shared.state.lock().unwrap().cache.get(&index).cloned()
-    }
-
     /// Frames decoded and reader restarts so far.
     pub fn counters(&self) -> (u64, u64) {
         let state = self.shared.state.lock().unwrap();
@@ -141,8 +149,22 @@ impl Drop for Stream {
     }
 }
 
-fn decode(shared: &Shared) -> Result<()> {
-    let clip = &shared.clip;
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_owned());
+    format!("the video decoder thread panicked: {text}")
+}
+
+fn decode(shared: &Shared, clip: &Clip) -> Result<()> {
     let mut reader: Option<(Reader, usize)> = None;
     loop {
         let missing = {
@@ -175,5 +197,34 @@ fn decode(shared: &Shared) -> Result<()> {
             state.cache.insert(index, Arc::new(frame));
             shared.changed.notify_all();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_in_the_worker_fails_the_waiter_instead_of_hanging() {
+        let stream = Stream::start(10, |_| panic!("decoder exploded"));
+        let error = stream.get(3, 2).err().expect("the wait should fail");
+        assert!(format!("{error:#}").contains("decoder exploded"), "{error:#}");
+        let error = stream.wait(5).err().expect("later waits fail too");
+        assert!(format!("{error:#}").contains("decoder exploded"), "{error:#}");
+    }
+
+    #[test]
+    fn waiting_on_a_closed_stream_is_an_error() {
+        let stream = Stream::start(10, |shared| {
+            let mut state = shared.lock();
+            while !state.closed {
+                state = shared.changed.wait(state).unwrap();
+            }
+            Ok(())
+        });
+        stream.want(0, 2);
+        stream.close();
+        let error = stream.wait(1).err().expect("the wait should fail");
+        assert!(format!("{error:#}").contains("closed"), "{error:#}");
     }
 }
