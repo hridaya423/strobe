@@ -10,10 +10,4 @@ window.addDynamic = () => new Promise((resolve) => {
   frame.onload = () => { window.dynamic = frame; resolve(); };
   document.body.append(frame);
 });
-window.addBlank = () => {
-  const frame = document.createElement('iframe');
-  document.body.append(frame);
-  window.blank = frame;
-  return typeof frame.contentWindow.__vrf;
-};
 </script>

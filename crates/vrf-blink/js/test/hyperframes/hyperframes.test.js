@@ -659,8 +659,6 @@ describe('shared items 1 to 8', () => {
     await sparse.close();
   });
 
-  test('item_04_colour_pipeline_end_state', { skip: 'encoder side: yuv420p, CRF 18 and BT.709 tags are Task 2.x/3.7' }, () => {});
-  test('item_05_audio_mix_model', { skip: 'Task 5.2' }, () => {});
 
   const veil = () =>
     project({
