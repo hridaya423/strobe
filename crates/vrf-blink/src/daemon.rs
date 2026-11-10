@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use ring::digest;
 use serde::{Deserialize, Serialize};
 
@@ -19,15 +19,21 @@ pub use transport::Stream;
 use transport::{Auth, Listener};
 
 const BUILD_ID_BYTES: u64 = 64 * 1024;
+const MAX_REQUEST_BYTES: u64 = 16 << 20;
 
 #[cfg(unix)]
 mod transport {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::ErrorKind;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::Duration;
 
     use anyhow::{Context, Result, bail};
+
+    const POLL: Duration = Duration::from_millis(20);
 
     pub type Stream = UnixStream;
     pub type Listener = UnixListener;
@@ -48,14 +54,34 @@ mod transport {
             }
             fs::remove_file(socket)?;
         }
-        let listener = UnixListener::bind(socket)
-            .with_context(|| format!("listen on {}", socket.display()))?;
-        fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-        Ok(listener)
+        let previous = unsafe { libc::umask(0o177) };
+        let bound = UnixListener::bind(socket);
+        unsafe { libc::umask(previous) };
+        bound.with_context(|| format!("listen on {}", socket.display()))
     }
 
-    pub fn incoming(listener: &Listener) -> impl Iterator<Item = std::io::Result<Stream>> {
-        listener.incoming()
+    pub fn incoming(
+        listener: &Listener,
+        stopping: &AtomicBool,
+    ) -> impl Iterator<Item = std::io::Result<Stream>> {
+        let _ = listener.set_nonblocking(true);
+        std::iter::from_fn(move || {
+            loop {
+                if stopping.load(Ordering::Acquire) {
+                    return None;
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        return Some(stream.set_nonblocking(false).map(|()| stream));
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => thread::sleep(POLL),
+                    Err(error) => {
+                        thread::sleep(POLL);
+                        return Some(Err(error));
+                    }
+                }
+            }
+        })
     }
 
     #[derive(Clone)]
@@ -79,9 +105,10 @@ mod transport {
 #[cfg(windows)]
 mod transport {
     use std::fs;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
 
     use anyhow::{Context, Result, bail};
     use ring::rand::{SecureRandom, SystemRandom};
@@ -128,7 +155,10 @@ mod transport {
         })
     }
 
-    pub fn incoming(listener: &Listener) -> impl Iterator<Item = std::io::Result<Stream>> {
+    pub fn incoming(
+        listener: &Listener,
+        _stopping: &AtomicBool,
+    ) -> impl Iterator<Item = std::io::Result<Stream>> {
         listener.inner.incoming()
     }
 
@@ -142,7 +172,7 @@ mod transport {
 
         pub fn check(&self, reader: &mut BufReader<Stream>) -> bool {
             let mut line = String::new();
-            reader.read_line(&mut line).is_ok() && line.trim() == self.0
+            reader.by_ref().take(256).read_line(&mut line).is_ok() && line.trim() == self.0
         }
     }
 
@@ -367,6 +397,16 @@ struct Queued {
     stream: Stream,
 }
 
+fn read_request(reader: &mut impl BufRead, limit: u64) -> Result<String> {
+    let mut line = String::new();
+    reader.by_ref().take(limit + 1).read_line(&mut line)?;
+    ensure!(
+        line.len() as u64 <= limit,
+        "a request is at most {limit} bytes"
+    );
+    Ok(line)
+}
+
 fn accept(
     listener: Listener,
     build: String,
@@ -376,7 +416,7 @@ fn accept(
     stopping: Arc<AtomicBool>,
 ) {
     let auth = Auth::of(&listener);
-    for stream in transport::incoming(&listener) {
+    for stream in transport::incoming(&listener, &stopping) {
         if stopping.load(Ordering::Acquire) {
             return;
         }
@@ -389,10 +429,18 @@ fn accept(
             if !auth.check(&mut reader) {
                 return;
             }
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_err() {
-                return;
-            }
+            let line = match read_request(&mut reader, MAX_REQUEST_BYTES) {
+                Ok(line) => line,
+                Err(error) => {
+                    let _ = send(
+                        &stream,
+                        &Event::Failed {
+                            message: format!("unreadable request: {error:#}"),
+                        },
+                    );
+                    return;
+                }
+            };
             let request = match serde_json::from_str::<Request>(&line) {
                 Ok(request) => request,
                 Err(error) => {
@@ -559,6 +607,60 @@ pub fn serve(ui: &Ui, config: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_line_has_a_size_limit() {
+        let read =
+            |bytes: &[u8], limit| read_request(&mut std::io::Cursor::new(bytes.to_vec()), limit);
+        assert_eq!(read(b"{}\nrest", 8).unwrap(), "{}\n");
+        assert_eq!(read(b"12345678", 8).unwrap(), "12345678");
+        assert_eq!(read(b"1234567\n", 8).unwrap(), "1234567\n");
+        assert!(read(b"12345678\n", 8).is_err());
+        assert!(read(b"123456789", 8).is_err());
+        assert!(read(&[b'a'; 1000], 8).is_err());
+    }
+
+    #[cfg(unix)]
+    fn private_directory(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("vrf-daemon-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_acceptor_stops_when_the_socket_file_is_gone() {
+        let dir = private_directory("gone");
+        let socket = dir.join("s.sock");
+        let listener = transport::bind(&socket).unwrap();
+        fs::remove_file(&socket).unwrap();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let (done, finished) = mpsc::channel();
+        let flag = stopping.clone();
+        thread::spawn(move || {
+            let _ = done.send(transport::incoming(&listener, &flag).next().is_none());
+        });
+        thread::sleep(Duration::from_millis(100));
+        stopping.store(true, Ordering::Release);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(true));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_is_private_and_the_umask_comes_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_directory("mode");
+        let socket = dir.join("s.sock");
+        unsafe { libc::umask(0o022) };
+        let _listener = transport::bind(&socket).unwrap();
+        assert_eq!(unsafe { libc::umask(0o022) }, 0o022);
+        let mode = fs::metadata(&socket).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn every_mode_has_a_socket_of_its_own() {
