@@ -20,6 +20,6 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt
       - run: cargo fmt --all --check
-      - run: cargo test -p vrf-encode --lib
-      - run: cargo test -p vrf --lib
-      - run: cargo test -p vrf-bench --test corpus --test score --test run --test versions
+      - run: cargo test --release -p vrf-encode --lib
+      - run: cargo test --release -p vrf --lib
+      - run: cargo test --release -p vrf-bench --test corpus --test score --test run --test versions
