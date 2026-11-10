@@ -208,9 +208,15 @@ mod tests {
     fn a_panic_in_the_worker_fails_the_waiter_instead_of_hanging() {
         let stream = Stream::start(10, |_| panic!("decoder exploded"));
         let error = stream.get(3, 2).err().expect("the wait should fail");
-        assert!(format!("{error:#}").contains("decoder exploded"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("decoder exploded"),
+            "{error:#}"
+        );
         let error = stream.wait(5).err().expect("later waits fail too");
-        assert!(format!("{error:#}").contains("decoder exploded"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("decoder exploded"),
+            "{error:#}"
+        );
     }
 
     #[test]

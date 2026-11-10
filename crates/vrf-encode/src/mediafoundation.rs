@@ -12,8 +12,8 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
 };
 
-pub use crate::{AAC_FRAME_SAMPLES, AacConfig, AacStream};
 use crate::audio_specific_config;
+pub use crate::{AAC_FRAME_SAMPLES, AacConfig, AacStream};
 
 const PRIMING_FRAMES: u32 = AAC_FRAME_SAMPLES;
 const TAIL_FRAMES: usize = 2 * AAC_FRAME_SAMPLES as usize;
@@ -213,7 +213,14 @@ pub fn encode_aac_chunks(
         frames += (chunk.len() / channels) as u64;
         pending.extend(chunk);
         while pending.len() >= piece {
-            feed(&transform, capacity, &mut packets, &pending[..piece], config, &mut at)?;
+            feed(
+                &transform,
+                capacity,
+                &mut packets,
+                &pending[..piece],
+                config,
+                &mut at,
+            )?;
             pending.drain(..piece);
         }
     }

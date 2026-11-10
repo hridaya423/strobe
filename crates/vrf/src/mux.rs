@@ -472,8 +472,7 @@ impl Muxer {
     fn header(&self, ftyp: &[u8], plan: &Plan) -> Result<(bool, Vec<u8>)> {
         let widest = self.moov(true, 0, plan)?.len() as u64;
         let wide = self.wide
-            || ftyp.len() as u64 + widest + 16 + self.mdat_len + self.audio_len()
-                > u32::MAX as u64;
+            || ftyp.len() as u64 + widest + 16 + self.mdat_len + self.audio_len() > u32::MAX as u64;
         let header_len = if wide { 16 } else { 8 };
         let moov_len = self.moov(wide, 0, plan)?.len();
         let base = (ftyp.len() + moov_len + header_len) as u64;

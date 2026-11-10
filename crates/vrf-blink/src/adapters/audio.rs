@@ -207,7 +207,9 @@ fn same_volume(early: &Volume, last: &Volume, used: u64) -> bool {
         (Volume::Constant(level), Volume::Frames { fps, values })
         | (Volume::Frames { fps, values }, Volume::Constant(level)) => {
             let frames = (used as f64 / f64::from(SAMPLE_RATE) * fps + 0.5).floor() as usize + 1;
-            values[..frames.min(values.len())].iter().all(|value| value == level)
+            values[..frames.min(values.len())]
+                .iter()
+                .all(|value| value == level)
         }
     }
 }

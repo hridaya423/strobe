@@ -7,9 +7,9 @@ pub mod mp4;
 mod renderer;
 mod stream;
 
-pub use decoder::{Clip, Frame, Matrix, Reader};
 #[cfg(windows)]
 pub use decoder::set_hardware_decoding;
+pub use decoder::{Clip, Frame, Matrix, Reader};
 pub use hyperframes::NativeVideos;
 pub use link::{Clips, Link, Pusher, Resolve, StartFallback};
 pub(crate) use renderer::{INIT, PAGE, PUSH, VideoRenderHandler};

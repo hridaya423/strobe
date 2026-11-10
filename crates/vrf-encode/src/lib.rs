@@ -258,9 +258,18 @@ mod tests {
             channels,
             bit_rate: 128_000,
         };
-        assert_eq!(audio_specific_config(config(48_000, 2)).unwrap(), [0x11, 0x90]);
-        assert_eq!(audio_specific_config(config(48_000, 1)).unwrap(), [0x11, 0x88]);
-        assert_eq!(audio_specific_config(config(44_100, 2)).unwrap(), [0x12, 0x10]);
+        assert_eq!(
+            audio_specific_config(config(48_000, 2)).unwrap(),
+            [0x11, 0x90]
+        );
+        assert_eq!(
+            audio_specific_config(config(48_000, 1)).unwrap(),
+            [0x11, 0x88]
+        );
+        assert_eq!(
+            audio_specific_config(config(44_100, 2)).unwrap(),
+            [0x12, 0x10]
+        );
         assert!(audio_specific_config(config(47_000, 2)).is_err());
     }
 

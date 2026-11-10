@@ -591,7 +591,13 @@ mod tests {
     use super::*;
 
     fn render_args(project: &Path, extra: &[&str]) -> RenderArgs {
-        let mut argv = vec!["strobe", "render", project.to_str().unwrap(), "-o", "out.mp4"];
+        let mut argv = vec![
+            "strobe",
+            "render",
+            project.to_str().unwrap(),
+            "-o",
+            "out.mp4",
+        ];
         argv.extend(extra);
         match Cli::try_parse_from(argv).unwrap().command {
             Command::Render(args) => args,
@@ -610,7 +616,7 @@ mod tests {
 
     #[test]
     fn a_hyperframes_project_rasterises_on_the_gpu_and_a_remotion_project_on_the_gpu_only_off_windows()
-    {
+     {
         let hyperframes = project("hyperframes", None);
         let remotion = project("remotion", Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#));
         assert!(!render_args(&hyperframes, &[]).cpu_raster());

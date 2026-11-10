@@ -623,8 +623,7 @@ mod tests {
                 audio_start_frame: 0.0,
             })
             .collect();
-        let states =
-            remotion_clip_states(&[assets], 30.0, |url| Ok(PathBuf::from(url))).unwrap();
+        let states = remotion_clip_states(&[assets], 30.0, |url| Ok(PathBuf::from(url))).unwrap();
         let volumes: Vec<f64> = states
             .iter()
             .map(|(clip, _)| match clip.volume {
@@ -633,7 +632,10 @@ mod tests {
             })
             .collect();
         assert_eq!(volumes.len(), 16);
-        assert!(volumes.windows(2).all(|pair| pair[0] < pair[1]), "{volumes:?}");
+        assert!(
+            volumes.windows(2).all(|pair| pair[0] < pair[1]),
+            "{volumes:?}"
+        );
     }
 
     #[test]

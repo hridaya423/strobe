@@ -15,12 +15,12 @@ use vrf::audio::{HyperframesTrack, hyperframes_clips, mix};
 use vrf_encode::{Codec, Rational};
 
 use super::{
-    PerFrame, Progress, StageStats, add_track, encode_track, audio_samples, cache_dir, contained_join, hash_tree, partial_path, short_hex, write_if_changed,
-    since,
+    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, contained_join,
+    encode_track, hash_tree, partial_path, short_hex, since, write_if_changed,
 };
 use crate::driver::{Capture, Config, Plan, Runs, Warm, render_runs};
-use crate::video::NativeVideos;
 use crate::skip::{self, Skip, TRACK_JS};
+use crate::video::NativeVideos;
 use crate::{Mode, Project, Ui, View};
 
 const HYPERFRAMES_JS: &str = include_str!("../../js/hyperframes.js");
@@ -263,7 +263,9 @@ impl VideoFrames {
                 entries
                     .iter()
                     .map(|(id, shown)| match shown {
-                        Value::String(path) => json!({ "id": id, "src": format!("{FRAMES_URL}{path}") }),
+                        Value::String(path) => {
+                            json!({ "id": id, "src": format!("{FRAMES_URL}{path}") })
+                        }
                         slot => json!({ "id": id, "slot": slot }),
                     })
                     .collect()
@@ -307,7 +309,10 @@ impl Page {
             &[dir.join("plan/compiled"), options.project.clone()],
             options.mode,
         )?;
-        let native = NativeVideos::new(&prepared.natives, &[&dir.join("plan/compiled"), &options.project])?;
+        let native = NativeVideos::new(
+            &prepared.natives,
+            &[&dir.join("plan/compiled"), &options.project],
+        )?;
         let hints: Vec<Value> = prepared
             .video_metadata
             .iter()
@@ -394,7 +399,9 @@ impl Page {
 
     fn keep(&self, probe: &Probe) -> Result<()> {
         let partial = partial_path(
-            self.probed.parent().context("the probe cache has a directory")?,
+            self.probed
+                .parent()
+                .context("the probe cache has a directory")?,
             "probed",
         );
         fs::write(&partial, serde_json::to_vec(probe)?)?;
@@ -408,7 +415,8 @@ impl Page {
     fn learn(&self, mut probe: Probe, first: u64, runs: &[(u64, u64, Duration)]) -> Result<()> {
         for &(from, frames, took) in runs {
             let per_frame = took.as_secs_f64() / frames.max(1) as f64;
-            for frame in (first + from..first + from + frames).filter(|f| f % COST_STEP as u64 == 0) {
+            for frame in (first + from..first + from + frames).filter(|f| f % COST_STEP as u64 == 0)
+            {
                 if let Some(cost) = probe.costs.get_mut(frame as usize / COST_STEP) {
                     *cost = per_frame;
                 }
@@ -546,7 +554,13 @@ pub fn render(
     config.skip = probe.static_frames.clone().map(Skip::planned);
     config.costs = Some(
         (first..=last)
-            .map(|frame| probe.costs.get(frame as usize / COST_STEP).copied().unwrap_or_default())
+            .map(|frame| {
+                probe
+                    .costs
+                    .get(frame as usize / COST_STEP)
+                    .copied()
+                    .unwrap_or_default()
+            })
             .collect(),
     );
     config.jpeg_capture = matches!(codec, Codec::H264 | Codec::Hevc);
@@ -565,12 +579,17 @@ pub fn render(
             let to = from + audio_samples(count, frame_rate);
             Ok(thread::spawn(move || {
                 let timeline = mix(&clips, length)?;
-                encode_track(&timeline[from as usize * 2..to as usize * 2], AUDIO_BIT_RATE)
+                encode_track(
+                    &timeline[from as usize * 2..to as usize * 2],
+                    AUDIO_BIT_RATE,
+                )
             }))
         })
         .transpose()?;
     let render_started = Instant::now();
-    let plan = options.plan.ranged(options.plan.ranges.unwrap_or(WORKERS), count);
+    let plan = options
+        .plan
+        .ranged(options.plan.ranges.unwrap_or(WORKERS), count);
     let runs = render_runs(
         &config,
         plan,
@@ -604,7 +623,12 @@ pub fn render(
 
     let step = Instant::now();
     if let Some(track) = track {
-        add_track(&mut muxer, track.join().map_err(|_| anyhow!("the audio mix panicked"))??)?;
+        add_track(
+            &mut muxer,
+            track
+                .join()
+                .map_err(|_| anyhow!("the audio mix panicked"))??,
+        )?;
     }
     let audio_s = step.elapsed();
     let step = Instant::now();

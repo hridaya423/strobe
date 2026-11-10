@@ -206,7 +206,8 @@ impl Capture {
                 view.invalidate();
                 continue;
             };
-            self.begin_to_paint.push(paint.at.saturating_duration_since(sent));
+            self.begin_to_paint
+                .push(paint.at.saturating_duration_since(sent));
             let gap = self
                 .last_counter
                 .is_some_and(|last| paint.counter != last + 1);
@@ -327,7 +328,8 @@ impl DerefMut for Pipeline<'_> {
 
 impl<'w> Pipeline<'w> {
     pub fn new(config: &Config, out: &Path, warm: &'w mut Warm) -> Result<Pipeline<'w>> {
-        let (producer, consumer) = sched::ordered::<Frame>(config.window.max(config.frames as usize));
+        let (producer, consumer) =
+            sched::ordered::<Frame>(config.window.max(config.frames as usize));
         let container = match config.codec {
             Codec::ProRes422 => Container::Mov,
             Codec::H264 | Codec::Hevc | Codec::Av1 => Container::Mp4,
@@ -545,7 +547,9 @@ impl Plan {
     /// The smallest run a claim may take near the end of a render, so that no view idles while
     /// another finishes a long run.
     fn min_run(&self) -> u64 {
-        self.run.min(self.lead_in.saturating_mul(MIN_RUN_LEAD_INS)).max(1)
+        self.run
+            .min(self.lead_in.saturating_mul(MIN_RUN_LEAD_INS))
+            .max(1)
     }
 
     /// Cuts a long `run` to an even share of `frames`, but not below `MIN_RUN`, so a short
@@ -982,7 +986,9 @@ fn drive<T>(shared: &Shared<T>, mut handoff: Handoff) -> Result<Worker<T>> {
             (shared.on_frame)(done, index, &value)?;
             worker.frames.push((index, value));
         }
-        tl(format_args!("ranged seek {ts:?} wait {tw:?} capture {tc:?}"));
+        tl(format_args!(
+            "ranged seek {ts:?} wait {tw:?} capture {tc:?}"
+        ));
         worker.runs.push((from, to - from, run_started.elapsed()));
         shared.claims.finish(from);
         last = Some(shared.first + to - 1);
@@ -1019,7 +1025,9 @@ pub fn render_runs<T: Send>(
     let mut config = config.clone();
     let moved = plan.moved(config.costs.as_deref(), frame_bytes);
     tl(format_args!("moved {moved:?}"));
-    config.window = config.window.max(plan.window() + moved.len() * plan.run as usize);
+    config.window = config
+        .window
+        .max(plan.window() + moved.len() * plan.run as usize);
     config.turbo &= plan.turbo;
     config.sessions = plan.sessions.max(1);
     tl(format_args!("render_runs"));
@@ -1046,7 +1054,12 @@ pub fn render_runs<T: Send>(
             plan,
             watchdog: config.watchdog,
             skip: config.skip.as_ref(),
-            claims: Claims::new(&Plan { views, ..plan }, config.frames, &moved, config.window),
+            claims: Claims::new(
+                &Plan { views, ..plan },
+                config.frames,
+                &moved,
+                config.window,
+            ),
             done: AtomicU64::new(0),
             on_frame: &on_frame,
             opened: Mutex::new(opened),
@@ -1192,7 +1205,8 @@ mod tests {
             pending: 1,
         };
         acks.send(Ok(())).unwrap();
-        acks.send(Err(anyhow!("the encoder refused frame 3"))).unwrap();
+        acks.send(Err(anyhow!("the encoder refused frame 3")))
+            .unwrap();
         drop(queued);
         let error = handoff.send(4, Job::Skip).unwrap_err();
         assert_eq!(error.to_string(), "the encoder refused frame 3");
@@ -1249,7 +1263,12 @@ mod tests {
         let claims = Claims::new(&plan, 100, &moved[..2], usize::MAX);
         let order: Vec<_> = std::iter::from_fn(|| claims.claim()).collect();
         assert_eq!(order, [(80, 100), (20, 40), (0, 20), (40, 60), (60, 80)]);
-        assert!(Plan::new(5, 7).ranged(5, 100).moved(Some(&costs), 1).is_empty());
+        assert!(
+            Plan::new(5, 7)
+                .ranged(5, 100)
+                .moved(Some(&costs), 1)
+                .is_empty()
+        );
     }
 
     #[test]

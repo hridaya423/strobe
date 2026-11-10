@@ -525,8 +525,9 @@ impl View {
             rounds += 1;
             let delivery = self.recv_paint(wait);
             missed += usize::from(delivery.is_none());
-            let delivered = delivery
-                .is_some_and(|paint| (paint.visible.width, paint.visible.height) == (width, height));
+            let delivered = delivery.is_some_and(|paint| {
+                (paint.visible.width, paint.visible.height) == (width, height)
+            });
             let extra = delivered && self.recv_paint(SETTLE_QUIET).is_some();
             clean = if delivered && !extra { clean + 1 } else { 0 };
             if clean == SETTLE_CLEAN + missed {

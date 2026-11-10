@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -34,7 +33,9 @@ impl NativeVideos {
                 .iter()
                 .map(|root| root.join(relative))
                 .find(|file| file.is_file())
-                .with_context(|| format!("video {id}: {relative} is in none of the project's folders"))?;
+                .with_context(|| {
+                    format!("video {id}: {relative} is in none of the project's folders")
+                })?;
             let mut clip = clip.clone();
             clip["path"] = json!(file.to_string_lossy());
             files.insert(relative.to_owned(), file);
@@ -65,7 +66,9 @@ impl NativeVideos {
                 Ok(clip) if clip.refusal().is_none() => {}
                 Ok(_) => refused.clips.push(relative.clone()),
                 Err(error) => {
-                    eprintln!("cannot open {relative}, its frames are extracted for this render: {error:#}");
+                    eprintln!(
+                        "cannot open {relative}, its frames are extracted for this render: {error:#}"
+                    );
                     refused.clips.push(relative.clone());
                     refused.cacheable = false;
                 }
@@ -84,8 +87,9 @@ impl NativeVideos {
             let file = src.rsplit_once('#').map_or(src, |(file, _)| file);
             files.get(file).cloned()
         });
-        let no_fallback: StartFallback =
-            Arc::new(|| bail!("HyperFrames extracts the frames of clips the native decoder refuses"));
+        let no_fallback: StartFallback = Arc::new(|| {
+            bail!("HyperFrames extracts the frames of clips the native decoder refuses")
+        });
         Link::attach_with(view, resolve, self.clips.clone(), no_fallback);
     }
 }
@@ -93,6 +97,7 @@ impl NativeVideos {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn a_clip_that_fails_to_open_is_extracted_but_not_remembered() -> Result<()> {

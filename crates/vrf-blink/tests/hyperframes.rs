@@ -111,7 +111,14 @@ fn fixture(name: &str, seconds: u32, body: &str, script: &str) -> Result<PathBuf
     sized_fixture(name, WIDTH, HEIGHT, seconds, body, script)
 }
 
-fn sized_fixture(name: &str, width: u32, height: u32, seconds: u32, body: &str, script: &str) -> Result<PathBuf> {
+fn sized_fixture(
+    name: &str,
+    width: u32,
+    height: u32,
+    seconds: u32,
+    body: &str,
+    script: &str,
+) -> Result<PathBuf> {
     let dir = work_dir().join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("assets"))?;
@@ -347,7 +354,22 @@ fn embedded_video_shows_the_frames_hyperframes_extracts(ui: &Ui) -> Result<()> {
                 let source = clips::clip("cfr1080.mp4")?;
                 run(
                     "ffmpeg",
-                    &["-v", "error", "-y", "-i", source.to_str().unwrap(), "-vf", &format!("fps={rate}"), "-c:v", "libx264", "-crf", "14", "-g", "30", target.to_str().unwrap()],
+                    &[
+                        "-v",
+                        "error",
+                        "-y",
+                        "-i",
+                        source.to_str().unwrap(),
+                        "-vf",
+                        &format!("fps={rate}"),
+                        "-c:v",
+                        "libx264",
+                        "-crf",
+                        "14",
+                        "-g",
+                        "30",
+                        target.to_str().unwrap(),
+                    ],
                     Path::new("/"),
                 )?;
             }
@@ -358,7 +380,10 @@ fn embedded_video_shows_the_frames_hyperframes_extracts(ui: &Ui) -> Result<()> {
         let mut options = options(&project);
         options.audio = false;
         let used = hyperframes::prepare_for(&options)?.native_videos().len();
-        ensure!((used == 1) == native, "{name}: {used} natively decoded videos");
+        ensure!(
+            (used == 1) == native,
+            "{name}: {used} natively decoded videos"
+        );
         let mut ids = Vec::new();
         for (label, native_video) in [("native", true), ("extraction", false)] {
             options.native_video = native_video;
@@ -373,15 +398,27 @@ fn embedded_video_shows_the_frames_hyperframes_extracts(ui: &Ui) -> Result<()> {
             .filter(|(_, (a, b))| a != b)
             .map(|(frame, (a, b))| (frame, *a, *b))
             .collect();
-        println!("{name}: {} of {} frames show HyperFrames' frame", ids[0].len() - wrong.len(), ids[0].len());
+        println!(
+            "{name}: {} of {} frames show HyperFrames' frame",
+            ids[0].len() - wrong.len(),
+            ids[0].len()
+        );
         ensure!(ids[0].len() == 120, "{name}: {} frames", ids[0].len());
-        ensure!(wrong.is_empty(), "{name}: frame, native, extraction: {wrong:?}");
+        ensure!(
+            wrong.is_empty(),
+            "{name}: frame, native, extraction: {wrong:?}"
+        );
     }
     Ok(())
 }
 
 fn embedded_video_colours_equal_hyperframes_extraction(ui: &Ui) -> Result<()> {
-    for name in ["cfr1080.mp4", "cfr1080-601.mp4", "cfr1080-full.mp4", "cfr1080-hevc.mp4"] {
+    for name in [
+        "cfr1080.mp4",
+        "cfr1080-601.mp4",
+        "cfr1080-full.mp4",
+        "cfr1080-hevc.mp4",
+    ] {
         let project = sized_fixture(
             &format!("colour-{name}"),
             1920,
@@ -414,8 +451,16 @@ fn embedded_video_colours_equal_hyperframes_extraction(ui: &Ui) -> Result<()> {
             worst.frac_over_32.value * 100.0
         );
         ensure!(scored.frames_compared == 30);
-        ensure!(worst.flip_mean.value <= 0.02, "{name}: FLIP mean {}", worst.flip_mean.value);
-        ensure!(worst.frac_over_32.value <= 0.001, "{name}: {} of pixels over 32", worst.frac_over_32.value);
+        ensure!(
+            worst.flip_mean.value <= 0.02,
+            "{name}: FLIP mean {}",
+            worst.flip_mean.value
+        );
+        ensure!(
+            worst.frac_over_32.value <= 0.001,
+            "{name}: {} of pixels over 32",
+            worst.frac_over_32.value
+        );
     }
     Ok(())
 }
@@ -540,11 +585,8 @@ fn unchanged_frames_are_skipped_and_the_bytes_do_not_change(ui: &Ui) -> Result<(
          window.__timelines = {main: tl};",
     )?;
     for views in [1, 3] {
-        let mut render_with = |skip: bool| -> Result<(Vec<u8>, u64)> {
-            let out = work_dir().join(format!(
-                "skip-{views}-{skip}.{}",
-                support::DETERMINISTIC.1
-            ));
+        let render_with = |skip: bool| -> Result<(Vec<u8>, u64)> {
+            let out = work_dir().join(format!("skip-{views}-{skip}.{}", support::DETERMINISTIC.1));
             let options = Options {
                 skip,
                 plan: Plan::new(views, 7),

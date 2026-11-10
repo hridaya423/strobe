@@ -448,7 +448,6 @@ fn jpeg_gpu_matches_oracle() {
     }
 }
 
-
 #[test]
 fn exact_gpu_matches_oracle() {
     let gpu = Gpu::new().unwrap();

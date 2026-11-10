@@ -7,8 +7,8 @@ mod cases {
     use std::process::{Command, ExitCode};
     use std::time::Duration;
 
-    use anyhow::{Context, Result, ensure};
     use super::support::{self, fixture_project, options, work_dir};
+    use anyhow::{Context, Result, ensure};
     use vrf::gpu::Gpu;
     use vrf_bench::engines::{headless_shell, node_bin};
     use vrf_bench::score;

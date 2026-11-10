@@ -45,8 +45,7 @@ fn ffmpeg_md5s(file: &Path) -> Vec<String> {
 }
 
 fn avfoundation_md5s(file: &Path, dir: &Dir) -> Vec<String> {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/video_support/avdecode.swift");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video_support/avdecode.swift");
     let raw = dir.file("av.nv12");
     let log = run(
         "swift",

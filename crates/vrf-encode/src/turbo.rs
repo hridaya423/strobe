@@ -536,7 +536,12 @@ impl TurboEncoder {
         let slow = self
             .started
             .is_some_and(|started| arriving_slowly(started.elapsed(), self.submitted, pixels));
-        choose_lane(&views, self.options.chunk_frames, self.options.vt_headroom, slow)
+        choose_lane(
+            &views,
+            self.options.chunk_frames,
+            self.options.vt_headroom,
+            slow,
+        )
     }
 
     fn index_of(&self, pts: Rational) -> Result<u64> {
@@ -725,7 +730,10 @@ mod tests {
         shared.push(vec![packet(0), packet(1), packet(3), packet(4)]);
         assert_eq!(pts_of(&shared), [0, 1]);
         let error = shared.verify(5).unwrap_err().to_string();
-        assert!(error.contains("2 came back in order with 2 out of sequence"), "{error}");
+        assert!(
+            error.contains("2 came back in order with 2 out of sequence"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -763,7 +771,10 @@ mod tests {
         })
         .join();
         assert!(joined.is_err());
-        assert_eq!(shared.error.get().map(String::as_str), Some("a lane thread panicked"));
+        assert_eq!(
+            shared.error.get().map(String::as_str),
+            Some("a lane thread panicked")
+        );
     }
 
     #[test]
@@ -837,6 +848,10 @@ mod tests {
         let elapsed = Duration::from_secs_f64(seconds);
         assert!(!arriving_slowly(elapsed, fast, pixels));
         assert!(arriving_slowly(elapsed, slow, pixels));
-        assert!(!arriving_slowly(ARRIVAL_WINDOW - Duration::from_millis(1), 0, pixels));
+        assert!(!arriving_slowly(
+            ARRIVAL_WINDOW - Duration::from_millis(1),
+            0,
+            pixels
+        ));
     }
 }

@@ -312,17 +312,29 @@ mod neon {
         unsafe {
             let a: [int16x8_t; 8] = std::array::from_fn(|k| {
                 let (x, y) = (m[k & !1], m[k | 1]);
-                if k & 1 == 0 { vtrn1q_s16(x, y) } else { vtrn2q_s16(x, y) }
+                if k & 1 == 0 {
+                    vtrn1q_s16(x, y)
+                } else {
+                    vtrn2q_s16(x, y)
+                }
             });
             let b: [int32x4_t; 8] = std::array::from_fn(|k| {
                 let (i, j) = ((k & !3) | (k & 1), (k & !3) | (k & 1) | 2);
                 let (x, y) = (vreinterpretq_s32_s16(a[i]), vreinterpretq_s32_s16(a[j]));
-                if k & 2 == 0 { vtrn1q_s32(x, y) } else { vtrn2q_s32(x, y) }
+                if k & 2 == 0 {
+                    vtrn1q_s32(x, y)
+                } else {
+                    vtrn2q_s32(x, y)
+                }
             });
             std::array::from_fn(|k| {
                 let (i, j) = (k & 3, (k & 3) | 4);
                 let (x, y) = (vreinterpretq_s64_s32(b[i]), vreinterpretq_s64_s32(b[j]));
-                vreinterpretq_s16_s64(if k & 4 == 0 { vtrn1q_s64(x, y) } else { vtrn2q_s64(x, y) })
+                vreinterpretq_s16_s64(if k & 4 == 0 {
+                    vtrn1q_s64(x, y)
+                } else {
+                    vtrn2q_s64(x, y)
+                })
             })
         }
     }

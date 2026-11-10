@@ -116,10 +116,7 @@ fn movie(path: &Path) -> Result<Vec<u8>> {
             size >= skip && at.checked_add(size).is_some_and(|end| end <= length),
             "a box is cut short"
         );
-        ensure!(
-            &header[4..8] != b"moof",
-            "fragmented MP4 is not supported"
-        );
+        ensure!(&header[4..8] != b"moof", "fragmented MP4 is not supported");
         if &header[4..8] == b"moov" {
             let mut body = vec![0; (size - skip) as usize];
             file.seek(SeekFrom::Start(at + skip))?;
@@ -177,7 +174,9 @@ fn segments(trak: &[u8], movie_scale: i64, track_scale: i64) -> Result<Vec<Segme
                 target: rescale(elapsed, movie_scale, track_scale),
             });
         }
-        elapsed = elapsed.checked_add(duration).context("the edit list is too long")?;
+        elapsed = elapsed
+            .checked_add(duration)
+            .context("the edit list is too long")?;
     }
     ensure!(!found.is_empty(), "the edit list shows nothing");
     Ok(found)
@@ -359,7 +358,10 @@ mod tests {
     }
 
     fn words(values: &[u32]) -> Vec<u8> {
-        values.iter().flat_map(|value| value.to_be_bytes()).collect()
+        values
+            .iter()
+            .flat_map(|value| value.to_be_bytes())
+            .collect()
     }
 
     fn media(stts: &[u32], stsz_count: u32, ctts: Option<&[u32]>) -> Vec<u8> {
@@ -369,10 +371,16 @@ mod tests {
         entry[32..34].copy_from_slice(&64u16.to_be_bytes());
         entry[34..36].copy_from_slice(&48u16.to_be_bytes());
         let mut stbl = full(b"stsd", &[&words(&[1]), entry.as_slice()].concat());
-        stbl.extend(full(b"stts", &[words(&[stts.len() as u32 / 2]), words(stts)].concat()));
+        stbl.extend(full(
+            b"stts",
+            &[words(&[stts.len() as u32 / 2]), words(stts)].concat(),
+        ));
         stbl.extend(full(b"stsz", &words(&[0, stsz_count])));
         if let Some(ctts) = ctts {
-            stbl.extend(full(b"ctts", &[words(&[ctts.len() as u32 / 2]), words(ctts)].concat()));
+            stbl.extend(full(
+                b"ctts",
+                &[words(&[ctts.len() as u32 / 2]), words(ctts)].concat(),
+            ));
         }
         let minf = boxed(b"minf", &boxed(b"stbl", &stbl));
         let mut mdia = full(b"mdhd", &[&[0u8; 8][..], &words(&[1000, 0, 0])].concat());
@@ -436,7 +444,10 @@ mod tests {
         let result = read(&path);
         fs::remove_file(&path)?;
         let error = result.unwrap_err();
-        assert!(format!("{error:#}").contains("fragmented MP4 is not supported"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("fragmented MP4 is not supported"),
+            "{error:#}"
+        );
         Ok(())
     }
 }

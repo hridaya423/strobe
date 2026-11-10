@@ -301,13 +301,8 @@ fn matches_the_cpu_oracle(cases: &[(Format, Codec, bool)], chroma: Chroma) {
                 );
             }
             for (i, frame) in held.iter().enumerate() {
-                let want = colour::convert(
-                    &frames[(round + i) % 3],
-                    SOURCE.0,
-                    RECT,
-                    chroma,
-                    format,
-                );
+                let want =
+                    colour::convert(&frames[(round + i) % 3], SOURCE.0, RECT, chroma, format);
                 assert_same(
                     &format!("{format:?} round {round} texture {i}"),
                     &readback.planes(frame, bytes_per_sample),

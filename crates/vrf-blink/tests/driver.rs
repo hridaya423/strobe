@@ -366,10 +366,14 @@ fn shrinking_runs_write_the_same_bytes_as_one_view(ui: &Ui) -> Result<()> {
     let mut files = Vec::new();
     let mut warm = Warm::new()?;
     for views in [1, 2, 4, 5] {
-        let out = std::env::temp_dir().join(format!("vrf-blink-shrinking-{views}.{}", DETERMINISTIC.1));
+        let out =
+            std::env::temp_dir().join(format!("vrf-blink-shrinking-{views}.{}", DETERMINISTIC.1));
         let runs = render_runs(
             &config,
-            Plan { lead_in: 2, ..Plan::new(views, 200) },
+            Plan {
+                lead_in: 2,
+                ..Plan::new(views, 200)
+            },
             0,
             &out,
             &mut warm,

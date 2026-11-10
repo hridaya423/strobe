@@ -11,7 +11,9 @@ use vrf_encode::turbo::{LaneKind, TurboEncoder, TurboOptions};
 use vrf_encode::videotoolbox::VideoToolboxEncoder;
 use vrf_encode::videotoolbox::pool::{PixelFormat, PixelPool, PoolBuffer};
 use vrf_encode::x264::X264Encoder;
-use vrf_encode::{Codec, ColourSpace, Encoder, EncoderConfig, EncoderFrame, Matrix, Packet, Range, Rational};
+use vrf_encode::{
+    Codec, ColourSpace, Encoder, EncoderConfig, EncoderFrame, Matrix, Packet, Range, Rational,
+};
 
 const WIDTH: usize = 640;
 const HEIGHT: usize = 360;
@@ -302,7 +304,11 @@ fn over_eight(
         .args(["-pix_fmt", "yuv420p", "-f", "rawvideo", "-"])
         .output()?;
     std::fs::remove_file(&stream)?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(output.stdout.len(), frames * WIDTH * HEIGHT * 3 / 2);
     let mut over = 0usize;
     for (index, frame) in output.stdout.chunks(WIDTH * HEIGHT * 3 / 2).enumerate() {

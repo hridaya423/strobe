@@ -20,11 +20,11 @@ use vrf_encode::{Codec, ColourSpace, Matrix, Range, Rational};
 
 use super::hyperframes;
 use super::{
-    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, contained_join, hash_tree, partial_path, short_hex, write_if_changed,
-    since,
+    PerFrame, Progress, StageStats, add_track, audio_samples, cache_dir, contained_join, hash_tree,
+    partial_path, short_hex, since, write_if_changed,
 };
-use crate::driver::{Config, Plan, Runs, Warm, render_runs};
 use crate::adapters::audio::LiveAudio;
+use crate::driver::{Config, Plan, Runs, Warm, render_runs};
 use crate::skip::{self, Skip, TRACK_JS};
 use crate::video::{Clips, Link, StartFallback};
 use crate::{Mode, Project, Ui, View};
@@ -339,10 +339,7 @@ pub struct Offthread {
 
 const FRAME_SERVER_START: Duration = Duration::from_secs(30);
 
-fn first_line(
-    stdout: impl std::io::Read + Send + 'static,
-    timeout: Duration,
-) -> Result<String> {
+fn first_line(stdout: impl std::io::Read + Send + 'static, timeout: Duration) -> Result<String> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
@@ -936,7 +933,10 @@ impl Renderer {
                 },
                 |done, index, seen: &FrameAssets| {
                     if let Some(live) = &live {
-                        live.report(index as usize, audio_assets(&seen.assets).unwrap_or_default());
+                        live.report(
+                            index as usize,
+                            audio_assets(&seen.assets).unwrap_or_default(),
+                        );
                     }
                     progress.frame(done)
                 },
@@ -1100,7 +1100,10 @@ mod tests {
         let started = Instant::now();
         drop(server);
         assert!(started.elapsed() < Duration::from_secs(20));
-        let alive = Command::new("kill").arg("-0").arg(pid.to_string()).output()?;
+        let alive = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()?;
         assert!(!alive.status.success());
         Ok(())
     }
@@ -1116,7 +1119,10 @@ mod tests {
         let error = first_line(stdout, Duration::from_millis(200)).unwrap_err();
         let _ = child.kill();
         let _ = child.wait();
-        assert!(format!("{error:#}").contains("printed nothing"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("printed nothing"),
+            "{error:#}"
+        );
         Ok(())
     }
 

@@ -112,7 +112,11 @@ pub fn installed_remotion(project: &Path) -> Option<String> {
 }
 
 pub fn vrf_binary() -> PathBuf {
-    let file = if cfg!(windows) { "strobe.exe" } else { "strobe" };
+    let file = if cfg!(windows) {
+        "strobe.exe"
+    } else {
+        "strobe"
+    };
     bench_dir().join("../target/release").join(file)
 }
 

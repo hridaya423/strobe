@@ -136,7 +136,9 @@ pub(crate) fn hash_tree(context: &mut digest::Context, root: &Path, dir: &Path) 
                 context.update(&metadata.len().to_le_bytes());
                 context.update(&modified.to_le_bytes());
             }
-            Err(error) if file_type.is_symlink() && error.kind() == std::io::ErrorKind::NotFound => {
+            Err(error)
+                if file_type.is_symlink() && error.kind() == std::io::ErrorKind::NotFound =>
+            {
                 context.update(fs::read_link(&path)?.as_os_str().as_encoded_bytes());
             }
             Err(error) => return Err(error).with_context(|| format!("stat {}", path.display())),
@@ -268,7 +270,10 @@ mod tests {
         let inode = std::os::unix::fs::MetadataExt::ino(&fs::metadata(&script)?);
         write_if_changed(&script, "one")?;
         #[cfg(unix)]
-        assert_eq!(inode, std::os::unix::fs::MetadataExt::ino(&fs::metadata(&script)?));
+        assert_eq!(
+            inode,
+            std::os::unix::fs::MetadataExt::ino(&fs::metadata(&script)?)
+        );
         write_if_changed(&script, "two")?;
         assert_eq!(fs::read_to_string(&script)?, "two");
         let leftovers = fs::read_dir(&tree.0)?.count();

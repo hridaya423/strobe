@@ -141,7 +141,10 @@ fn options(project: &Path, plan: Plan) -> Options {
 }
 
 fn headless_frames(project: &Path, workers: u32) -> Result<PathBuf> {
-    let name = project.file_name().context("project has no name")?.to_string_lossy();
+    let name = project
+        .file_name()
+        .context("project has no name")?
+        .to_string_lossy();
     let out = work_dir().join(format!("headless-{name}-{workers}"));
     if out.exists() {
         return Ok(out);
@@ -151,14 +154,21 @@ fn headless_frames(project: &Path, workers: u32) -> Result<PathBuf> {
     } else {
         "../.bin/hyperframes"
     }))
-        .arg("render")
-        .arg(project)
-        .args(["--format", "png-sequence", "--workers", &workers.to_string(), "--quiet", "-o"])
-        .arg(&out)
-        .current_dir(bench_dir().join("engines"))
-        .env("HYPERFRAMES_NO_TELEMETRY", "1")
-        .env("DO_NOT_TRACK", "1")
-        .output()?;
+    .arg("render")
+    .arg(project)
+    .args([
+        "--format",
+        "png-sequence",
+        "--workers",
+        &workers.to_string(),
+        "--quiet",
+        "-o",
+    ])
+    .arg(&out)
+    .current_dir(bench_dir().join("engines"))
+    .env("HYPERFRAMES_NO_TELEMETRY", "1")
+    .env("DO_NOT_TRACK", "1")
+    .output()?;
     ensure!(
         output.status.success(),
         "hyperframes render:\n{}{}",
@@ -240,7 +250,11 @@ struct Worst {
 
 impl Worst {
     fn new() -> Worst {
-        Worst { flip: 0.0, delta: 0, frame: 0 }
+        Worst {
+            flip: 0.0,
+            delta: 0,
+            frame: 0,
+        }
     }
 
     fn add(&mut self, frame: u64, (flip, delta): (f64, u8)) {
@@ -307,10 +321,15 @@ fn a_view_that_started_later_paints_will_change_layers_differently(ui: &Ui) -> R
     let mut worst = 0.0f64;
     for ((frame, a), (_, b)) in sequential.iter().zip(&later) {
         let (flip, delta) = distance(a, b)?;
-        println!("started at 0 against started at 34, frame {frame}: FLIP mean {flip:.6}, max delta {delta}");
+        println!(
+            "started at 0 against started at 34, frame {frame}: FLIP mean {flip:.6}, max delta {delta}"
+        );
         worst = worst.max(flip);
     }
-    ensure!(worst >= 0.002, "the views agree (worst FLIP mean {worst}), so the fixture shows nothing");
+    ensure!(
+        worst >= 0.002,
+        "the views agree (worst FLIP mean {worst}), so the fixture shows nothing"
+    );
     Ok(())
 }
 
@@ -328,7 +347,12 @@ fn fresh_views_on_headless_ranges_equal_its_workers(ui: &Ui) -> Result<()> {
         "three fresh views against three HyperFrames workers: worst FLIP mean {:.6}, max delta {}",
         worst.flip, worst.delta
     );
-    ensure!(worst.flip <= WORKERS_FLIP && worst.delta <= 2, "FLIP mean {}, max delta {}", worst.flip, worst.delta);
+    ensure!(
+        worst.flip <= WORKERS_FLIP && worst.delta <= 2,
+        "FLIP mean {}, max delta {}",
+        worst.flip,
+        worst.delta
+    );
     Ok(())
 }
 
@@ -340,7 +364,9 @@ fn render_file(
     frames: Option<std::ops::RangeInclusive<u64>>,
 ) -> Result<PathBuf> {
     let out = work_dir().join(name);
-    let count = frames.as_ref().map_or(FRAMES, |range| range.end() - range.start() + 1);
+    let count = frames
+        .as_ref()
+        .map_or(FRAMES, |range| range.end() - range.start() + 1);
     let job = hyperframes::RenderJob {
         options: options(project, plan),
         frames,
@@ -357,17 +383,29 @@ fn the_view_count_does_not_change_the_file(ui: &Ui) -> Result<()> {
     let project = project()?;
     let mut files = Vec::new();
     for views in [1, 2, 4] {
-        let out = render_file(ui, &project, Plan::new(views, 7), &format!("views-{views}.{}", support::DETERMINISTIC.1), None)?;
+        let out = render_file(
+            ui,
+            &project,
+            Plan::new(views, 7),
+            &format!("views-{views}.{}", support::DETERMINISTIC.1),
+            None,
+        )?;
         files.push((views, fs::read(&out)?));
     }
     for (views, bytes) in &files[1..] {
-        ensure!(*bytes == files[0].1, "{views} views wrote different bytes from one view");
+        ensure!(
+            *bytes == files[0].1,
+            "{views} views wrote different bytes from one view"
+        );
     }
     Ok(())
 }
 
 fn decoded(path: &Path) -> Result<Vec<Rgb8>> {
-    score::open(path)?.frames.map(|frame| Ok(frame?.1)).collect()
+    score::open(path)?
+        .frames
+        .map(|frame| Ok(frame?.1))
+        .collect()
 }
 
 fn a_range_of_the_file_is_a_render_that_started_there(ui: &Ui) -> Result<()> {
@@ -384,8 +422,17 @@ fn a_range_of_the_file_is_a_render_that_started_there(ui: &Ui) -> Result<()> {
     let mut worst = Worst::new();
     let mut files = Vec::new();
     for views in [1, 3] {
-        let plan = Plan { ranges: Some(3), ..Plan::new(views, 7) };
-        let out = render_file(ui, &project, plan, &format!("ranges-{views}.{}", support::DETERMINISTIC.1), None)?;
+        let plan = Plan {
+            ranges: Some(3),
+            ..Plan::new(views, 7)
+        };
+        let out = render_file(
+            ui,
+            &project,
+            plan,
+            &format!("ranges-{views}.{}", support::DETERMINISTIC.1),
+            None,
+        )?;
         files.push(fs::read(&out)?);
         let all = decoded(&out)?;
         for (frame, (a, b)) in all[30..60].iter().zip(&alone).enumerate() {
@@ -400,7 +447,13 @@ fn a_range_of_the_file_is_a_render_that_started_there(ui: &Ui) -> Result<()> {
         ensure!(files[0] == files[1], "1 and 3 views wrote different bytes");
         return Ok(());
     }
-    ensure!(worst.delta == 0, "frame {}: FLIP mean {}, max delta {}", worst.frame, worst.flip, worst.delta);
+    ensure!(
+        worst.delta == 0,
+        "frame {}: FLIP mean {}, max delta {}",
+        worst.frame,
+        worst.flip,
+        worst.delta
+    );
     let sequential = decoded(&render_file(
         ui,
         &project,
@@ -412,8 +465,14 @@ fn a_range_of_the_file_is_a_render_that_started_there(ui: &Ui) -> Result<()> {
     for (frame, (a, b)) in sequential[30..60].iter().zip(&alone).enumerate() {
         apart.add(frame as u64 + 30, distance(a, b)?);
     }
-    println!("one range against a render that started at 30: worst FLIP mean {:.6}", apart.flip);
-    ensure!(apart.flip >= 0.002, "a render from frame 0 equals one from frame 30: the fixture shows nothing");
+    println!(
+        "one range against a render that started at 30: worst FLIP mean {:.6}",
+        apart.flip
+    );
+    ensure!(
+        apart.flip >= 0.002,
+        "a render from frame 0 equals one from frame 30: the fixture shows nothing"
+    );
     Ok(())
 }
 
@@ -518,7 +577,10 @@ fn a_fresh_views_first_frame_is_the_seeked_frame(ui: &Ui) -> Result<()> {
                 })
             })
             .collect();
-        handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
     });
     let mut wrong = Vec::new();
     let mut sequences = Vec::new();
@@ -536,7 +598,10 @@ fn a_fresh_views_first_frame_is_the_seeked_frame(ui: &Ui) -> Result<()> {
         wrong.len(),
         VIEWS * OPENS
     );
-    let differing = sequences.iter().filter(|hashes| **hashes != sequences[0]).count();
+    let differing = sequences
+        .iter()
+        .filter(|hashes| **hashes != sequences[0])
+        .count();
     ensure!(
         differing == 0 && sequences[0].windows(2).all(|pair| pair[0] != pair[1]),
         "{differing} of {} fresh views painted frames {LAYER_FRAME} to {} differently from the first",
@@ -601,12 +666,18 @@ fn canvas_2d_equals_headless_shell(ui: &Ui) -> Result<()> {
                 scope.spawn(move || against(&Ours::new(ui, project)?.run(10, 14, kept)?, reference))
             })
             .collect();
-        handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
     });
     let mut worst = Worst::new();
     for result in results {
         let view = result?;
-        println!("canvas view: worst FLIP mean {:.6}, max delta {}", view.flip, view.delta);
+        println!(
+            "canvas view: worst FLIP mean {:.6}, max delta {}",
+            view.flip, view.delta
+        );
         worst.add(view.frame, (view.flip, view.delta));
     }
     ensure!(
@@ -622,10 +693,22 @@ fn main() -> std::process::ExitCode {
     let cpu = std::env::var("VRF_MODE").map_or(CPU_RASTER, |mode| mode == "reference");
     vrf_blink::set_cpu_raster(cpu);
     support::run(&[
-        ("hf_raster_canvas_2d_equals_headless_shell", canvas_2d_equals_headless_shell),
-        ("hf_raster_fresh_views_first_frame_is_the_seeked_frame", a_fresh_views_first_frame_is_the_seeked_frame),
-        ("hf_raster_scale_tween_equals_headless_shell", the_scale_tween_equals_headless_shell),
-        ("hf_raster_downscaled_image_equals_headless_shell", a_downscaled_image_equals_headless_shell),
+        (
+            "hf_raster_canvas_2d_equals_headless_shell",
+            canvas_2d_equals_headless_shell,
+        ),
+        (
+            "hf_raster_fresh_views_first_frame_is_the_seeked_frame",
+            a_fresh_views_first_frame_is_the_seeked_frame,
+        ),
+        (
+            "hf_raster_scale_tween_equals_headless_shell",
+            the_scale_tween_equals_headless_shell,
+        ),
+        (
+            "hf_raster_downscaled_image_equals_headless_shell",
+            a_downscaled_image_equals_headless_shell,
+        ),
         (
             "hf_raster_started_later_paints_differently",
             a_view_that_started_later_paints_will_change_layers_differently,
@@ -634,7 +717,10 @@ fn main() -> std::process::ExitCode {
             "hf_raster_fresh_views_equal_headless_workers",
             fresh_views_on_headless_ranges_equal_its_workers,
         ),
-        ("hf_raster_view_count_does_not_change_the_file", the_view_count_does_not_change_the_file),
+        (
+            "hf_raster_view_count_does_not_change_the_file",
+            the_view_count_does_not_change_the_file,
+        ),
         (
             "hf_raster_file_ranges_are_renders_that_started_there",
             a_range_of_the_file_is_a_render_that_started_there,
