@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as Process, ExitCode};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use vrf_blink::adapters::hyperframes;
 use vrf_blink::adapters::remotion::{self, Options, RenderJob, Renderer, VideoDecoder};
@@ -15,6 +15,8 @@ use vrf_encode::Codec;
 
 const COMMAND_START: &str = "VRF_COMMAND_START_US";
 const SOFTWARE_WEBGL: &str = "VRF_SOFTWARE_WEBGL";
+const DEFAULT_FPS: u32 = 30;
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Parser)]
 #[command(name = "strobe", version)]
@@ -66,15 +68,16 @@ struct RenderArgs {
     /// project if absent.
     #[arg(long)]
     hyperframes: Option<PathBuf>,
-    /// HyperFrames: frames per second.
-    #[arg(long, default_value_t = 30)]
-    fps: u32,
-    /// Input props as JSON, or the path of a JSON file.
+    /// HyperFrames: frames per second. 30 if absent.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    fps: Option<u32>,
+    /// Remotion: input props as JSON, or the path of a JSON file.
     #[arg(long)]
     props: Option<String>,
-    /// Milliseconds before a `delayRender` that is never cleared fails the frame.
-    #[arg(long, default_value_t = 30_000)]
-    timeout: u64,
+    /// Remotion: milliseconds before a `delayRender` that is never cleared fails the frame.
+    /// 30000 if absent.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    timeout: Option<u64>,
     /// Views rendering in parallel. Measured on this machine if absent.
     #[arg(long)]
     views: Option<usize>,
@@ -213,6 +216,39 @@ impl RenderArgs {
         }
     }
 
+    fn check_framework_flags(&self) -> Result<()> {
+        let (framework, given, other) = if self.is_remotion() {
+            (
+                "Remotion",
+                [
+                    ("--fps", self.fps.is_some()),
+                    ("--hyperframes", self.hyperframes.is_some()),
+                ],
+                "HyperFrames",
+            )
+        } else {
+            (
+                "HyperFrames",
+                [
+                    ("--props", self.props.is_some()),
+                    ("--timeout", self.timeout.is_some()),
+                ],
+                "Remotion",
+            )
+        };
+        let wrong: Vec<_> = given
+            .into_iter()
+            .filter_map(|(flag, given)| given.then_some(flag))
+            .collect();
+        ensure!(
+            wrong.is_empty(),
+            "{} only applies to a {other} project, and {} is a {framework} project",
+            wrong.join(" and "),
+            self.project.display()
+        );
+        Ok(())
+    }
+
     fn remembers_webgl(&self) -> bool {
         self.composition.as_deref().is_some_and(|composition| {
             remotion::known_webgl(&self.project, self.entry.as_deref(), composition)
@@ -247,7 +283,7 @@ impl RenderArgs {
                     .context("a Remotion project needs --composition")?,
                 props: props(self.props.clone())?,
                 mode,
-                timeout: Duration::from_millis(self.timeout),
+                timeout: Duration::from_millis(self.timeout.unwrap_or(DEFAULT_TIMEOUT_MS)),
                 plan,
                 audio: !self.no_audio,
                 video: match self.video {
@@ -266,7 +302,7 @@ impl RenderArgs {
             let options = hyperframes::Options {
                 project,
                 hyperframes: self.hyperframes.clone(),
-                fps: self.fps,
+                fps: self.fps.unwrap_or(DEFAULT_FPS),
                 mode,
                 plan,
                 audio: !self.no_audio,
@@ -481,6 +517,7 @@ fn render_again_with_software_webgl() -> Result<()> {
 }
 
 fn run_render(args: RenderArgs, cpu_raster: bool, command_start: SystemTime) -> Result<()> {
+    args.check_framework_flags()?;
     let remote = if args.no_daemon || std::env::var_os("VRF_NO_DAEMON").is_some() {
         None
     } else {
@@ -589,6 +626,44 @@ mod tests {
         assert!(parse_frames("").is_err());
         assert!(parse_frames("-5").is_err());
         assert!(parse_frames("a-b").is_err());
+    }
+
+    #[test]
+    fn a_flag_of_the_other_framework_is_an_error() {
+        let hyperframes = project("hyperframes-flags", None);
+        let remotion = project(
+            "remotion-flags",
+            Some(r#"{"dependencies":{"remotion":"4.0.0"}}"#),
+        );
+        let check = |project: &Path, extra: &[&str]| {
+            render_args(project, extra)
+                .check_framework_flags()
+                .map_err(|error| error.to_string())
+        };
+        assert!(check(&hyperframes, &["--fps", "24", "--hyperframes", "/x"]).is_ok());
+        assert!(check(&remotion, &["--props", "{}", "--timeout", "5"]).is_ok());
+        assert!(check(&hyperframes, &[]).is_ok());
+        assert!(check(&remotion, &[]).is_ok());
+        for flags in [&["--props", "{}"][..], &["--timeout", "5"]] {
+            let message = check(&hyperframes, flags).unwrap_err();
+            assert!(message.contains(flags[0]), "{message}");
+            assert!(message.contains("is a HyperFrames project"), "{message}");
+        }
+        for flags in [&["--fps", "24"][..], &["--hyperframes", "/x"]] {
+            let message = check(&remotion, flags).unwrap_err();
+            assert!(message.contains(flags[0]), "{message}");
+            assert!(message.contains("is a Remotion project"), "{message}");
+        }
+        let both = check(&hyperframes, &["--props", "{}", "--timeout", "5"]).unwrap_err();
+        assert!(both.contains("--props and --timeout"), "{both}");
+    }
+
+    #[test]
+    fn a_zero_fps_or_timeout_is_refused() {
+        for flag in ["--fps", "--timeout"] {
+            let argv = ["strobe", "render", "p", "-o", "o.mp4", flag, "0"];
+            assert!(Cli::try_parse_from(argv).is_err(), "{flag} 0");
+        }
     }
 
     #[test]
